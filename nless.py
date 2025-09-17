@@ -97,7 +97,7 @@ class NlessApp(App):
         self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
-        self.delimiter = None  # Will be inferred from data
+        self.delimiter = "n/a"  # Will be inferred from data
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -394,16 +394,26 @@ class NlessApp(App):
         if not self.delimiter and len(log_lines) > 0:
             self.delimiter = self._infer_delimiter(log_lines[: min(5, len(log_lines))])
 
-        if not self.first_row_parsed:
-            first_log_line = log_lines[0]
-            parts = self._split_line(first_log_line)
-            data_table.add_columns(*parts)
-            self.first_row_parsed = True
-            log_lines = log_lines[1:]
+        if self.delimiter != "n/a":
+            if not self.first_row_parsed:
+                first_log_line = log_lines[0]
+                parts = self._split_line(first_log_line)
+                data_table.add_columns(*parts)
+                self.first_row_parsed = True
+                log_lines = log_lines[1:]
 
-        for log_line in log_lines:
-            self.raw_rows.append(log_line)
-            data_table.add_row(*self._split_line(log_line))
+            for log_line in log_lines:
+                self.raw_rows.append(log_line)
+                data_table.add_row(*self._split_line(log_line))
+        else:
+            # No delimiter found, treat entire line as single column
+            if not self.first_row_parsed:
+                data_table.add_column("log")
+                self.first_row_parsed = True
+
+            for log_line in log_lines:
+                self.raw_rows.append(log_line)
+                data_table.add_row(log_line)
 
         self._update_table()
 
@@ -418,6 +428,8 @@ class NlessApp(App):
         """
         if self.delimiter == " ":
             return self._split_aligned_row(line)
+        if self.delimiter == "n/a":
+            return [line]
         return line.split(self.delimiter)
 
     def _split_aligned_row(self, line: str) -> list[str]:
@@ -432,7 +444,7 @@ class NlessApp(App):
         # Split on multiple spaces and filter out empty strings
         return [field for field in line.split() if field]
 
-    def _infer_delimiter(self, sample_lines: list[str]) -> str:
+    def _infer_delimiter(self, sample_lines: list[str]) -> str | None:
         """Infer the delimiter from a sample of lines.
 
         Args:
@@ -482,10 +494,12 @@ class NlessApp(App):
                         first_line_parts = self._split_aligned_row(sample_lines[0])
                         if len(parts) == len(first_line_parts):
                             delimiter_scores[delimiter] += 2
+                        else:
+                            delimiter_scores[delimiter] -= 20
 
         # Default to comma if no clear winner
         if not delimiter_scores or max(delimiter_scores.values()) == 0:
-            return ","
+            return "n/a"
 
         # Return the delimiter with the highest score
         return max(delimiter_scores.items(), key=lambda x: x[1])[0]
