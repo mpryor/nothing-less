@@ -9,8 +9,22 @@ from textual.coordinate import Coordinate
 from textual.events import Key
 from textual.theme import BUILTIN_THEMES
 from textual.widgets import DataTable, Footer, Input, Static
+from textual.screen import Screen
 from typing import List
 
+
+class HelpScreen(Screen):
+    """A widget to display keybindings help."""
+    BINDINGS = [("escape", "app.pop_screen", "Close Help")]
+
+    def compose(self) -> ComposeResult:
+        bindings = self.app.BINDINGS
+        help_text = "Keybindings:\n\n"
+        for binding in bindings:
+            keys, _, description = binding
+            help_text += f"{keys:<12} - {description}\n"
+        yield Static(help_text)
+        yield Static("[bold]Press 'Escape' to close this help.[/bold]", id="help-footer")
 
 class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
@@ -32,7 +46,18 @@ class NlessApp(App):
         visibility: visible;
         height: 3;
     }
+    #help-screen {
+        background: $surface;
+        border: solid $primary;
+        padding: 1;
+        margin: 1;
+        height: 80%;
+        width: 80%;
+        align: center middle;
+    }
     """
+
+    SCREENS = { "HelpScreen": HelpScreen }
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -53,6 +78,7 @@ class NlessApp(App):
         ("*", "search_cursor_word", "Search for word under cursor"),
         ("p,N", "previous_search", "Previous Search Result"),
         ("F", "filter_cursor_word", "Filter by word under cursor"),
+        ("?", "push_screen('HelpScreen')", "Show Help"),
     ]
 
     def __init__(self):
