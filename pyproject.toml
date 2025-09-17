@@ -14,8 +14,8 @@ license = "MIT"
 license-files = ["LICENSE"]
 
 [project.urls]
-Homepage = https://github.com/mpryor/nothing-less 
-Issues = https://github.com/mpryor/nothing-less/issues
+Homepage = "https://github.com/mpryor/nothing-less"
+Issues = "https://github.com/mpryor/nothing-less/issues"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
