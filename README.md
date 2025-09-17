@@ -74,7 +74,7 @@ The below demo showcases some of nless's features for handling streaming input, 
 
 **Delimiter/file parsing**:
 - By default, `nless` will attempt to infer a file delimiter from the first few rows sent through stdin. It uses common delimiters to start - `,`, ` `, `|`, `\t`, etc.
-- `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and it the rows will be re-parsed into a tabular format.
+- `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and the rows will be re-parsed into a tabular format.
 - `D` - alternatively, you can pass in a regex with named capture groups. Those named groups will become the tabular columns, and each row will be parsed and split across those groups. Example `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)`
 - `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and sarch the raw lines.
 - `D` - last, you can pass a delimiter value of `  ` (two spaces). This will parse text that has been delimited utilizing multiple spaces, while preserving values that have a single space. This is most commonly useful for parsing kubernetes output (`kubectl get pods -w`), for example.
