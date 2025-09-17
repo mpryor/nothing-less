@@ -42,6 +42,8 @@ class NlessApp(App):
         ("/", "search", "Search"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
+        ("n", "next_search", "Next Search Result"),
+        ("p,N", "previous_search", "Previous Search Result"),
     ]
 
     def __init__(self):
@@ -53,11 +55,15 @@ class NlessApp(App):
         self.filter_column = None
         self.search_term = None
         self.sort_ascending = True
+        self.search_matches: List[Coordinate] = []
+        self.current_match_index: int = -1
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
         event.input.remove()
         self.search_term = input_value.lower() if input_value else None
+        self.search_matches = []
+        self.current_match_index = -1
         data_table = self.query_one(DataTable)
         data_table.clear()
         if not self.first_row_parsed and self.raw_rows:
@@ -65,21 +71,21 @@ class NlessApp(App):
             self.first_row_parsed = True
             self.raw_rows = self.raw_rows[1:]
 
-        for row in self.raw_rows:
+        for row_idx, row in enumerate(self.raw_rows):
             cells = row.split(",")
             highlighted_cells = []
-            for cell in cells:
+            for col_idx, cell in enumerate(cells):
                 if self.search_term and self.search_term in cell.lower():
                     highlighted_cells.append(f"[reverse]{cell}[/reverse]")
+                    self.search_matches.append(Coordinate(row_idx, col_idx))
                 else:
                     highlighted_cells.append(cell)
             data_table.add_row(*highlighted_cells)
 
         self.notify(
-            "Search cleared"
-            if not input_value
-            else f"Searching for '{input_value}'"
+            "Search cleared" if not input_value else f"Searching for '{input_value}'"
         )
+        self.action_next_search()  # Jump to first match if any
         return
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -87,6 +93,29 @@ class NlessApp(App):
             self.handle_search_submitted(event)
         elif event.input.id == "filter_input":
             self.handle_filter_submitted(event)
+
+    def _navigate_search(self, direction: int) -> None:
+        """Navigate through search matches."""
+        if not self.search_matches:
+            self.notify("No search results.", severity="warning")
+            return
+
+        num_matches = len(self.search_matches)
+        self.current_match_index = (
+            self.current_match_index + direction + num_matches
+        ) % num_matches
+        target_coord = self.search_matches[self.current_match_index]
+        data_table = self.query_one(DataTable)
+        data_table.cursor_coordinate = target_coord
+        self.notify(f"Match {self.current_match_index + 1} of {num_matches}", timeout=1)
+
+    def action_next_search(self) -> None:
+        """Move cursor to the next search result."""
+        self._navigate_search(1)
+
+    def action_previous_search(self) -> None:
+        """Move cursor to the previous search result."""
+        self._navigate_search(-1)
 
     def handle_filter_submitted(self, event: Input.Submitted) -> None:
         filter_value = event.value
