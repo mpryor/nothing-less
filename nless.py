@@ -90,8 +90,8 @@ class NlessApp(App):
         if self.sort_key:
             try:
                 sort_column_index = [
-                    c.key.value for c in data_table.ordered_columns
-                ].index(self.sort_key.value)
+                    c.key for c in data_table.ordered_columns
+                ].index(self.sort_key)
                 filtered_rows.sort(
                     key=lambda r: r.split(",")[sort_column_index], reverse=self.sort_reverse
                 )
@@ -221,17 +221,27 @@ class NlessApp(App):
 
     def action_sort(self) -> None:
         data_table = self.query_one(DataTable)
-        selected_column = data_table.ordered_columns[data_table.cursor_column]
+        selected_column_key = data_table.ordered_columns[data_table.cursor_column].key
 
-        if self.sort_key == selected_column.key:
+        if self.sort_key == selected_column_key:
             self.sort_reverse = not self.sort_reverse
         else:
-            self.sort_key = selected_column.key
+            self.sort_key = selected_column_key
             self.sort_reverse = False
 
-        data_table.sort(self.sort_key, reverse=self.sort_reverse)
+        # Update column labels with sort indicators
+        for column in data_table.columns.values():
+            # Remove existing indicators
+            label_text = str(column.label).strip(" ▲▼")
+            if column.key == self.sort_key:
+                indicator = "▼" if self.sort_reverse else "▲"
+                column.label = f"{label_text} {indicator}"
+            else:
+                column.label = label_text
+
+        self._update_table()
         self.notify(
-            f"Sorted by {selected_column.label} {'descending' if self.sort_reverse else 'ascending'}"
+            f"Sorted by {str(data_table.columns[self.sort_key].label).strip()} {'descending' if self.sort_reverse else 'ascending'}"
         )
 
     def action_filter(self) -> None:
@@ -296,31 +306,20 @@ class NlessApp(App):
     def on_mount(self) -> None:
         self.mounted = True
 
-    def add_log(self, log_line: str) -> None:
-        if self.mounted:
-            data_table = self.query_one(DataTable)
+    def add_logs(self, log_lines: list[str]) -> None:
+        print(f"Adding {len(log_lines)} log lines", file=sys.stderr)
+        data_table = self.query_one(DataTable)
 
-            if not self.first_row_parsed:
-                # columns = [f"col{i}" for i in range(1, len(log_line.split(",")) + 1)]
-                # data_table.add_columns(*columns)
-                data_table.add_columns(*log_line.split(","))
-                self.first_row_parsed = True
-                return
+        if not self.first_row_parsed:
+            first_log_line = log_lines[0]
+            data_table.add_columns(*first_log_line.split(","))
+            self.first_row_parsed = True
+            log_lines = log_lines[1:]
 
-            # Always add to raw_rows
+        for log_line in log_lines:
             self.raw_rows.append(log_line)
-
-            # Only add to display if no filter is active or if it matches the current filter
-            if self.current_filter:
-                cells = log_line.split(",")
-                if (
-                    self.filter_column < len(cells)
-                    and self.current_filter.lower() in cells[self.filter_column].lower()
-                ):
-                    data_table.add_row(*log_line.split(","))
-            else:
-                data_table.add_row(*log_line.split(","))
-
+            data_table.add_row(*log_line.split(","))
+        self._update_table()
 
 class InputConsumer:
     """Handles stdin input and command processing."""
@@ -332,12 +331,12 @@ class InputConsumer:
         """Read input and handle commands."""
         while True:
             if self.app.mounted:
-                line = sys.stdin.readline()
-                if line:
-                    self.handle_input(line.strip())
+                lines = sys.stdin.readlines()
+                if len(lines) > 0:
+                    self.handle_input(lines)
 
-    def handle_input(self, line: str) -> None:
-        self.app.add_log(line)
+    def handle_input(self, line: list[str]) -> None:
+        self.app.add_logs(line)
 
 
 if __name__ == "__main__":
