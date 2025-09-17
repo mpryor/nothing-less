@@ -9,10 +9,10 @@ from typing import Callable, Tuple
 class InputConsumer:
     """Handles stdin input and command processing."""
 
-    def __init__(self, new_fd: int, read_condition: Callable[[], bool], new_line_callback: Callable[[list[str]], None]):
+    def __init__(self, new_fd: int, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
         self.new_fd = new_fd
-        self.new_line_callback = new_line_callback
-        self.read_condition = read_condition
+        self.new_line_callback = output_func
+        self.read_condition = output_ready_func
 
     def is_streaming(self) -> bool:
         # Returns True if stdin is a pipe (streaming), False if it's a regular file
