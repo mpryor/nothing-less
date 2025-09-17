@@ -5,6 +5,7 @@ from rich.markup import _parse
 
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
+from textual.events import Key
 from textual.widgets import DataTable, Footer, Input
 from typing import List
 
@@ -151,6 +152,11 @@ class NlessApp(App):
             self.handle_search_submitted(event)
         elif event.input.id == "filter_input":
             self.handle_filter_submitted(event)
+
+    def on_key(self, event: Key) -> None:
+        """Handle key events."""
+        if event.key == "escape" and isinstance(self.focused, Input):
+            self.focused.remove()
 
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
