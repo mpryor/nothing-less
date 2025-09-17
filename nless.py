@@ -113,12 +113,12 @@ class NlessApp(App):
         self.query_one(DataTable).action_scroll_top()
 
     def action_page_up(self) -> None:
-        """Scroll to top."""
+        """Page up."""
         data_table = self.query_one(DataTable)
         data_table.action_page_up()
 
     def action_page_down(self) -> None:
-        """Scroll to top."""
+        """Page down."""
         data_table = self.query_one(DataTable)
         data_table.action_page_down()
 
@@ -126,6 +126,7 @@ class NlessApp(App):
         self.mounted = True
 
     def add_log(self, log_line: str) -> None:
+        print(log_line)
         if self.mounted:
             data_table = self.query_one(DataTable)
 
@@ -154,13 +155,11 @@ class InputConsumer:
 
     def __init__(self, app: NlessApp):
         self.app = app
-        self.running = True
 
     def run(self) -> None:
         """Read input and handle commands."""
-        while self.running:
-            rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
-            if rlist:
+        while True:
+            if self.app.mounted:
                 line = sys.stdin.readline()
                 if line:
                     self.handle_input(line.strip())
