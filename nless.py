@@ -70,7 +70,7 @@ class NlessApp(App):
 
     def get_filtered_sorted_rows(self) -> List[List[str]]:
         """Return processed rows based on current filters/sorts."""
-        rows = [[cell.value for cell in row.cells] for row in self.table._rows]
+        rows = [self.table.get_row_at(i) for i in range(self.table.row_count)]
         
         # Filtering
         if self.filter_query:
