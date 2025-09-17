@@ -97,6 +97,7 @@ class NlessApp(App):
         self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
+        self.delimiter = None  # Will be inferred from data
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -118,7 +119,7 @@ class NlessApp(App):
         filtered_rows = []
         if self.current_filter:
             for row_str in self.raw_rows:
-                cells = row_str.split(",")
+                cells = row_str.split(self.delimiter)
                 if (
                     self.filter_column < len(cells)
                     and self.current_filter.lower() in cells[self.filter_column].lower()
@@ -134,7 +135,7 @@ class NlessApp(App):
                     self.sort_key
                 )
                 filtered_rows.sort(
-                    key=lambda r: r.split(",")[sort_column_index],
+                    key=lambda r: r.split(self.delimiter)[sort_column_index],
                     reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
@@ -143,7 +144,7 @@ class NlessApp(App):
 
         # 3. Add to table and find search matches
         for displayed_row_idx, row_str in enumerate(filtered_rows):
-            cells = row_str.split(",")
+            cells = row_str.split(self.delimiter)
             highlighted_cells = []
             for col_idx, cell in enumerate(cells):
                 if self.search_term and self.search_term in cell.lower():
@@ -389,16 +390,68 @@ class NlessApp(App):
         print(f"Adding {len(log_lines)} log lines", file=sys.stderr)
         data_table = self.query_one(DataTable)
 
+        # Infer delimiter from first few lines if not already set
+        if not self.delimiter and len(log_lines) > 0:
+            self.delimiter = self._infer_delimiter(log_lines[: min(5, len(log_lines))])
+
         if not self.first_row_parsed:
             first_log_line = log_lines[0]
-            data_table.add_columns(*first_log_line.split(","))
+            data_table.add_columns(*first_log_line.split(self.delimiter))
             self.first_row_parsed = True
             log_lines = log_lines[1:]
 
         for log_line in log_lines:
             self.raw_rows.append(log_line)
-            data_table.add_row(*log_line.split(","))
+            data_table.add_row(*log_line.split(self.delimiter))
+
         self._update_table()
+
+    def _infer_delimiter(self, sample_lines: list[str]) -> str:
+        """Infer the delimiter from a sample of lines.
+
+        Args:
+            sample_lines: A list of strings to analyze for delimiter detection.
+
+        Returns:
+            The most likely delimiter character.
+        """
+        common_delimiters = [",", "\t", "|", ";", " "]
+        delimiter_scores = {d: 0 for d in common_delimiters}
+
+        for line in sample_lines:
+            # Skip empty lines
+            if not line.strip():
+                continue
+
+            for delimiter in common_delimiters:
+                parts = line.split(delimiter)
+
+                # Score based on number of fields and consistency
+                if len(parts) > 1:
+                    # More fields = higher score
+                    delimiter_scores[delimiter] += len(parts)
+
+                    # Consistent non-empty fields = higher score
+                    non_empty = sum(1 for p in parts if p.strip())
+                    if non_empty == len(parts):
+                        delimiter_scores[delimiter] += 2
+
+                    # If fields are roughly similar lengths = higher score
+                    lengths = [len(p.strip()) for p in parts]
+                    avg_len = sum(lengths) / len(lengths)
+                    if all(abs(l - avg_len) < avg_len for l in lengths):
+                        delimiter_scores[delimiter] += 1
+
+                    # Special case: if tab and consistent fields, boost score
+                    if delimiter == "\t" and non_empty == len(parts):
+                        delimiter_scores[delimiter] += 3
+
+        # Default to comma if no clear winner
+        if not delimiter_scores or max(delimiter_scores.values()) == 0:
+            return ","
+
+        # Return the delimiter with the highest score
+        return max(delimiter_scores.items(), key=lambda x: x[1])[0]
 
 
 class InputConsumer:
