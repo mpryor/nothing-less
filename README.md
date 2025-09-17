@@ -1,6 +1,14 @@
 # Nothing-less (nless)
 
-Nless is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) that has enhanced support for tabular data - such as inferring file delimiters, delimiter swapping on the fly, filtering, sorting, searching, and real-time event parsing
+**Nless** is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) with vi-like keybindings.
+Nless has enhanced functionality for parsing tabular data:
+- inferring file delimiters
+- delimiter swapping on the fly
+- regex-based parsing of raw logs into tabular data using Python's regex engine
+- filtering
+- sorting
+- searching
+- real-time event parsing.
 
 ## Getting started
 ### Dependencies
