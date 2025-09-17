@@ -12,6 +12,13 @@ import shlex
 
 class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("f", "filter", "Filter"),
+        ("s", "sort", "Sort"),
+        ("up", "cursor_up", ""),
+        ("down", "cursor_down", ""),
+    ]
     
     def __init__(self):
         super().__init__()
@@ -63,7 +70,7 @@ class NlessApp(App):
 
     def get_filtered_sorted_rows(self) -> List[List[str]]:
         """Return processed rows based on current filters/sorts."""
-        rows = [list(row) for row in self.table.rows]
+        rows = [list(self.table.get_rows(row_key)) for row_key in self.table.rows]
         
         # Filtering
         if self.filter_query:
