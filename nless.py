@@ -4,9 +4,10 @@ from threading import Thread
 from rich.markup import _parse
 
 from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
-from textual.widgets import DataTable, Footer, Input
+from textual.widgets import DataTable, Footer, Input, Static
 from typing import List
 
 
@@ -15,6 +16,11 @@ class NlessApp(App):
 
     ENABLE_COMMAND_PALETTE = False
     CSS = """
+    #bottom-container {
+        height:auto;
+        dock:bottom;
+        width: 100%;
+    }
     #filter_input {
         dock: bottom;
         visibility: visible;
@@ -111,6 +117,16 @@ class NlessApp(App):
                     highlighted_cells.append(cell)
             data_table.add_row(*highlighted_cells, key=str(displayed_row_idx))
 
+        self._update_status_bar()
+
+    def _update_status_bar(self) -> None:
+        status_bar = self.query_one("#status_bar", Static)
+        data_table = self.query_one(DataTable)
+        sort_text = f"[bold]Sort[/bold]: {data_table.columns[self.sort_key].label.strip()} {'desc' if self.sort_reverse else 'asc'}" if self.sort_key else "[bold]Sort[/bold]: None"
+        filter_text = f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'" if self.current_filter else "[bold]Filter[/bold]: None"
+        search_text = f"[bold]Search[/bold]: '{self.search_term}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)" if self.search_term else "[bold]Search[/bold]: None"
+        status_bar.update(f"{sort_text} | {filter_text} | {search_text}")
+
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
     ) -> None:
@@ -118,24 +134,17 @@ class NlessApp(App):
         if not filter_value:
             self.current_filter = None
             self.filter_column = None
-            self.notify("Filter cleared")
         else:
             self.current_filter = filter_value
             self.filter_column = column_index if column_index is not None else 0
             data_table = self.query_one(DataTable)
             column_label = data_table.ordered_columns[self.filter_column].label
-            self.notify(
-                f"Filtered column {column_label} by filter text: '{self.current_filter}'"
-            )
 
         self._update_table()
 
     def _perform_search(self, search_term: Optional[str]) -> None:
         """Performs a search on the data and updates the table."""
         self.search_term = search_term.lower() if search_term else None
-        self.notify(
-            "Search cleared" if not search_term else f"Searching for '{search_term}'"
-        )
         self._update_table()
         if self.search_matches:
             self._navigate_search(1)  # Jump to first match
@@ -171,7 +180,7 @@ class NlessApp(App):
         target_coord = self.search_matches[self.current_match_index]
         data_table = self.query_one(DataTable)
         data_table.cursor_coordinate = target_coord
-        self.notify(f"Match {self.current_match_index + 1} of {num_matches}", timeout=1)
+        self._update_status_bar()
 
     def action_next_search(self) -> None:
         """Move cursor to the next search result."""
@@ -204,7 +213,8 @@ class NlessApp(App):
         """Create and yield the DataTable widget."""
         table = DataTable()
         yield table
-        yield Footer()
+        with Vertical(id="bottom-container"):
+            yield Static("Sort: None | Filter: None | Search: None", classes="bd", id="status_bar")
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
@@ -240,9 +250,6 @@ class NlessApp(App):
                 column.label = label_text
 
         self._update_table()
-        self.notify(
-            f"Sorted by {str(data_table.columns[self.sort_key].label).strip()} {'descending' if self.sort_reverse else 'ascending'}"
-        )
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
