@@ -19,7 +19,7 @@ class HelpScreen(Screen):
 
     def compose(self) -> ComposeResult:
         bindings = self.app.BINDINGS
-        help_text = "Keybindings:\n\n"
+        help_text = "[bold]Keybindings[/bold]:\n\n"
         for binding in bindings:
             keys, _, description = binding
             help_text += f"{keys:<12} - {description}\n"
