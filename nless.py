@@ -12,6 +12,7 @@ import shlex
 
 class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
+
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("f", "filter", "Filter"),
@@ -19,7 +20,7 @@ class NlessApp(App):
         ("up", "cursor_up", ""),
         ("down", "cursor_down", ""),
     ]
-    
+
     def __init__(self):
         super().__init__()
         self.lines: List[List[str]] = []  # Store rows as lists of strings
@@ -43,7 +44,7 @@ class NlessApp(App):
 
     def on_mount(self) -> None:
         """Set up periodic updates when the app is mounted."""
-        self.set_interval(.1, self.update)
+        self.set_interval(0.1, self.update)
 
     def update(self) -> None:
         """Update the table with new/filtered/sorted data."""
@@ -56,42 +57,44 @@ class NlessApp(App):
                     self.setup_table()
                     continue
                 self.table.add_row(*row)
-            
+
             # Update existing rows incrementally
             current_row_count = self.table.row_count
             new_rows = self.get_filtered_sorted_rows()
-            
+
             # Add new rows if needed
             for row in new_rows[current_row_count:]:
                 self.table.add_row(*row)
-            
+
             # Remove extra rows if needed
             while self.table.row_count > len(new_rows):
                 self.table.remove_row(self.table.row_count - 1)
-                
+
         except Exception as e:
             self.exit(message=f"Error: {e}")
 
     def get_filtered_sorted_rows(self) -> List[List[str]]:
         """Return processed rows based on current filters/sorts."""
         rows = [self.table.get_row_at(i) for i in range(self.table.row_count)]
-        
+
         # Filtering
         if self.filter_query:
-            rows = [row for row in rows
-                    if any(self.filter_query in str(cell) for cell in row)]
-            
+            rows = [
+                row
+                for row in rows
+                if any(self.filter_query in str(cell) for cell in row)
+            ]
+
         # Sorting
         if self.sort_column is not None:
-            rows.sort(key=lambda x: x[self.sort_column], 
-                     reverse=self.sort_reverse)
-            
+            rows.sort(key=lambda x: x[self.sort_column], reverse=self.sort_reverse)
+
         return rows
 
     def add_log(self, log_line: str) -> None:
         """Parse and add a tabular data line."""
         # Try to detect delimiter
-        delimiters = [',', '\t', '|', ';']
+        delimiters = [",", "\t", "|", ";"]
         if any(d in log_line for d in delimiters):
             delimiter = max(delimiters, key=lambda d: log_line.count(d))
             self.lines.append([cell.strip() for cell in log_line.split(delimiter)])
@@ -101,7 +104,7 @@ class NlessApp(App):
 
 class InputConsumer:
     """Handles stdin input and command processing."""
-    
+
     def __init__(self, app: NlessApp):
         self.app = app
         self.running = True
@@ -120,13 +123,13 @@ class InputConsumer:
 
     def handle_input(self, line: str) -> None:
         """Process commands or data lines."""
-        if line.startswith(':'):
+        if line.startswith(":"):
             cmd, *args = line[1:].split(maxsplit=1)
-            if cmd == 'sort':
+            if cmd == "sort":
                 self.app.sort_column = int(args[0]) if args else None
-            elif cmd == 'filter':
+            elif cmd == "filter":
                 self.app.filter_query = args[0] if args else None
-            elif cmd == 'quit':
+            elif cmd == "quit":
                 self.app.exit()
             # Add more commands as needed
         else:
