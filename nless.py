@@ -58,6 +58,12 @@ class NlessApp(App):
         """Move cursor up."""
         self.table.action_cursor_up()
 
+    def on_ready(self) -> None:
+        """Start the input consumer thread after the app is ready."""
+        t = Thread(target=InputConsumer(self).run, daemon=True)
+        t.start()
+        self.consumer_thread = t  # Keep reference to prevent GC
+
     def action_cursor_down(self) -> None:
         """Move cursor down."""
         self.table.action_cursor_down()
@@ -152,6 +158,4 @@ class InputConsumer:
 
 if __name__ == "__main__":
     app = NlessApp()
-    t = Thread(target=InputConsumer(app).run, daemon=True)
-    t.start()
     app.run()
