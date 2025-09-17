@@ -3,6 +3,7 @@ from typing import Optional, override
 from threading import Thread
 
 from textual.app import App, ComposeResult
+from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Input
 from typing import List
 import select
@@ -15,6 +16,11 @@ class NlessApp(App):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     #filter_input {
+        dock: bottom;
+        visibility: visible;
+        height: 3;
+    }
+    #search_input {
         dock: bottom;
         visibility: visible;
         height: 3;
@@ -33,6 +39,7 @@ class NlessApp(App):
         ("h,b,B", "cursor_left", "Left"),
         ("s", "sort", "Sort"),
         ("f", "filter", "Filter"),
+        ("/", "search", "Search"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
     ]
@@ -44,16 +51,44 @@ class NlessApp(App):
         self.raw_rows = []
         self.current_filter = None
         self.filter_column = None
+        self.search_term = None
         self.sort_ascending = True
 
-    def compose(self) -> ComposeResult:
-        """Create and yield the DataTable widget."""
-        table = DataTable()
-        yield table
-        yield Footer()
+    def handle_search_submitted(self, event: Input.Submitted) -> None:
+        input_value = event.value
+        event.input.remove()
+        self.search_term = input_value.lower() if input_value else None
+        data_table = self.query_one(DataTable)
+        data_table.clear()
+        if not self.first_row_parsed and self.raw_rows:
+            data_table.add_columns(*self.raw_rows[0].split(","))
+            self.first_row_parsed = True
+            self.raw_rows = self.raw_rows[1:]
 
+        for row in self.raw_rows:
+            cells = row.split(",")
+            highlighted_cells = []
+            for cell in cells:
+                if self.search_term and self.search_term in cell.lower():
+                    highlighted_cells.append(f"[reverse]{cell}[/reverse]")
+                else:
+                    highlighted_cells.append(cell)
+            data_table.add_row(*highlighted_cells)
+
+        self.notify(
+            "Search cleared"
+            if not input_value
+            else f"Searching for '{input_value}'"
+        )
+        return
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search_input":
+            self.handle_search_submitted(event)
+        elif event.input.id == "filter_input":
+            self.handle_filter_submitted(event)
+
+    def handle_filter_submitted(self, event: Input.Submitted) -> None:
         filter_value = event.value
         event.input.remove()
         if not filter_value:
@@ -85,14 +120,33 @@ class NlessApp(App):
                 and filter_value.lower() in cells[column_index].lower()
             ):
                 data_table.add_row(*cells)
-        self.notify(f"Filtered by '{filter_value}' in column {data_table.ordered_columns[column_index].label}")
+        self.notify(
+            f"Filtered by '{filter_value}' in column {data_table.ordered_columns[column_index].label}"
+        )
+
+    def action_search(self) -> None:
+        """Bring up search input to highlight matching text."""
+        search_input = Input(
+            placeholder="Type search term and press Enter", id="search_input"
+        )
+        setattr(search_input, "search_input", True)  # Mark this as search input
+        self.mount(search_input)
+        search_input.focus()
+
+    def compose(self) -> ComposeResult:
+        """Create and yield the DataTable widget."""
+        table = DataTable()
+        yield table
+        yield Footer()
 
     def action_sort(self) -> None:
         data_table = self.query_one(DataTable)
         selected_column = data_table.ordered_columns[data_table.cursor_column]
         data_table.sort(selected_column.key, reverse=not self.sort_ascending)
         self.sort_ascending = not self.sort_ascending
-        self.notify(f"Sorted by {selected_column.label} {'descending' if self.sort_ascending else 'ascending'}")
+        self.notify(
+            f"Sorted by {selected_column.label} {'descending' if self.sort_ascending else 'ascending'}"
+        )
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
@@ -128,7 +182,9 @@ class NlessApp(App):
         """Move cursor to end of current row."""
         data_table = self.query_one(DataTable)
         last_column = len(data_table.columns) - 1
-        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=last_column)
+        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(
+            column=last_column
+        )
 
     def action_scroll_to_beginning(self) -> None:
         """Move cursor to beginning of current row."""
