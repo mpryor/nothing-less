@@ -12,6 +12,7 @@ import shlex
 class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
 
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     #filter_input {
         dock: bottom;
@@ -26,13 +27,14 @@ class NlessApp(App):
         ("g", "scroll_to_top", "Scroll to Top"),
         ("d", "page_down", "Page Down"),
         ("u", "page_up", "Page up"),
-        ("up", "cursor_up", "Up"),
-        ("k", "cursor_up", "Up"),
-        ("down", "cursor_down", "Down"),
-        ("j", "cursor_down", "Down"),
-        ("l", "cursor_right", "Right"),
-        ("h", "cursor_left", "Left"),
+        ("up,k", "cursor_up", "Up"),
+        ("down,j", "cursor_down", "Down"),
+        ("l,w,W", "cursor_right", "Right"),
+        ("h,b,B", "cursor_left", "Left"),
+        ("s", "sort", "Sort"),
         ("f", "filter", "Filter"),
+        ("$", "scroll_to_end", "End of Line"),
+        ("0", "scroll_to_beginning", "Start of Line"),
     ]
 
     def __init__(self):
@@ -42,6 +44,7 @@ class NlessApp(App):
         self.raw_rows = []
         self.current_filter = None
         self.filter_column = None
+        self.sort_ascending = True
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
@@ -60,6 +63,7 @@ class NlessApp(App):
             data_table.clear()
             for row in self.raw_rows:
                 data_table.add_row(*row.split(","))
+            self.notify("Filter cleared")
             return
 
         self.current_filter = filter_value
@@ -81,6 +85,14 @@ class NlessApp(App):
                 and filter_value.lower() in cells[column_index].lower()
             ):
                 data_table.add_row(*cells)
+        self.notify(f"Filtered by '{filter_value}' in column {data_table.ordered_columns[column_index].label}")
+
+    def action_sort(self) -> None:
+        data_table = self.query_one(DataTable)
+        selected_column = data_table.ordered_columns[data_table.cursor_column]
+        data_table.sort(selected_column.key, reverse=not self.sort_ascending)
+        self.sort_ascending = not self.sort_ascending
+        self.notify(f"Sorted by {selected_column.label} {'descending' if self.sort_ascending else 'ascending'}")
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
@@ -112,6 +124,17 @@ class NlessApp(App):
         """Scroll to top."""
         self.query_one(DataTable).action_scroll_top()
 
+    def action_scroll_to_end(self) -> None:
+        """Move cursor to end of current row."""
+        data_table = self.query_one(DataTable)
+        last_column = len(data_table.columns) - 1
+        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=last_column)
+
+    def action_scroll_to_beginning(self) -> None:
+        """Move cursor to beginning of current row."""
+        data_table = self.query_one(DataTable)
+        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=0)
+
     def action_page_up(self) -> None:
         """Page up."""
         data_table = self.query_one(DataTable)
@@ -126,14 +149,15 @@ class NlessApp(App):
         self.mounted = True
 
     def add_log(self, log_line: str) -> None:
-        print(log_line)
         if self.mounted:
             data_table = self.query_one(DataTable)
 
             if not self.first_row_parsed:
-                columns = [f"col{i}" for i in range(1, len(log_line.split(",")) + 1)]
-                data_table.add_columns(*columns)
+                # columns = [f"col{i}" for i in range(1, len(log_line.split(",")) + 1)]
+                # data_table.add_columns(*columns)
+                data_table.add_columns(*log_line.split(","))
                 self.first_row_parsed = True
+                return
 
             # Always add to raw_rows
             self.raw_rows.append(log_line)
