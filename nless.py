@@ -15,6 +15,7 @@ from typing import List
 
 class HelpScreen(Screen):
     """A widget to display keybindings help."""
+
     BINDINGS = [("escape", "app.pop_screen", "Close Help")]
 
     def compose(self) -> ComposeResult:
@@ -24,7 +25,10 @@ class HelpScreen(Screen):
             keys, _, description = binding
             help_text += f"{keys:<12} - {description}\n"
         yield Static(help_text)
-        yield Static("[bold]Press 'Escape' to close this help.[/bold]", id="help-footer")
+        yield Static(
+            "[bold]Press 'Escape' to close this help.[/bold]", id="help-footer"
+        )
+
 
 class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
@@ -57,7 +61,7 @@ class NlessApp(App):
     }
     """
 
-    SCREENS = { "HelpScreen": HelpScreen }
+    SCREENS = {"HelpScreen": HelpScreen}
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -69,15 +73,15 @@ class NlessApp(App):
         ("down,j", "cursor_down", "Down"),
         ("l,w,W", "cursor_right", "Right"),
         ("h,b,B", "cursor_left", "Left"),
-        ("s", "sort", "Sort"),
-        ("f", "filter", "Filter"),
-        ("/", "search", "Search"),
+        ("s", "sort", "Sort selected column"),
+        ("f", "filter", "Filter selected column (by prompt)"),
+        ("/", "search", "Search (all columns, by prompt)"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
-        ("n", "next_search", "Next Search Result"),
-        ("*", "search_cursor_word", "Search for word under cursor"),
-        ("p,N", "previous_search", "Previous Search Result"),
-        ("F", "filter_cursor_word", "Filter by word under cursor"),
+        ("n", "next_search", "Next search result"),
+        ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
+        ("p,N", "previous_search", "Previous search result"),
+        ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
         ("?", "push_screen('HelpScreen')", "Show Help"),
     ]
 
@@ -102,10 +106,10 @@ class NlessApp(App):
     def _update_table(self) -> None:
         """Updates the table based on the current filter and search terms."""
         data_table = self.query_one(DataTable)
-        
+
         # Store current cursor position
         current_column = data_table.cursor_column
-        
+
         data_table.clear()
         self.search_matches = []
         self.current_match_index = -1
@@ -126,11 +130,12 @@ class NlessApp(App):
         # 2. Sort rows
         if self.sort_key:
             try:
-                sort_column_index = [
-                    c.key for c in data_table.ordered_columns
-                ].index(self.sort_key)
+                sort_column_index = [c.key for c in data_table.ordered_columns].index(
+                    self.sort_key
+                )
                 filtered_rows.sort(
-                    key=lambda r: r.split(",")[sort_column_index], reverse=self.sort_reverse
+                    key=lambda r: r.split(",")[sort_column_index],
+                    reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
                 # Fallback if column not found or row is malformed
@@ -150,17 +155,45 @@ class NlessApp(App):
 
         # Restore cursor column position
         if current_column is not None:
-            data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=min(current_column, len(data_table.columns) - 1))
+            data_table.cursor_coordinate = data_table.cursor_coordinate._replace(
+                column=min(current_column, len(data_table.columns) - 1)
+            )
 
+        self._update_status_bar()
+
+    def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
+        """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
     def _update_status_bar(self) -> None:
         status_bar = self.query_one("#status_bar", Static)
         data_table = self.query_one(DataTable)
-        sort_text = f"[bold]Sort[/bold]: {data_table.columns[self.sort_key].label.strip()} {'desc' if self.sort_reverse else 'asc'}" if self.sort_key else "[bold]Sort[/bold]: None"
-        filter_text = f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'" if self.current_filter else "[bold]Filter[/bold]: None"
-        search_text = f"[bold]Search[/bold]: '{self.search_term}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)" if self.search_term else "[bold]Search[/bold]: None"
-        status_bar.update(f"{sort_text} | {filter_text} | {search_text}")
+
+        total_rows = data_table.row_count
+        total_cols = len(data_table.columns)
+        current_row = data_table.cursor_row + 1  # Add 1 for 1-based indexing
+        current_col = data_table.cursor_column + 1  # Add 1 for 1-based indexing
+
+        sort_text = (
+            f"[bold]Sort[/bold]: {data_table.columns[self.sort_key].label.strip()} {'desc' if self.sort_reverse else 'asc'}"
+            if self.sort_key
+            else "[bold]Sort[/bold]: None"
+        )
+        filter_text = (
+            f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'"
+            if self.current_filter
+            else "[bold]Filter[/bold]: None"
+        )
+        search_text = (
+            f"[bold]Search[/bold]: '{self.search_term}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
+            if self.search_term
+            else "[bold]Search[/bold]: None"
+        )
+        position_text = f"[bold]row[/bold]: {current_row}/{total_rows} [bold]col[/bold]: {current_col}/{total_cols}"
+
+        status_bar.update(
+            f"{sort_text} | {filter_text} | {search_text} | {position_text}"
+        )
 
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
@@ -211,7 +244,7 @@ class NlessApp(App):
         num_matches = len(self.search_matches)
         self.current_match_index = (
             self.current_match_index + direction + num_matches
-        ) % num_matches # Wrap around
+        ) % num_matches  # Wrap around
         target_coord = self.search_matches[self.current_match_index]
         data_table = self.query_one(DataTable)
         data_table.cursor_coordinate = target_coord
@@ -249,7 +282,11 @@ class NlessApp(App):
         table = DataTable(zebra_stripes=True, id="data_table")
         yield table
         with Vertical(id="bottom-container"):
-            yield Static("Sort: None | Filter: None | Search: None", classes="bd", id="status_bar")
+            yield Static(
+                "Sort: None | Filter: None | Search: None",
+                classes="bd",
+                id="status_bar",
+            )
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
@@ -362,6 +399,7 @@ class NlessApp(App):
             self.raw_rows.append(log_line)
             data_table.add_row(*log_line.split(","))
         self._update_table()
+
 
 class InputConsumer:
     """Handles stdin input and command processing."""
