@@ -57,13 +57,17 @@ class NlessApp(App):
                     continue
                 self.table.add_row(*row)
             
-            # Apply filtering and sorting
-            rows = self.get_filtered_sorted_rows()
-            self.table.clear()
-            if self.headers:
-                self.table.add_columns(*self.headers)
-            for row in rows:
+            # Update existing rows incrementally
+            current_row_count = self.table.row_count
+            new_rows = self.get_filtered_sorted_rows()
+            
+            # Add new rows if needed
+            for row in new_rows[current_row_count:]:
                 self.table.add_row(*row)
+            
+            # Remove extra rows if needed
+            while self.table.row_count > len(new_rows):
+                self.table.remove_row(self.table.row_count - 1)
                 
         except Exception as e:
             self.exit(message=f"Error: {e}")
