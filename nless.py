@@ -12,6 +12,7 @@ from typing import Optional
 from threading import Thread
 from rich.markup import _parse
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
@@ -48,19 +49,8 @@ class NlessApp(App):
         dock:bottom;
         width: 100%;
     }
-    #filter_input {
+    .bottom-input {
         dock: bottom;
-        visibility: visible;
-        height: 3;
-    }
-    #filter_input_any {
-        dock: bottom;
-        visibility: visible;
-        height: 3;
-    }
-    #search_input {
-        dock: bottom;
-        visibility: visible;
         height: 3;
     }
     #help-screen {
@@ -134,20 +124,21 @@ class NlessApp(App):
         self.current_match_index = -1
 
         # 1. Filter rows
-        filtered_rows = []
+        filtered_rows = self.raw_rows
         if self.current_filter:
+            filtered_rows = []
             for row_str in self.raw_rows:
                 cells = self._split_line(row_str)
-                if self.filter_column is None: # If we have a current_filter, but filter_column is None, we are searching all columns
-                    if any(self.current_filter.search(cell) for cell in cells):
+                if (
+                    self.filter_column is None
+                ):  # If we have a current_filter, but filter_column is None, we are searching all columns
+                    if any(self.current_filter.search(self.get_cell_value_without_markup(cell)) for cell in cells):
                         filtered_rows.append(row_str)
                 elif self.filter_column < len(cells) and self.current_filter.search(
-                    cells[self.filter_column]
+                    self.get_cell_value_without_markup(cells[self.filter_column])
                 ):
                     # Filter specific column
                     filtered_rows.append(row_str)
-        else:
-            filtered_rows = self.raw_rows[:]
 
         # 2. Sort rows
         if self.sort_key:
@@ -173,15 +164,18 @@ class NlessApp(App):
                 cells = self._split_line(row_str)
                 highlighted_cells = []
                 for col_idx, cell in enumerate(cells):
-                    if self.search_term and isinstance(self.search_term, re.Pattern):
-                        if self.search_term.search(cell):
-                            cell = re.sub(self.search_term, lambda m: f"[reverse]{m.group(0)}[/reverse]", cell)
-                            highlighted_cells.append(cell)
-                            self.search_matches.append(
-                                Coordinate(displayed_row_idx, col_idx)
-                            )
-                        else:
-                            highlighted_cells.append(cell)
+                    if isinstance(
+                        self.search_term, re.Pattern
+                    ) and self.search_term.search(cell):
+                        cell = re.sub(
+                            self.search_term,
+                            lambda m: f"[reverse]{m.group(0)}[/reverse]",
+                            cell,
+                        )
+                        highlighted_cells.append(cell)
+                        self.search_matches.append(
+                            Coordinate(displayed_row_idx, col_idx)
+                        )
                     else:
                         highlighted_cells.append(cell)
 
@@ -259,6 +253,7 @@ class NlessApp(App):
         else:
             try:
                 # Compile the regex pattern
+                filter_value = re.escape(filter_value)
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 # Use None to indicate all-column filter
                 self.filter_column = None
@@ -266,23 +261,7 @@ class NlessApp(App):
                 self.notify("Invalid regex pattern", severity="error")
                 return
 
-        # Update filtering logic
-        filtered_rows = []
-        for row_str in self.raw_rows:
-            cells = self._split_line(row_str)
-            # Row matches if any cell matches the filter
-            if not self.current_filter or any(
-                self.current_filter.search(cell) for cell in cells
-            ):
-                filtered_rows.append(row_str)
-
-        # Clear and rebuild table with filtered rows
-        data_table = self.query_one(DataTable)
-        data_table.clear()
-        for row_str in filtered_rows:
-            data_table.add_row(*self._split_line(row_str))
-
-        self._update_status_bar()
+        self._update_table()
 
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
@@ -324,6 +303,7 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
+            filter_value = re.escape(filter_value)
             self._perform_filter(filter_value, column_index)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -335,15 +315,43 @@ class NlessApp(App):
             self.handle_delimiter_submitted(event)
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
-        self.delimiter_inferred = False
-        self.delimiter = event.value
+        self.current_filter = None
+        self.filter_column = None
+        self.search_term = None
+        prev_delimiter = self.delimiter
         event.input.remove()
-
         data_table = self.query_one(DataTable)
-        new_header = self._split_line(self.raw_header)
+        self.delimiter_inferred = False
+        delimiter = event.value
+        if delimiter not in [",", "\\t", " ", "|", ";", "raw"]: # if our delimiter is not one of the common ones, treat it as a regex
+            try:
+                pattern = re.compile(rf"{delimiter}")  # Validate regex
+                self.delimiter = pattern
+                data_table.clear(columns=True)
+                data_table.add_columns(*list(pattern.groupindex.keys()))
+                self._update_table()
+                return
+            except:
+                self.notify("Invalid delimiter", severity="error")
+                return
+
+        if delimiter == "\\t":
+            delimiter = "\t"
+
+        self.delimiter = delimiter
+
+        if delimiter == "raw":
+            new_header = ["log"]
+        elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
+            new_header = self._split_line(self.raw_rows[0])
+        else:
+            new_header = self._split_line(self.raw_header)
+
+        if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
+            self.raw_rows.insert(0, self.raw_header)
+
         data_table.clear(columns=True)
         data_table.add_columns(*new_header)
-
         self._update_table()
 
     def on_key(self, event: Key) -> None:
@@ -374,12 +382,22 @@ class NlessApp(App):
         """Move cursor to the previous search result."""
         self._navigate_search(-1)
 
+    def get_cell_value_without_markup(self, cell_value) -> str:
+        """Extract plain text from a cell value, removing any markup."""
+        parsed_value = [*_parse(cell_value)]
+        print(parsed_value)
+        if len(parsed_value) > 1:
+            return "".join([res[1] for res in parsed_value if res[1]])
+        return cell_value
+
     def action_search_cursor_word(self) -> None:
         """Search for the word under the cursor."""
         data_table = self.query_one(DataTable)
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
+            cell_value = self.get_cell_value_without_markup(cell_value)
+            cell_value = re.escape(cell_value)  # Validate regex
             self._perform_search(cell_value)
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
@@ -389,6 +407,7 @@ class NlessApp(App):
         input = Input(
             placeholder="Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
             id="delimiter_input",
+            classes="bottom-input",
         )
         self.mount(input)
         input.focus()
@@ -396,7 +415,9 @@ class NlessApp(App):
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
         search_input = Input(
-            placeholder="Type search term and press Enter", id="search_input"
+            placeholder="Type search term and press Enter",
+            id="search_input",
+            classes="bottom-input",
         )
         self.mount(search_input)
         search_input.focus()
@@ -418,9 +439,8 @@ class NlessApp(App):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            parsed_value = [*_parse(cell_value)]
-            if len(parsed_value) > 1:
-                cell_value = parsed_value[1][1]
+            cell_value = self.get_cell_value_without_markup(cell_value)
+            cell_value = re.escape(cell_value)  # Validate regex
             self._perform_filter(f"^{cell_value}$", coordinate.column)
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
@@ -463,6 +483,7 @@ class NlessApp(App):
         input = Input(
             placeholder="Type filter text to match across all columns",
             id="filter_input_any",
+            classes="bottom-input",
         )
         self.mount(input)
         input.focus()
@@ -475,6 +496,7 @@ class NlessApp(App):
         input = Input(
             placeholder=f"Type filter text for column: {column_label} and press enter",
             id="filter_input",
+            classes="bottom-input",
         )
         self.mount(input)
         input.focus()
@@ -544,7 +566,7 @@ class NlessApp(App):
                 parts = self._split_line(first_log_line)
                 data_table.add_columns(*parts)
                 self.first_row_parsed = True
-                log_lines = log_lines[1:] # Exclude header line
+                log_lines = log_lines[1:]  # Exclude header line
         else:
             # No delimiter found, treat entire line as single column
             if not self.first_row_parsed:
@@ -564,12 +586,22 @@ class NlessApp(App):
             List of fields from the line
         """
         if self.delimiter == " ":
-            return self._split_aligned_row(line)
+            cells = self._split_aligned_row(line)
         elif self.delimiter == ",":
-            return self._split_csv_row(line)
+            cells = self._split_csv_row(line)
         elif self.delimiter == "raw":
-            return [line]
-        return line.split(self.delimiter)
+            cells = [line]
+        elif isinstance(self.delimiter, re.Pattern):
+            match = self.delimiter.match(line)
+            if match:
+                cells = [*match.groups()]
+            else:
+                cells = []
+        else:
+            cells = line.split(self.delimiter)
+        cells = [txt.replace("\t", "  ") for txt in cells]
+        cells = [f"[#aaaaaa]{cell}[/#aaaaaa]" if i%2!=0 else cell for (i, cell) in enumerate(cells)]
+        return cells
 
     def _split_aligned_row(self, line: str) -> list[str]:
         """Split a space-aligned row into fields by collapsing multiple spaces.
@@ -682,7 +714,7 @@ class InputConsumer:
         streaming = self.is_streaming()
         buffer = []
         BATCH_SIZE = 1000
-        TIMEOUT = .5
+        TIMEOUT = 0.5
 
         while True:
             if self.app.mounted:
