@@ -1,3 +1,4 @@
+import bisect
 from errno import EILSEQ
 from io import StringIO, TextIOWrapper
 import select
@@ -7,8 +8,10 @@ import stat
 import sys
 import re
 import csv
+import threading
 import time
-from typing import Optional
+import fcntl
+from typing import Callable, Optional
 from threading import Thread
 from rich.markup import _parse
 
@@ -22,6 +25,7 @@ from textual.screen import Screen
 from typing import List
 
 from nlesstable import NlessDataTable
+from input import InputConsumer
 
 
 class HelpScreen(Screen):
@@ -99,13 +103,15 @@ class NlessApp(App):
     def __init__(self):
         super().__init__()
         self.mounted = False
+        self.data_initalized = False
         self.first_row_parsed = False
         self.raw_rows = []
+        self.displayed_rows = []
         self.raw_header = ""
         self.current_filter = None
         self.filter_column = None
         self.search_term = None
-        self.sort_key = None
+        self.sort_index = None
         self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
@@ -117,26 +123,30 @@ class NlessApp(App):
         event.input.remove()
         self._perform_search(input_value)
 
-
-    def _update_table(self) -> None:
-        """Updates the table based on the current filter and search terms."""
+    def _update_table(self, restore_position: bool = True) -> None:
+        """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
         data_table = self.query_one(NlessDataTable)
+        curr_columns = (data_table.columns).copy()
+        cursor_x = data_table.cursor_column
+        cursor_y = data_table.cursor_row
+        scroll_x = data_table.scroll_x
+        scroll_y = data_table.scroll_y
 
-        # Store current cursor position
-        current_column = data_table.cursor_column
-        current_row = data_table.cursor_row
-        scroll_offset = data_table.scroll_offset
-
-        data_table.clear()
+        data_table.clear(columns=True)
+        data_table.add_columns(*[v.label for k, v in curr_columns.items()])
+        column_count = len(data_table.columns)
         self.search_matches = []
         self.current_match_index = -1
 
         # 1. Filter rows
-        filtered_rows = self.raw_rows
+        filtered_rows = []
+        rows_with_inconsistent_length = []
         if self.current_filter:
-            filtered_rows = []
             for row_str in self.raw_rows:
                 cells = self._split_line(row_str)
+                if len(cells) != column_count:
+                    rows_with_inconsistent_length.append(cells)
+                    continue
                 if (
                     self.filter_column is None
                 ):  # If we have a current_filter, but filter_column is None, we are searching all columns
@@ -152,15 +162,19 @@ class NlessApp(App):
                 ):
                     # Filter specific column
                     filtered_rows.append(row_str)
+        else:
+            for row in self.raw_rows:
+                cells = self._split_line(row)
+                if len(cells) == column_count:
+                    filtered_rows.append(row)
+                else:
+                    rows_with_inconsistent_length.append(row)
 
         # 2. Sort rows
-        if self.sort_key:
+        if self.sort_index is not None:
             try:
-                sort_column_index = [c.key for c in data_table.ordered_columns].index(
-                    self.sort_key
-                )
                 filtered_rows.sort(
-                    key=lambda r: self._split_line(r)[sort_column_index],
+                    key=lambda r: self._split_line(r)[self.sort_index],
                     reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
@@ -168,9 +182,7 @@ class NlessApp(App):
                 pass
 
         final_rows = []
-        rows_with_inconsistent_length = []
 
-        column_count = len(data_table.columns)
         # 3. Add to table and find search matches
         if self.search_term:
             for displayed_row_idx, row_str in enumerate(filtered_rows):
@@ -192,17 +204,11 @@ class NlessApp(App):
                     else:
                         highlighted_cells.append(cell)
 
-                if len(highlighted_cells) == column_count:
-                    final_rows.append(highlighted_cells)
-                else:
-                    rows_with_inconsistent_length.append(row_str)
+                final_rows.append(highlighted_cells)
         else:
             for row_str in filtered_rows:
                 cells = self._split_line(row_str)
-                if len(cells) == column_count:
-                    final_rows.append(cells)
-                else:
-                    rows_with_inconsistent_length.append(row_str)
+                final_rows.append(cells)
 
         if len(rows_with_inconsistent_length) > 0:
             self.notify(
@@ -210,14 +216,28 @@ class NlessApp(App):
                 severity="warning",
             )
 
+        self.displayed_rows = final_rows
         data_table.add_rows(final_rows)
-        self.call_after_refresh(lambda: self._restore_position(data_table, current_column, current_row, scroll_offset.x, scroll_offset.y))
+        if restore_position:
+            self.call_after_refresh(
+                lambda: self._restore_position(
+                    data_table, cursor_x, cursor_y, scroll_x, scroll_y
+                )
+            )
 
     def _restore_position(self, data_table, cursor_x, cursor_y, scroll_x, scroll_y):
-        data_table.move_cursor(row=cursor_y, column=cursor_x, animate=False, scroll=False)
-        self.call_after_refresh(lambda: data_table.scroll_to(scroll_x, scroll_y, animate=False, immediate=True))
+        data_table.move_cursor(
+            row=cursor_y, column=cursor_x, animate=False, scroll=False
+        )
+        self.call_after_refresh(
+            lambda: data_table.scroll_to(
+                scroll_x, scroll_y, animate=False, immediate=True
+            )
+        )
 
-    def on_data_table_cell_highlighted(self, event: NlessDataTable.CellHighlighted) -> None:
+    def on_data_table_cell_highlighted(
+        self, event: NlessDataTable.CellHighlighted
+    ) -> None:
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
@@ -231,8 +251,8 @@ class NlessApp(App):
         current_col = data_table.cursor_column + 1  # Add 1 for 1-based indexing
 
         sort_text = (
-            f"[bold]Sort[/bold]: {data_table.columns[self.sort_key].label.strip()} {'desc' if self.sort_reverse else 'asc'}"
-            if self.sort_key
+            f"[bold]Sort[/bold]: {str(data_table.ordered_columns[self.sort_index].label).strip()} {'desc' if self.sort_reverse else 'asc'}"
+            if self.sort_index is not None
             else "[bold]Sort[/bold]: None"
         )
         if not self.current_filter:
@@ -242,10 +262,10 @@ class NlessApp(App):
                 f"[bold]Filter[/bold]: Any Column='{self.current_filter.pattern}'"
             )
         else:
-            filter_text = f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'"
+            filter_text = f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter.pattern}'"
 
         search_text = (
-            f"[bold]Search[/bold]: '{self.search_term}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
+            f"[bold]Search[/bold]: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
             if self.search_term
             else "[bold]Search[/bold]: None"
         )
@@ -285,8 +305,9 @@ class NlessApp(App):
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 self.filter_column = column_index if column_index is not None else 0
-                data_table = self.query_one(NlessDataTable)
-                column_label = data_table.ordered_columns[self.filter_column].label
+                print(
+                    f"Filtering column {self.filter_column} with pattern: {self.current_filter.pattern}"
+                )
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -303,7 +324,7 @@ class NlessApp(App):
         except re.error:
             self.notify("Invalid regex pattern", severity="error")
             return
-        self._update_table()
+        self._update_table(restore_position=False)
         if self.search_matches:
             self._navigate_search(1)  # Jump to first match
 
@@ -316,7 +337,6 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
-            filter_value = re.escape(filter_value)
             self._perform_filter(filter_value, column_index)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -331,6 +351,7 @@ class NlessApp(App):
         self.current_filter = None
         self.filter_column = None
         self.search_term = None
+        self.sort_index = None
         prev_delimiter = self.delimiter
         event.input.remove()
         data_table = self.query_one(NlessDataTable)
@@ -340,6 +361,7 @@ class NlessApp(App):
             ",",
             "\\t",
             " ",
+            "  ",
             "|",
             ";",
             "raw",
@@ -349,6 +371,10 @@ class NlessApp(App):
                 self.delimiter = pattern
                 data_table.clear(columns=True)
                 data_table.add_columns(*list(pattern.groupindex.keys()))
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    self.raw_rows.insert(0, self.raw_header)
                 self._update_table()
                 return
             except:
@@ -471,19 +497,19 @@ class NlessApp(App):
 
     def action_sort(self) -> None:
         data_table = self.query_one(NlessDataTable)
-        selected_column_key = data_table.ordered_columns[data_table.cursor_column].key
+        selected_column_index = data_table.cursor_column
 
-        if self.sort_key == selected_column_key:
+        if self.sort_index == selected_column_index:
             self.sort_reverse = not self.sort_reverse
         else:
-            self.sort_key = selected_column_key
+            self.sort_index = selected_column_index
             self.sort_reverse = False
 
         # Update column labels with sort indicators
-        for column in data_table.columns.values():
+        for index, column in enumerate(data_table.columns.values()):
             # Remove existing indicators
             label_text = str(column.label).strip(" ▲▼")
-            if column.key == self.sort_key:
+            if index == self.sort_index:
                 indicator = "▼" if self.sort_reverse else "▲"
                 column.label = f"{label_text} {indicator}"
             else:
@@ -598,7 +624,65 @@ class NlessApp(App):
                 self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
-        self._update_table()
+        if not self.data_initalized:
+            self.data_initalized = True
+            self._update_table()
+        else:
+            for line in log_lines:
+                self._add_log_line(line)
+
+    def _add_log_line(self, log_line: str):
+        data_table = self.query_one(NlessDataTable)
+        cells = self._split_line(log_line)
+        if len(cells) != len(data_table.columns):
+            return
+
+        if self.current_filter:
+            matches = False
+            if self.filter_column is None:
+                # We're filtering any column
+                matches = any(
+                    self.current_filter.search(self.get_cell_value_without_markup(cell))
+                    for cell in cells
+                )
+            else:
+                matches = self.filter_column < len(
+                    cells
+                ) and self.current_filter.search(
+                    self.get_cell_value_without_markup(cells[self.filter_column])
+                )
+            if not matches:
+                return
+
+        if self.sort_index is not None:
+            sort_key = cells[self.sort_index]
+            displayed_row_keys = [r[self.sort_index] for r in self.displayed_rows]
+            displayed_row_keys.sort(reverse=self.sort_reverse)
+            new_index = bisect.bisect_left(displayed_row_keys, sort_key)
+        else:
+            new_index = len(self.displayed_rows)
+
+        if self.search_term:
+            highlighted_cells = []
+            for col_idx, cell in enumerate(cells):
+                if isinstance(
+                    self.search_term, re.Pattern
+                ) and self.search_term.search(cell):
+                    cell = re.sub(
+                        self.search_term,
+                        lambda m: f"[reverse]{m.group(0)}[/reverse]",
+                        cell,
+                    )
+                    highlighted_cells.append(cell)
+                    self.search_matches.append(
+                        Coordinate(new_index, col_idx)
+                    )
+                else:
+                    highlighted_cells.append(cell)
+            cells = highlighted_cells
+
+        self.displayed_rows.append(cells)
+        data_table.add_row_at(*cells, row_index=new_index)
 
     def _split_line(self, line: str) -> list[str]:
         """Split a line using the appropriate delimiter method.
@@ -611,6 +695,8 @@ class NlessApp(App):
         """
         if self.delimiter == " ":
             cells = self._split_aligned_row(line)
+        elif self.delimiter == "  ":
+            cells = self._split_aligned_row_preserve_single_spaces(line)
         elif self.delimiter == ",":
             cells = self._split_csv_row(line)
         elif self.delimiter == "raw":
@@ -629,6 +715,18 @@ class NlessApp(App):
             for (i, cell) in enumerate(cells)
         ]
         return cells
+
+    def _split_aligned_row_preserve_single_spaces(self, line: str) -> list[str]:
+        """Split a space-aligned row into fields by collapsing multiple spaces, but preserving single spaces within fields.
+
+        Args:
+            line: The input line to split
+
+        Returns:
+            List of fields from the line
+        """
+        # Use regex to split on two or more spaces
+        return [field for field in re.split(r" {2,}", line) if field]
 
     def _split_aligned_row(self, line: str) -> list[str]:
         """Split a space-aligned row into fields by collapsing multiple spaces.
@@ -669,7 +767,7 @@ class NlessApp(App):
         Returns:
             The most likely delimiter character.
         """
-        common_delimiters = [",", "\t", "|", ";", " "]
+        common_delimiters = [",", "\t", "|", ";", " ", "  "]
         delimiter_scores = {d: 0 for d in common_delimiters}
 
         for line in sample_lines:
@@ -681,6 +779,8 @@ class NlessApp(App):
                 if delimiter == " ":
                     # Special handling for space-aligned tables
                     parts = self._split_aligned_row(line)
+                elif delimiter == "  ":
+                    parts = self._split_aligned_row_preserve_single_spaces(line)
                 elif delimiter == ",":
                     parts = self._split_csv_row(line)
                 else:
@@ -723,57 +823,10 @@ class NlessApp(App):
         return max(delimiter_scores.items(), key=lambda x: x[1])[0]
 
 
-class InputConsumer:
-    """Handles stdin input and command processing."""
-
-    def __init__(self, app: NlessApp, new_fd: int):
-        self.app = app
-        self.new_fd = new_fd
-
-    def is_streaming(self) -> bool:
-        # Returns True if stdin is a pipe (streaming), False if it's a regular file
-        mode = os.fstat(self.new_fd).st_mode
-        return stat.S_ISFIFO(mode)
-
-    def run(self) -> None:
-        """Read input and handle commands."""
-        stdin = os.fdopen(self.new_fd)
-        streaming = self.is_streaming()
-        buffer = []
-        BATCH_SIZE = 1000
-        TIMEOUT = 0.5
-
-        while True:
-            if self.app.mounted:
-                if streaming:
-                    rlist, _, _ = select.select([stdin], [], [], TIMEOUT)
-                    if rlist:
-                        line = stdin.readline()
-                        if line:
-                            buffer.append(line)
-                            if len(buffer) >= BATCH_SIZE:
-                                self.handle_input(buffer)
-                                buffer = []
-                    else:
-                        # Timeout reached, process buffer if not empty
-                        if buffer:
-                            self.handle_input(buffer)
-                            buffer = []
-                else:
-                    lines = stdin.readlines()
-                    if len(lines) > 0:
-                        self.handle_input(lines)
-                    else:
-                        time.sleep(1)
-
-    def handle_input(self, lines: list[str]) -> None:
-        self.app.add_logs(lines)
-
-
 if __name__ == "__main__":
     app = NlessApp()
     new_fd = sys.stdin.fileno()
-    ic = InputConsumer(app, new_fd)
+    ic = InputConsumer(new_fd, lambda: app.mounted, lambda lines: app.add_logs(lines))
     t = Thread(target=ic.run, daemon=True)
     t.start()
     sys.__stdin__ = open("/dev/tty")
