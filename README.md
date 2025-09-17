@@ -1,5 +1,5 @@
 # Nothing-less (nless)
-
+![simple logo displaying the word nless followed by a |](./docs/assets/nless-logo.png)
 Nless is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) that has enhanced support for tabular data - such as inferring file delimiters, delimiter swapping on the fly, filtering, sorting, searching, and real-time event parsing
 
 ## Getting started
