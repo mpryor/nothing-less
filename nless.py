@@ -119,7 +119,7 @@ class NlessApp(App):
         filtered_rows = []
         if self.current_filter:
             for row_str in self.raw_rows:
-                cells = row_str.split(self.delimiter)
+                cells = self._split_line(row_str)
                 if (
                     self.filter_column < len(cells)
                     and self.current_filter.lower() in cells[self.filter_column].lower()
@@ -135,7 +135,7 @@ class NlessApp(App):
                     self.sort_key
                 )
                 filtered_rows.sort(
-                    key=lambda r: r.split(self.delimiter)[sort_column_index],
+                    key=lambda r: self._split_line(r)[sort_column_index],
                     reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
@@ -144,7 +144,7 @@ class NlessApp(App):
 
         # 3. Add to table and find search matches
         for displayed_row_idx, row_str in enumerate(filtered_rows):
-            cells = row_str.split(self.delimiter)
+            cells = self._split_line(row_str)
             highlighted_cells = []
             for col_idx, cell in enumerate(cells):
                 if self.search_term and self.search_term in cell.lower():
@@ -396,15 +396,41 @@ class NlessApp(App):
 
         if not self.first_row_parsed:
             first_log_line = log_lines[0]
-            data_table.add_columns(*first_log_line.split(self.delimiter))
+            parts = self._split_line(first_log_line)
+            data_table.add_columns(*parts)
             self.first_row_parsed = True
             log_lines = log_lines[1:]
 
         for log_line in log_lines:
             self.raw_rows.append(log_line)
-            data_table.add_row(*log_line.split(self.delimiter))
+            data_table.add_row(*self._split_line(log_line))
 
         self._update_table()
+
+    def _split_line(self, line: str) -> list[str]:
+        """Split a line using the appropriate delimiter method.
+
+        Args:
+            line: The input line to split
+
+        Returns:
+            List of fields from the line
+        """
+        if self.delimiter == " ":
+            return self._split_aligned_row(line)
+        return line.split(self.delimiter)
+
+    def _split_aligned_row(self, line: str) -> list[str]:
+        """Split a space-aligned row into fields by collapsing multiple spaces.
+
+        Args:
+            line: The input line to split
+
+        Returns:
+            List of fields from the line
+        """
+        # Split on multiple spaces and filter out empty strings
+        return [field for field in line.split() if field]
 
     def _infer_delimiter(self, sample_lines: list[str]) -> str:
         """Infer the delimiter from a sample of lines.
@@ -424,7 +450,11 @@ class NlessApp(App):
                 continue
 
             for delimiter in common_delimiters:
-                parts = line.split(delimiter)
+                if delimiter == " ":
+                    # Special handling for space-aligned tables
+                    parts = self._split_aligned_row(line)
+                else:
+                    parts = line.split(delimiter)
 
                 # Score based on number of fields and consistency
                 if len(parts) > 1:
@@ -445,6 +475,13 @@ class NlessApp(App):
                     # Special case: if tab and consistent fields, boost score
                     if delimiter == "\t" and non_empty == len(parts):
                         delimiter_scores[delimiter] += 3
+
+                    # Special case: if space delimiter and parts are consistent across lines
+                    if delimiter == " " and len(sample_lines) > 1:
+                        # Check if number of fields is consistent across lines
+                        first_line_parts = self._split_aligned_row(sample_lines[0])
+                        if len(parts) == len(first_line_parts):
+                            delimiter_scores[delimiter] += 2
 
         # Default to comma if no clear winner
         if not delimiter_scores or max(delimiter_scores.values()) == 0:
