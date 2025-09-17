@@ -72,19 +72,35 @@ class NlessApp(App):
         self.search_matches = []
         self.current_match_index = -1
 
-        displayed_row_idx = 0
-        for row_str in self.raw_rows:
-            cells = row_str.split(",")
-
-            # Apply filter
-            if self.current_filter:
-                if not (
+        # 1. Filter rows
+        filtered_rows = []
+        if self.current_filter:
+            for row_str in self.raw_rows:
+                cells = row_str.split(",")
+                if (
                     self.filter_column < len(cells)
                     and self.current_filter.lower() in cells[self.filter_column].lower()
                 ):
-                    continue  # Skip row if it doesn't match filter
+                    filtered_rows.append(row_str)
+        else:
+            filtered_rows = self.raw_rows[:]
 
-            # Apply search highlighting
+        # 2. Sort rows
+        if self.sort_key:
+            try:
+                sort_column_index = [
+                    c.key.value for c in data_table.ordered_columns
+                ].index(self.sort_key.value)
+                filtered_rows.sort(
+                    key=lambda r: r.split(",")[sort_column_index], reverse=self.sort_reverse
+                )
+            except (ValueError, IndexError):
+                # Fallback if column not found or row is malformed
+                pass
+
+        # 3. Add to table and find search matches
+        for displayed_row_idx, row_str in enumerate(filtered_rows):
+            cells = row_str.split(",")
             highlighted_cells = []
             for col_idx, cell in enumerate(cells):
                 if self.search_term and self.search_term in cell.lower():
@@ -92,12 +108,7 @@ class NlessApp(App):
                     self.search_matches.append(Coordinate(displayed_row_idx, col_idx))
                 else:
                     highlighted_cells.append(cell)
-
-            data_table.add_row(*highlighted_cells)
-            displayed_row_idx += 1
-
-        if self.sort_key:
-            data_table.sort(self.sort_key, reverse=self.sort_reverse)
+            data_table.add_row(*highlighted_cells, key=str(displayed_row_idx))
 
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
@@ -150,7 +161,7 @@ class NlessApp(App):
         num_matches = len(self.search_matches)
         self.current_match_index = (
             self.current_match_index + direction + num_matches
-        ) % num_matches
+        ) % num_matches # Wrap around
         target_coord = self.search_matches[self.current_match_index]
         data_table = self.query_one(DataTable)
         data_table.cursor_coordinate = target_coord
