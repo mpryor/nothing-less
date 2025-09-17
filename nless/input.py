@@ -9,8 +9,12 @@ from typing import Callable, Tuple
 class InputConsumer:
     """Handles stdin input and command processing."""
 
-    def __init__(self, new_fd: int, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
-        self.new_fd = new_fd
+    def __init__(self, file_name: str | None, new_fd: int | None, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
+        if file_name:
+            self.file = open(file_name, "r+")
+            self.new_fd = self.file.fileno()
+        elif new_fd:
+            self.new_fd = new_fd
         self.new_line_callback = output_func
         self.read_condition = output_ready_func
 

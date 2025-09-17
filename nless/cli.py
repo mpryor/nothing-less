@@ -1,3 +1,4 @@
+import argparse
 import bisect
 from errno import EILSEQ
 from io import StringIO, TextIOWrapper
@@ -24,8 +25,8 @@ from textual.widgets import DataTable, Input, Static
 from textual.screen import Screen
 from typing import List
 
-from nlesstable import NlessDataTable
-from input import InputConsumer
+from .nlesstable import NlessDataTable
+from .input import InputConsumer
 
 
 class HelpScreen(Screen):
@@ -822,12 +823,26 @@ class NlessApp(App):
         # Return the delimiter with the highest score
         return max(delimiter_scores.items(), key=lambda x: x[1])[0]
 
-
-if __name__ == "__main__":
+def main():
     app = NlessApp()
     new_fd = sys.stdin.fileno()
-    ic = InputConsumer(new_fd, lambda: app.mounted, lambda lines: app.add_logs(lines))
-    t = Thread(target=ic.run, daemon=True)
-    t.start()
+
+    parser = argparse.ArgumentParser(description="Test InputConsumer with stdin.")
+    parser.add_argument("filename", nargs="?", help="File to read input from (defaults to stdin)")
+    args = parser.parse_args()
+
+    if args.filename:
+        with open(args.filename, "r") as f:
+            ic = InputConsumer(args.filename, None, lambda: app.mounted, lambda lines: app.add_logs(lines))
+            t = Thread(target=ic.run, daemon=True)
+            t.start()
+    else:
+        ic = InputConsumer(None, new_fd, lambda: app.mounted, lambda lines: app.add_logs(lines))
+        t = Thread(target=ic.run, daemon=True)
+        t.start()
+
     sys.__stdin__ = open("/dev/tty")
     app.run()
+
+if __name__ == "__main__":
+    main()
