@@ -13,7 +13,7 @@ The below demo shows basic functionality:
 ### Streaming functionality
 The below demo showcases some of nless's features for handling streaming input, and interacting with unknown delimitation:
 - The nless view stays up-to-date as new log lines arrive on stdin (allows pipeline commands, or redirecting a file into nless)
-- Showcases using a custom (Python engine) regex to parse raw logs into tabular fields.
+- Showcases using a custom (Python engine) regex, example - `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)` - to parse raw logs into tabular fields.
 - Sorts, filters, and searches on those fields.
 - Flips the delimiter back to raw, sorts, searches, and filters on the raw logs
 [![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)
