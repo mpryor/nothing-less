@@ -43,3 +43,38 @@ The below demo showcases some of nless's features for handling streaming input, 
   
 [![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)  
   
+## Features & Functionality
+**Navigation**:
+- `h` - move cursor left
+- `l` - move cursor right
+- `j` - move cursor down
+- `k` - move cursor up
+- `0` - jump to first column
+- `$` - jump to final column
+- `g` - jump to first row
+- `G` - jump to final row
+- `w` - move cursor right
+- `b` - move cursor left
+
+**Filtering**:
+- `f` - will filter the current column and prompt for a filter
+- `F` - will filter the current column by the highlighted cell
+- `|` - will filter ALL columns and prompt for a filter
+- `&` - applies the current search as a filter across all columns
+
+**Searching**:
+- `/` - will prompt for a search value and jump to the first match
+- `*` - will search all columns for the current highglighted cell value
+- `n` - jump to the next match
+- `N` - jump to previous match
+- `p` - jump to previous match
+
+**Sorting**:
+- `s` - toggles ascending/descending sort on the current column
+
+**Delimiter/file parsing**:
+- By default, `nless` will attempt to infer a file delimiter from the first few rows sent through stdin. It uses common delimiters to start - `,`, ` `, `|`, `\t`, etc.
+- `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and it the rows will be re-parsed into a tabular format.
+- `D` - alternatively, you can pass in a regex with named capture groups. Those named groups will become the tabular columns, and each row will be parsed and split across those groups. Example `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)`
+- `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and sarch the raw lines.
+- `D` - last, you can pass a delimiter value of `  ` (two spaces). This will parse text that has been delimited utilizing multiple spaces, while preserving values that have a single space. This is most commonly useful for parsing kubernetes output (`kubectl get pods -w`), for example.
