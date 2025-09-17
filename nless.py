@@ -76,6 +76,10 @@ class NlessApp(App):
     def _update_table(self) -> None:
         """Updates the table based on the current filter and search terms."""
         data_table = self.query_one(DataTable)
+        
+        # Store current cursor position
+        current_column = data_table.cursor_column
+        
         data_table.clear()
         self.search_matches = []
         self.current_match_index = -1
@@ -117,6 +121,10 @@ class NlessApp(App):
                 else:
                     highlighted_cells.append(cell)
             data_table.add_row(*highlighted_cells, key=str(displayed_row_idx))
+
+        # Restore cursor column position
+        if current_column is not None:
+            data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=min(current_column, len(data_table.columns) - 1))
 
         self._update_status_bar()
 
