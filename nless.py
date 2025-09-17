@@ -88,13 +88,13 @@ class NlessApp(App):
         ("h,b,B", "cursor_left", "Left"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
+        ("D", "delimiter", "Change Delimiter"),
         ("s", "sort", "Sort selected column"),
         ("f", "filter", "Filter selected column (by prompt)"),
         ("|", "filter_any", "Filter any column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
         ("/", "search", "Search (all columns, by prompt)"),
         ("&", "search_to_filter", "Apply current search as filter"),
-        ("?", "push_screen('HelpScreen')", "Show Help"),
         ("n", "next_search", "Next search result"),
         ("p,N", "previous_search", "Previous search result"),
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
@@ -115,6 +115,7 @@ class NlessApp(App):
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
         self.delimiter = None
+        self.delimiter_inferred = False
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -163,7 +164,9 @@ class NlessApp(App):
                 pass
 
         final_rows = []
+        rows_with_inconsistent_length = []
 
+        column_count = len(data_table.columns)
         # 3. Add to table and find search matches
         if self.search_term:
             for displayed_row_idx, row_str in enumerate(filtered_rows):
@@ -181,25 +184,26 @@ class NlessApp(App):
                             highlighted_cells.append(cell)
                     else:
                         highlighted_cells.append(cell)
-                final_rows.append(highlighted_cells)
+
+                if len(highlighted_cells) == column_count:
+                    final_rows.append(highlighted_cells)
+                else:
+                    rows_with_inconsistent_length.append(row_str)
         else:
             for row_str in filtered_rows:
                 cells = self._split_line(row_str)
-                final_rows.append(cells)
+                if len(cells) == column_count:
+                    final_rows.append(cells)
+                else:
+                    rows_with_inconsistent_length.append(row_str)
 
-        try:
-            data_table.add_rows(final_rows)
-        except ValueError:
-            data_table.clear(columns=True)
-            data_table.add_column("log")
-            self.delimiter = "raw"
-            self.raw_rows.insert(0, self.raw_header)
+        if len(rows_with_inconsistent_length) > 0:
             self.notify(
-                "Inconsistent row lengths detected. Switching to raw mode.",
+                f"{len(rows_with_inconsistent_length)} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
                 severity="warning",
             )
-            self._update_table()
-            return
+
+        data_table.add_rows(final_rows)
 
         # Restore cursor column position
         if current_column is not None:
@@ -327,6 +331,20 @@ class NlessApp(App):
             self.handle_search_submitted(event)
         elif event.input.id == "filter_input" or event.input.id == "filter_input_any":
             self.handle_filter_submitted(event)
+        elif event.input.id == "delimiter_input":
+            self.handle_delimiter_submitted(event)
+
+    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
+        self.delimiter_inferred = False
+        self.delimiter = event.value
+        event.input.remove()
+
+        data_table = self.query_one(DataTable)
+        new_header = self._split_line(self.raw_header)
+        data_table.clear(columns=True)
+        data_table.add_columns(*new_header)
+
+        self._update_table()
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
@@ -366,12 +384,20 @@ class NlessApp(App):
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
+    def action_delimiter(self) -> None:
+        """Change the delimiter used for parsing."""
+        input = Input(
+            placeholder="Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
+            id="delimiter_input",
+        )
+        self.mount(input)
+        input.focus()
+
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
         search_input = Input(
             placeholder="Type search term and press Enter", id="search_input"
         )
-        setattr(search_input, "search_input", True)  # Mark this as search input
         self.mount(search_input)
         search_input.focus()
 
@@ -509,6 +535,7 @@ class NlessApp(App):
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
             self.delimiter = self._infer_delimiter(log_lines[: min(5, len(log_lines))])
+            self.delimiter_inferred = True
 
         if self.delimiter != "raw":
             if not self.first_row_parsed:
