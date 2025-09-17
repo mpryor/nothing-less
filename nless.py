@@ -74,6 +74,28 @@ class NlessApp(App):
         except Exception as e:
             self.exit(message=f"Error: {e}")
 
+    def action_quit(self) -> None:
+        """Handle quit action."""
+        self.exit()
+
+    def action_filter(self) -> None:
+        """Handle filter action."""
+        self.notify("Filter: Type filter text in input", timeout=3)
+        # You would add actual filter input handling here
+
+    def action_sort(self) -> None:
+        """Handle sort action."""
+        self.notify("Sort: Select column with cursor", timeout=3)
+        # You would add actual sort column selection here
+
+    def action_cursor_up(self) -> None:
+        """Move cursor up."""
+        self.table.action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        """Move cursor down."""
+        self.table.action_cursor_down()
+
     def get_filtered_sorted_rows(self) -> List[List[str]]:
         """Return processed rows based on current filters/sorts."""
         rows = [self.table.get_row_at(i) for i in range(self.table.row_count)]
