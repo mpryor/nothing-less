@@ -1,5 +1,7 @@
 # Nothing-less (nless)
 
+<img src="./docs/assets/nless-logo.png" width="200px"/>  
+
 **Nless** is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) with vi-like keybindings.
 Nless has enhanced functionality for parsing tabular data:
 - inferring file delimiters
@@ -9,6 +11,7 @@ Nless has enhanced functionality for parsing tabular data:
 - sorting
 - searching
 - real-time event parsing.
+
 
 ## Getting started
 ### Dependencies
