@@ -51,7 +51,7 @@ class NlessApp(App):
     """A modern pager with tabular data sorting/filtering capabilities."""
 
     ENABLE_COMMAND_PALETTE = False
-    CSS_PATH="nless.tcss"
+    CSS_PATH = "nless.tcss"
     SCREENS = {"HelpScreen": HelpScreen}
 
     BINDINGS = [
@@ -152,23 +152,14 @@ class NlessApp(App):
 
     def action_delimiter(self) -> None:
         """Change the delimiter used for parsing."""
-        input = Input(
-            placeholder="Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
-            id="delimiter_input",
-            classes="bottom-input",
+        self._create_prompt(
+            "Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
+            "delimiter_input",
         )
-        self.mount(input)
-        input.focus()
 
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
-        search_input = Input(
-            placeholder="Type search term and press Enter",
-            id="search_input",
-            classes="bottom-input",
-        )
-        self.mount(search_input)
-        search_input.focus()
+        self._create_prompt("Type search term and press Enter", "search_input")
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
@@ -216,27 +207,14 @@ class NlessApp(App):
 
     def action_filter_any(self) -> None:
         """Filter any column based on user input."""
-        data_table = self.query_one(NlessDataTable)
-        input = Input(
-            placeholder="Type filter text to match across all columns",
-            id="filter_input_any",
-            classes="bottom-input",
-        )
-        self.mount(input)
-        input.focus()
+        self._create_prompt("Type filter text to match across all columns", "filter_input_any")
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
         data_table = self.query_one(NlessDataTable)
         column_index = data_table.cursor_column
         column_label = data_table.ordered_columns[column_index].label
-        input = Input(
-            placeholder=f"Type filter text for column: {column_label} and press enter",
-            id="filter_input",
-            classes="bottom-input",
-        )
-        self.mount(input)
-        input.focus()
+        self._create_prompt(f"Type filter text for column: {column_label} and press enter", "filter_input")
 
     def action_cursor_up(self) -> None:
         """Move cursor up."""
@@ -489,9 +467,7 @@ class NlessApp(App):
         if self.current_filter is None:
             filter_text = f"{filter_prefix}: None"
         elif self.filter_column is None:
-            filter_text = (
-                f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
-            )
+            filter_text = f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
         else:
             filter_text = f"{filter_prefix}: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter.pattern}'"
 
@@ -563,7 +539,6 @@ class NlessApp(App):
         if self.search_matches:
             self._navigate_search(1)  # Jump to first match
 
-
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
         if not self.search_matches:
@@ -633,7 +608,9 @@ class NlessApp(App):
             if self.filter_column is None:
                 # We're filtering any column
                 matches = any(
-                    self.current_filter.search(self._get_cell_value_without_markup(cell))
+                    self.current_filter.search(
+                        self._get_cell_value_without_markup(cell)
+                    )
                     for cell in cells
                 )
             else:
@@ -672,6 +649,16 @@ class NlessApp(App):
 
         self.displayed_rows.append(cells)
         data_table.add_row_at(*cells, row_index=new_index)
+
+    def _create_prompt(self, placeholder, id):
+        input = Input(
+            placeholder=placeholder,
+            id=id,
+            classes="bottom-input",
+        )
+        self.mount(input)
+        input.focus()
+
 
 
 def main():
