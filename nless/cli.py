@@ -207,14 +207,19 @@ class NlessApp(App):
 
     def action_filter_any(self) -> None:
         """Filter any column based on user input."""
-        self._create_prompt("Type filter text to match across all columns", "filter_input_any")
+        self._create_prompt(
+            "Type filter text to match across all columns", "filter_input_any"
+        )
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
         data_table = self.query_one(NlessDataTable)
         column_index = data_table.cursor_column
         column_label = data_table.ordered_columns[column_index].label
-        self._create_prompt(f"Type filter text for column: {column_label} and press enter", "filter_input")
+        self._create_prompt(
+            f"Type filter text for column: {column_label} and press enter",
+            "filter_input",
+        )
 
     def action_cursor_up(self) -> None:
         """Move cursor up."""
@@ -285,6 +290,7 @@ class NlessApp(App):
         self.search_term = None
         self.sort_index = None
         prev_delimiter = self.delimiter
+
         event.input.remove()
         data_table = self.query_one(NlessDataTable)
         self.delimiter_inferred = False
@@ -658,7 +664,6 @@ class NlessApp(App):
         )
         self.mount(input)
         input.focus()
-
 
 
 def main():
