@@ -120,6 +120,7 @@ class NlessApp(App):
         curr_col_index = data_table.cursor_column
         count_column_exists = data_table.ordered_columns[0].label.plain == "count"
         if count_column_exists and curr_col_index == 0:
+            # can't toggle count column
             return
         self.count_by_column_key = defaultdict(lambda: 0)
 
@@ -258,6 +259,7 @@ class NlessApp(App):
         self.filter_column = None
         self.search_term = None
         self.sort_index = None
+        self.unique_column_indexes = set()
         prev_delimiter = self.delimiter
 
         event.input.remove()
@@ -377,7 +379,7 @@ class NlessApp(App):
             for cells in filtered_rows:
                 composite_key = []
                 for col_idx in self.unique_column_indexes:
-                    composite_key.append(cells[col_idx])
+                    composite_key.append(self._get_cell_value_without_markup(cells[col_idx]))
                 composite_key = ",".join(composite_key)
                 dedup_map[composite_key] = cells
                 self.count_by_column_key[composite_key] += 1
@@ -408,7 +410,7 @@ class NlessApp(App):
                 for col_idx, cell in enumerate(cells):
                     if isinstance(
                         self.search_term, re.Pattern
-                    ) and self.search_term.search(cell):
+                    ) and self.search_term.search(str(cell)):
                         cell = re.sub(
                             self.search_term,
                             lambda m: f"[reverse]{m.group(0)}[/reverse]",
@@ -532,6 +534,8 @@ class NlessApp(App):
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 self.filter_column = column_index if column_index is not None else 0
+                if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
+                    self.filter_column -= 1  # Adjust for count column
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -614,12 +618,9 @@ class NlessApp(App):
             tmp_list = [int(v) for v in tmp_list]
         tmp_list.sort()
         if reverse:
-            tmp_list = list(reversed(tmp_list))
             idx_in_temp = bisect.bisect_left(tmp_list, value)
             return len(tmp_list) - idx_in_temp
         else:
-            print(f"{tmp_list=}")
-            print(f"{value=}")
             return bisect.bisect_left(tmp_list, value)
 
     def _add_log_line(self, log_line: str):
@@ -657,6 +658,7 @@ class NlessApp(App):
                 return
 
         old_index = None
+        old_row = None
         if len(self.unique_column_indexes) > 0:
             new_row_composite_key = []
             for col_idx in self.unique_column_indexes:
@@ -678,9 +680,9 @@ class NlessApp(App):
                         else:
                             cell = self._get_cell_value_without_markup(cell)
                         new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
-                    print(f"{new_cells=}")
                     old_index = row_idx
                     cells = new_cells
+                    old_row = self.displayed_rows[old_index]
                     break
 
             if old_index is None:
@@ -721,8 +723,7 @@ class NlessApp(App):
         self.displayed_rows.insert(new_index, cells)
 
         if old_index is not None and old_row_key is not None:
-            print(f"removing row at: {old_index}, adding at: {new_index}")
-            self.displayed_rows.pop(old_index)
+            self.displayed_rows.remove(old_row)
             data_table.remove_row(old_row_key)
 
 
