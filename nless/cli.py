@@ -338,6 +338,9 @@ class NlessApp(App):
         column_count = len(default_columns)
         if len(self.unique_column_indexes) > 0:
             default_columns.insert(0, Text("count"))
+            data_table.fixed_columns = 1
+        else:
+            data_table.fixed_columns = 0
         data_table.add_columns(*default_columns)
         self.search_matches = []
         self.current_match_index = -1
