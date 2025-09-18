@@ -70,7 +70,7 @@ class NlessApp(App):
         self.displayed_rows = []
         self.raw_header = ""
         self.current_filter = None
-        self.filter_column = None
+        self.filter_column_name: str | None = None
         self.search_term = None
         self.sort_index = None
         self.sort_reverse = False
@@ -187,7 +187,8 @@ class NlessApp(App):
             cell_value = data_table.get_cell_at(coordinate)
             cell_value = self._get_cell_value_without_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
-            self._perform_filter(f"^{cell_value}$", coordinate.column)
+            self.notify(f"Filtering column '{data_table.ordered_columns[coordinate.column].label}' by exact match: {cell_value}")
+            self._perform_filter(f"^{cell_value}$", data_table.ordered_columns[coordinate.column].label.plain)
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
@@ -222,7 +223,7 @@ class NlessApp(App):
             return
 
         self.current_filter = self.search_term  # Reuse the compiled regex
-        self.filter_column = None  # Filter across all columns
+        self.filter_column_name = None  # Filter across all columns
         self._update_table()
 
     def action_filter_any(self) -> None:
@@ -255,11 +256,12 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
-            self._perform_filter(filter_value, column_index)
+            column_label = data_table.ordered_columns[column_index].label.plain
+            self._perform_filter(filter_value, column_label)
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
         self.current_filter = None
-        self.filter_column = None
+        self.filter_column_name = None
         self.search_term = None
         self.sort_index = None
         self.unique_column_indexes = set()
@@ -356,7 +358,7 @@ class NlessApp(App):
                     rows_with_inconsistent_length.append(cells)
                     continue
                 if (
-                    self.filter_column is None
+                    self.filter_column_name is None
                 ):  # If we have a current_filter, but filter_column is None, we are searching all columns
                     if any(
                         self.current_filter.search(
@@ -365,11 +367,17 @@ class NlessApp(App):
                         for cell in cells
                     ):
                         filtered_rows.append(cells)
-                elif self.filter_column < len(cells) and self.current_filter.search(
-                    self._get_cell_value_without_markup(cells[self.filter_column])
-                ):
-                    # Filter specific column
-                    filtered_rows.append(cells)
+                else:
+                    col_idx = [i for i, col in enumerate(data_table.ordered_columns) if col.label.plain == self.filter_column_name]
+                    if len(col_idx) == 0:
+                        break
+                    col_idx = col_idx[0]
+                    if len(self.unique_column_indexes) > 0: # account for count column
+                        col_idx -= 1
+                    if self.current_filter.search(
+                        self._get_cell_value_without_markup(cells[col_idx])
+                    ):
+                        filtered_rows.append(cells)
         else:
             for row in self.raw_rows:
                 cells = split_line(row, self.delimiter)
@@ -476,13 +484,10 @@ class NlessApp(App):
 
         if self.current_filter is None:
             filter_text = f"{filter_prefix}: None"
-        elif self.filter_column is None:
+        elif self.filter_column_name is None:
             filter_text = f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
         else:
-            filter_index = self.filter_column
-            if len(self.unique_column_indexes) > 0:
-                filter_index += 1
-            filter_text = f"{filter_prefix}: {data_table.ordered_columns[filter_index].label}='{self.current_filter.pattern}'"
+            filter_text = f"{filter_prefix}: {self.filter_column_name}='{self.current_filter.pattern}'"
 
         if self.search_term is not None:
             search_text = f"{search_prefix}: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
@@ -517,14 +522,14 @@ class NlessApp(App):
         """Performs a filter across all columns and updates the table."""
         if not filter_value:
             self.current_filter = None
-            self.filter_column = None
+            self.filter_column_name = None
         else:
             try:
                 # Compile the regex pattern
                 filter_value = re.escape(filter_value)
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 # Use None to indicate all-column filter
-                self.filter_column = None
+                self.filter_column_name = None
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -532,19 +537,17 @@ class NlessApp(App):
         self._update_table()
 
     def _perform_filter(
-        self, filter_value: Optional[str], column_index: Optional[int]
+        self, filter_value: Optional[str], column_name: Optional[str]
     ) -> None:
         """Performs a filter on the data and updates the table."""
         if not filter_value:
             self.current_filter = None
-            self.filter_column = None
+            self.filter_column_name = None
         else:
             try:
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
-                self.filter_column = column_index if column_index is not None else 0
-                if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
-                    self.filter_column -= 1  # Adjust for count column
+                self.filter_column_name = column_name if column_name is not None else None
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -647,13 +650,9 @@ class NlessApp(App):
         if len(cells) != len(data_table.columns):
             return
 
-        filter_column_count_adjusted = self.filter_column
-        if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
-            filter_column_count_adjusted += 1
-
         if self.current_filter:
             matches = False
-            if self.filter_column is None:
+            if self.filter_column_name is None:
                 # We're filtering any column
                 matches = any(
                     self.current_filter.search(
@@ -662,15 +661,16 @@ class NlessApp(App):
                     for cell in cells
                 )
             else:
-                matches = filter_column_count_adjusted < len(
-                    cells
-                ) and self.current_filter.search(
-                    self._get_cell_value_without_markup(cells[filter_column_count_adjusted])
+                col_idx = [i for i, col in enumerate(data_table.ordered_columns) if col.label.plain == self.filter_column_name]
+                if len(col_idx) == 0:
+                    return
+                col_idx = col_idx[0]
+                if len(self.unique_column_indexes) > 0: # account for count column
+                    col_idx -= 1
+                matches = self.current_filter.search(
+                    self._get_cell_value_without_markup(cells[col_idx])
                 )
             if not matches:
-                print(f"{self.filter_column}")
-                print(f"{cells}")
-                print(f"{self.current_filter.pattern}")
                 return
 
         old_index = None
@@ -712,7 +712,7 @@ class NlessApp(App):
             else:
                 new_index = self._bisect_left(displayed_row_keys, sort_key, reverse=False)
         else:
-            new_index = len(self.displayed_rows) - 1
+            new_index = len(self.displayed_rows)
 
         if self.search_term:
             highlighted_cells = []
