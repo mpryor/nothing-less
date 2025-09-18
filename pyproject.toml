@@ -24,6 +24,9 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 nless = "nless.cli:main"
 
+[tool.poetry.group.dev.dependencies]
+textual-dev = "^1.7.0"
+
 [tool.poetry]
 packages = [
     {include="nless"}
