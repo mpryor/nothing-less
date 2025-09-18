@@ -1,5 +1,6 @@
 import argparse
 import bisect
+from collections import defaultdict
 from errno import EILSEQ
 from io import StringIO, TextIOWrapper
 import select
@@ -51,6 +52,8 @@ class NlessApp(App):
         ("p,N", "previous_search", "Previous search result"),
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
         ("?", "push_screen('HelpScreen')", "Show Help"),
+        ("v", "change_cursor", "Change cursor type - row, column, cell"),
+        ("U", "mark_unique", "Mark a column unique to create a composite key for distinct/analysis"),
         (
             "t",
             "toggle_tail",
@@ -76,10 +79,12 @@ class NlessApp(App):
         self.delimiter = None
         self.delimiter_inferred = False
         self.is_tailing = False
+        self.unique_column_indexes = set()
+        self.count_by_column_key = defaultdict(lambda: 0)
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
-        table = NlessDataTable(zebra_stripes=True, id="data_table")
+        table = NlessDataTable(zebra_stripes=True, id="data_table", show_row_labels=True)
         yield table
         with Vertical(id="bottom-container"):
             yield Static(
@@ -87,9 +92,6 @@ class NlessApp(App):
                 classes="bd",
                 id="status_bar",
             )
-
-    def action_toggle_tail(self) -> None:
-        self.is_tailing = not self.is_tailing
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -112,6 +114,37 @@ class NlessApp(App):
     ) -> None:
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
+
+    def action_mark_unique(self) -> None:
+        data_table = self.query_one(NlessDataTable)
+        curr_col_index = data_table.cursor_column
+        count_column_exists = data_table.ordered_columns[0].label.plain == "count"
+        if count_column_exists and curr_col_index == 0:
+            return
+        self.count_by_column_key = defaultdict(lambda: 0)
+
+        col_key = data_table.ordered_columns[curr_col_index].key
+        if count_column_exists:
+            curr_col_index -= 1
+        if curr_col_index in self.unique_column_indexes:
+            self.unique_column_indexes.remove(curr_col_index)
+            data_table.columns[col_key].label = Text(f"{data_table.columns[col_key].label.plain.replace(" (U)", "")}")
+        else:
+            self.unique_column_indexes.add(curr_col_index)
+            data_table.columns[col_key].label = Text(f"{data_table.columns[col_key].label.plain} (U)")
+        self._update_table()
+
+    def action_toggle_tail(self) -> None:
+        self.is_tailing = not self.is_tailing
+
+    def action_change_cursor(self) -> None:
+        data_table = self.query_one(NlessDataTable)
+        if data_table.cursor_type == "cell":
+            data_table.cursor_type = "column"
+        elif data_table.cursor_type == "column":
+            data_table.cursor_type = "row"
+        else:
+            data_table.cursor_type = "cell"
 
     def action_next_search(self) -> None:
         """Move cursor to the next search result."""
@@ -279,6 +312,13 @@ class NlessApp(App):
         data_table.add_columns(*new_header)
         self._update_table()
 
+
+    def _get_label(self, label: Text | str) -> str:
+        if isinstance(label, Text):
+            return label.plain
+        else:
+            return label
+
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
         data_table = self.query_one(NlessDataTable)
@@ -289,10 +329,14 @@ class NlessApp(App):
         scroll_y = data_table.scroll_y
 
         data_table.clear(columns=True)
-        data_table.add_columns(*[v.label for k, v in curr_columns.items()])
-        column_count = len(data_table.columns)
+        default_columns = [v.label for k, v in curr_columns.items() if "count" not in self._get_label(v.label)]
+        column_count = len(default_columns)
+        if len(self.unique_column_indexes) > 0:
+            default_columns.insert(0, Text("count"))
+        data_table.add_columns(*default_columns)
         self.search_matches = []
         self.current_match_index = -1
+        self.count_by_column_key = defaultdict(lambda: 0)
 
         # 1. Filter rows
         filtered_rows = []
@@ -312,25 +356,43 @@ class NlessApp(App):
                         )
                         for cell in cells
                     ):
-                        filtered_rows.append(row_str)
+                        filtered_rows.append(cells)
                 elif self.filter_column < len(cells) and self.current_filter.search(
                     self._get_cell_value_without_markup(cells[self.filter_column])
                 ):
                     # Filter specific column
-                    filtered_rows.append(row_str)
+                    filtered_rows.append(cells)
         else:
             for row in self.raw_rows:
                 cells = split_line(row, self.delimiter)
                 if len(cells) == column_count:
-                    filtered_rows.append(row)
+                    filtered_rows.append(cells)
                 else:
                     rows_with_inconsistent_length.append(row)
 
-        # 2. Sort rows
+        # 2. Dedup by composite column key
+        if len(self.unique_column_indexes) > 0:
+            dedup_map = {}
+            deduped_rows = []
+            for cells in filtered_rows:
+                composite_key = []
+                for col_idx in self.unique_column_indexes:
+                    composite_key.append(cells[col_idx])
+                composite_key = ",".join(composite_key)
+                dedup_map[composite_key] = cells
+                self.count_by_column_key[composite_key] += 1
+            for k, cells in dedup_map.items():
+                count = self.count_by_column_key[k]
+                cells.insert(0, count)
+                deduped_rows.append(cells)
+        else:
+            deduped_rows = filtered_rows
+
+        # 3. Sort rows
         if self.sort_index is not None:
             try:
-                filtered_rows.sort(
-                    key=lambda r: split_line(r, self.delimiter)[self.sort_index],
+                deduped_rows.sort(
+                    key=lambda r: r[self.sort_index],
                     reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
@@ -339,10 +401,9 @@ class NlessApp(App):
 
         final_rows = []
 
-        # 3. Add to table and find search matches
+        # 4. Add to table and find search matches
         if self.search_term:
-            for displayed_row_idx, row_str in enumerate(filtered_rows):
-                cells = split_line(row_str, self.delimiter)
+            for displayed_row_idx, cells in enumerate(deduped_rows):
                 highlighted_cells = []
                 for col_idx, cell in enumerate(cells):
                     if isinstance(
@@ -362,8 +423,7 @@ class NlessApp(App):
 
                 final_rows.append(highlighted_cells)
         else:
-            for row_str in filtered_rows:
-                cells = split_line(row_str, self.delimiter)
+            for cells in deduped_rows:
                 final_rows.append(cells)
 
         if len(rows_with_inconsistent_length) > 0:
@@ -432,9 +492,14 @@ class NlessApp(App):
         else:
             tailing_text = ""
 
+        column_text = ""
+        if len(self.unique_column_indexes):
+            column_indexes = ",".join([str(i) for i in self.unique_column_indexes])
+            column_text = f"| unique cols: {column_indexes}"
+
         status_bar = self.query_one("#status_bar", Static)
         status_bar.update(
-            f"{sort_text} | {filter_text} | {search_text} | {position_text} {tailing_text}"
+            f"{sort_text} | {filter_text} | {search_text} | {position_text} | {column_text} {tailing_text}"
         )
 
     def _perform_filter_any(self, filter_value: Optional[str]) -> None:
@@ -541,6 +606,22 @@ class NlessApp(App):
 
         self._update_status_bar()
 
+
+    def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
+        tmp_list = list(r_list)
+        if value.isnumeric():
+            value = int(value)
+            tmp_list = [int(v) for v in tmp_list]
+        tmp_list.sort()
+        if reverse:
+            tmp_list = list(reversed(tmp_list))
+            idx_in_temp = bisect.bisect_left(tmp_list, value)
+            return len(tmp_list) - idx_in_temp
+        else:
+            print(f"{tmp_list=}")
+            print(f"{value=}")
+            return bisect.bisect_left(tmp_list, value)
+
     def _add_log_line(self, log_line: str):
         """
         Adds a single log line by determining:
@@ -550,6 +631,9 @@ class NlessApp(App):
         """
         data_table = self.query_one(NlessDataTable)
         cells = split_line(log_line, self.delimiter)
+        if len(self.unique_column_indexes) > 0:
+            cells.insert(0, "1")
+
         if len(cells) != len(data_table.columns):
             return
 
@@ -572,13 +656,45 @@ class NlessApp(App):
             if not matches:
                 return
 
+        old_index = None
+        if len(self.unique_column_indexes) > 0:
+            new_row_composite_key = []
+            for col_idx in self.unique_column_indexes:
+                new_row_composite_key.append(self._get_cell_value_without_markup(cells[col_idx + 1]))
+            new_row_composite_key = ",".join(new_row_composite_key)
+
+            for row_idx, row in enumerate(self.displayed_rows):
+                composite_key = []
+                for col_idx in self.unique_column_indexes:
+                    composite_key.append(self._get_cell_value_without_markup(row[col_idx + 1]))
+                composite_key = ",".join(composite_key)
+
+                if composite_key == new_row_composite_key:
+                    new_cells = []
+                    for col_idx, cell in enumerate(cells):
+                        if col_idx == 0:
+                            self.count_by_column_key[composite_key] += 1
+                            cell = self.count_by_column_key[composite_key]
+                        else:
+                            cell = self._get_cell_value_without_markup(cell)
+                        new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
+                    print(f"{new_cells=}")
+                    old_index = row_idx
+                    cells = new_cells
+                    break
+
+            if old_index is None:
+                self.count_by_column_key[new_row_composite_key] = 1
+
         if self.sort_index is not None:
-            sort_key = cells[self.sort_index]
-            displayed_row_keys = [r[self.sort_index] for r in self.displayed_rows]
-            displayed_row_keys.sort(reverse=self.sort_reverse)
-            new_index = bisect.bisect_left(displayed_row_keys, sort_key)
+            sort_key = self._get_cell_value_without_markup(str(cells[self.sort_index]))
+            displayed_row_keys = [self._get_cell_value_without_markup(str(r[self.sort_index])) for r in self.displayed_rows]
+            if self.sort_reverse:
+                new_index = self._bisect_left(displayed_row_keys, sort_key, reverse=True)
+            else:
+                new_index = self._bisect_left(displayed_row_keys, sort_key, reverse=False)
         else:
-            new_index = len(self.displayed_rows)
+            new_index = len(self.displayed_rows) - 1
 
         if self.search_term:
             highlighted_cells = []
@@ -597,8 +713,18 @@ class NlessApp(App):
                     highlighted_cells.append(cell)
             cells = highlighted_cells
 
-        self.displayed_rows.append(cells)
+        old_row_key = None
+        if old_index is not None:
+            old_row_key = data_table.ordered_rows[old_index].key
+
         data_table.add_row_at(*cells, row_index=new_index)
+        self.displayed_rows.insert(new_index, cells)
+
+        if old_index is not None and old_row_key is not None:
+            print(f"removing row at: {old_index}, adding at: {new_index}")
+            self.displayed_rows.pop(old_index)
+            data_table.remove_row(old_row_key)
+
 
         if self.is_tailing:
             data_table.action_scroll_bottom()
