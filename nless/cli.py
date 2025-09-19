@@ -445,14 +445,15 @@ class NlessApp(App):
         # 3. Sort rows
         if self.sort_column is not None:
             sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            try:
-                deduped_rows.sort(
-                    key=lambda r: r[sort_column_idx],
-                    reverse=self.sort_reverse,
-                )
-            except (ValueError, IndexError):
-                # Fallback if column not found or row is malformed
-                pass
+            if sort_column_idx is not None:
+                try:
+                    deduped_rows.sort(
+                        key=lambda r: r[sort_column_idx],
+                        reverse=self.sort_reverse,
+                    )
+                except (ValueError, IndexError):
+                    # Fallback if column not found or row is malformed
+                    pass
 
         final_rows = []
 
