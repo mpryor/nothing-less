@@ -987,7 +987,8 @@ class NlessApp(App):
             cells.insert(0, "1")
 
         expected_cell_count = len([c for c in self.current_columns if not c.hidden])
-        if len(cells) != expected_cell_count:
+        aligned_cells = self._align_cells_to_visible_columns([cells])[0]
+        if len(aligned_cells) != expected_cell_count:
             return
 
         if self.current_filter:
