@@ -988,7 +988,6 @@ class NlessApp(App):
 
         expected_cell_count = len([c for c in self.current_columns if not c.hidden])
         if len(cells) != expected_cell_count:
-            self.notify("something went wrong")
             return
 
         if self.current_filter:
