@@ -965,10 +965,13 @@ class NlessApp(App):
     def _strip_column_indicators(self, col_name: str) -> str:
         return col_name.replace(" U", "").replace(" ▲", "").replace(" ▼", "")
 
-    def _get_col_idx_by_name(self, col_name: str) -> Optional[int]:
+    def _get_col_idx_by_name(self, col_name: str, render_position: bool = False) -> Optional[int]:
         for col in self.current_columns:
             if self._get_cell_value_without_markup(col.name) == col_name:
-                return col.data_position
+                if render_position:
+                    return col.render_position
+                else:
+                    return col.data_position
         return None
 
     def _add_log_line(self, log_line: str):
@@ -983,14 +986,9 @@ class NlessApp(App):
         if len(self.unique_column_names) > 0:
             cells.insert(0, "1")
 
-        expected_cell_count = len(self.current_columns) - len(
-            {
-                c.name
-                for c in self.current_columns
-                if c.name in [m.value for m in MetadataColumn]
-            }
-        )
+        expected_cell_count = len([c for c in self.current_columns if not c.hidden])
         if len(cells) != expected_cell_count:
+            self.notify("something went wrong")
             return
 
         if self.current_filter:
@@ -1029,13 +1027,14 @@ class NlessApp(App):
             for row_idx, row in enumerate(self.displayed_rows):
                 composite_key = []
                 for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name)
+                    col_idx = self._get_col_idx_by_name(col_name, render_position=True)
                     if col_idx is None:
                         continue
                     composite_key.append(
                         self._get_cell_value_without_markup(row[col_idx])
                     )
                 composite_key = ",".join(composite_key)
+                print(f"  comparing against {composite_key=}")
 
                 if composite_key == new_row_composite_key:
                     new_cells = []
@@ -1055,10 +1054,12 @@ class NlessApp(App):
                 self.count_by_column_key[new_row_composite_key] = 1
 
         if self.sort_column is not None:
-            sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            sort_key = self._get_cell_value_without_markup(str(cells[sort_column_idx]))
+            displayed_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=True)
+            data_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=False)
+
+            sort_key = self._get_cell_value_without_markup(str(cells[data_sort_column_idx]))
             displayed_row_keys = [
-                self._get_cell_value_without_markup(str(r[sort_column_idx]))
+                self._get_cell_value_without_markup(str(r[displayed_sort_column_idx]))
                 for r in self.displayed_rows
             ]
             if self.sort_reverse:
