@@ -56,7 +56,6 @@ class NlessApp(App):
     def __init__(self):
         super().__init__()
         self.mounted = False
-        self.data_initalized = False
         self.first_row_parsed = False
         self.raw_rows = []
         self.displayed_rows = []
@@ -657,12 +656,8 @@ class NlessApp(App):
                 self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
-        if not self.data_initalized:
-            self.data_initalized = True
-            self._update_table()
-        else:
-            for line in log_lines:
-                self._add_log_line(line)
+        for line in log_lines:
+            self._add_log_line(line)
 
         self._update_status_bar()
 
