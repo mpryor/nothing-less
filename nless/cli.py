@@ -142,7 +142,7 @@ class NlessApp(App):
         """Show columns by user input."""
         column_options = [
             (self._get_cell_value_without_markup(c.name), i)
-            for i, c in enumerate(self.current_columns)
+            for i, c in enumerate(self.current_columns) if not c.hidden
         ]
         select = Select(options=column_options, classes="bottom-input", prompt="Type a column to jump to")
         self.mount(select)
