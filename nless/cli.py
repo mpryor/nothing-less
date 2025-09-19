@@ -35,6 +35,7 @@ class Column:
     hidden: bool
     pinned: bool = False
 
+
 class MetadataColumn(Enum):
     COUNT = "count"
 
@@ -141,10 +142,15 @@ class NlessApp(App):
     def action_show_columns(self) -> None:
         """Show columns by user input."""
         column_options = [
-            (self._get_cell_value_without_markup(c.name), i)
-            for i, c in enumerate(self.current_columns) if not c.hidden
+            (self._get_cell_value_without_markup(c.name), c.render_position)
+            for c in self.current_columns
+            if not c.hidden
         ]
-        select = Select(options=column_options, classes="bottom-input", prompt="Type a column to jump to")
+        select = Select(
+            options=column_options,
+            classes="bottom-input",
+            prompt="Type a column to jump to",
+        )
         self.mount(select)
         self.call_after_refresh(lambda: self._open_select(select))
 
