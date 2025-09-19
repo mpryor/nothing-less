@@ -1,23 +1,35 @@
 import argparse
 import bisect
-import re
-import sys
 from collections import defaultdict
+from errno import EILSEQ
+from io import StringIO, TextIOWrapper
+import select
+from multiprocessing import Process
+import os
+import stat
+import sys
+import re
+import csv
+import threading
+import time
+import fcntl
+from typing import Callable, Optional
 from threading import Thread
-from typing import List, Optional
-
 from rich.markup import _parse
+
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
-from textual.widgets import Input, Static
+from textual.widgets import DataTable, Input, Static
+from textual.screen import Screen
+from typing import List
 
-from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
-from .input import InputConsumer
+from .delimiter import infer_delimiter, split_line
 from .nlesstable import NlessDataTable
+from .input import InputConsumer
 
 
 class NlessApp(App):
@@ -41,11 +53,7 @@ class NlessApp(App):
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
         ("?", "push_screen('HelpScreen')", "Show Help"),
         ("v", "change_cursor", "Change cursor type - row, column, cell"),
-        (
-            "U",
-            "mark_unique",
-            "Mark a column unique to create a composite key for distinct/analysis",
-        ),
+        ("U", "mark_unique", "Mark a column unique to create a composite key for distinct/analysis"),
         (
             "t",
             "toggle_tail",
@@ -62,23 +70,21 @@ class NlessApp(App):
         self.displayed_rows = []
         self.raw_header = ""
         self.current_filter = None
-        self.filter_column_name: str | None = None
+        self.filter_column = None
         self.search_term = None
-        self.sort_column = None
+        self.sort_index = None
         self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
         self.delimiter = None
         self.delimiter_inferred = False
         self.is_tailing = False
-        self.unique_column_names = set()
+        self.unique_column_indexes = set()
         self.count_by_column_key = defaultdict(lambda: 0)
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
-        table = NlessDataTable(
-            zebra_stripes=True, id="data_table", show_row_labels=True
-        )
+        table = NlessDataTable(zebra_stripes=True, id="data_table", show_row_labels=True)
         yield table
         with Vertical(id="bottom-container"):
             yield Static(
@@ -111,36 +117,22 @@ class NlessApp(App):
 
     def action_mark_unique(self) -> None:
         data_table = self.query_one(NlessDataTable)
-        curr_col = data_table.ordered_columns[data_table.cursor_column]
-        curr_col_name = self._strip_column_indicators(curr_col.label.plain)
-        curr_col_key = curr_col.key
-
-        if curr_col_name == "count":
+        curr_col_index = data_table.cursor_column
+        count_column_exists = data_table.ordered_columns[0].label.plain == "count"
+        if count_column_exists and curr_col_index == 0:
             # can't toggle count column
             return
-
         self.count_by_column_key = defaultdict(lambda: 0)
 
-        if curr_col_name in self.unique_column_names:
-            self.unique_column_names.remove(curr_col_name)
-            data_table.columns[curr_col_key].label = Text(
-                f"{data_table.columns[curr_col_key].label.plain.replace(' (U)', '')}"
-            )
+        col_key = data_table.ordered_columns[curr_col_index].key
+        if count_column_exists:
+            curr_col_index -= 1
+        if curr_col_index in self.unique_column_indexes:
+            self.unique_column_indexes.remove(curr_col_index)
+            data_table.columns[col_key].label = Text(f"{data_table.columns[col_key].label.plain.replace(" (U)", "")}")
         else:
-            self.unique_column_names.add(curr_col_name)
-            data_table.columns[curr_col_key].label = Text(
-                f"{data_table.columns[curr_col_key].label.plain} (U)"
-            )
-
-        if len(self.unique_column_names) == 0:
-            count_column = [
-                c
-                for c in data_table.columns.values()
-                if self._strip_column_indicators(self._get_label(c.label)) == "count"
-            ]
-            if len(count_column) > 0:
-                data_table.remove_column(count_column[0].key)
-
+            self.unique_column_indexes.add(curr_col_index)
+            data_table.columns[col_key].label = Text(f"{data_table.columns[col_key].label.plain} (U)")
         self._update_table()
 
     def action_toggle_tail(self) -> None:
@@ -195,43 +187,31 @@ class NlessApp(App):
             cell_value = data_table.get_cell_at(coordinate)
             cell_value = self._get_cell_value_without_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
-            self._perform_filter(
-                f"^{cell_value}$",
-                self._strip_column_indicators(
-                    data_table.ordered_columns[coordinate.column].label.plain
-                ),
-            )
+            self._perform_filter(f"^{cell_value}$", coordinate.column)
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
     def action_sort(self) -> None:
         data_table = self.query_one(NlessDataTable)
-        selected_column_name = self._strip_column_indicators(
-            self._get_label(data_table.ordered_columns[data_table.cursor_column].label)
-        )
+        selected_column_index = data_table.cursor_column
 
-        if self.sort_column == selected_column_name and self.sort_reverse:
-            self.sort_column = None
-        elif self.sort_column == selected_column_name and not self.sort_reverse:
+        if self.sort_index == selected_column_index and self.sort_reverse:
+            self.sort_index = None
+        elif self.sort_index == selected_column_index and not self.sort_reverse:
             self.sort_reverse = True
         else:
-            self.sort_column = self._strip_column_indicators(selected_column_name)
+            self.sort_index = selected_column_index
             self.sort_reverse = False
 
         # Update column labels with sort indicators
-        for column in data_table.columns.values():
+        for index, column in enumerate(data_table.columns.values()):
             # Remove existing indicators
-            label_text_without_sort_indicators = (
-                self._get_label(column.label).replace(" ▼", "").replace(" ▲", "")
-            )
-            if (
-                self._strip_column_indicators(self._get_label(column.label))
-                == self.sort_column
-            ):
+            label_text = str(column.label).strip(" ▲▼")
+            if index == self.sort_index:
                 indicator = "▼" if self.sort_reverse else "▲"
-                column.label = f"{label_text_without_sort_indicators} {indicator}"
+                column.label = f"{label_text} {indicator}"
             else:
-                column.label = label_text_without_sort_indicators
+                column.label = label_text
 
         self._update_table()
 
@@ -242,7 +222,7 @@ class NlessApp(App):
             return
 
         self.current_filter = self.search_term  # Reuse the compiled regex
-        self.filter_column_name = None  # Filter across all columns
+        self.filter_column = None  # Filter across all columns
         self._update_table()
 
     def action_filter_any(self) -> None:
@@ -275,17 +255,14 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
-            column_label = self._strip_column_indicators(
-                data_table.ordered_columns[column_index].label.plain
-            )
-            self._perform_filter(filter_value, column_label)
+            self._perform_filter(filter_value, column_index)
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
         self.current_filter = None
-        self.filter_column_name = None
+        self.filter_column = None
         self.search_term = None
-        self.sort_column = None
-        self.unique_column_names = set()
+        self.sort_index = None
+        self.unique_column_indexes = set()
         prev_delimiter = self.delimiter
 
         event.input.remove()
@@ -340,6 +317,7 @@ class NlessApp(App):
         data_table.add_columns(*new_header)
         self._update_table()
 
+
     def _get_label(self, label: Text | str) -> str:
         if isinstance(label, Text):
             return label.plain
@@ -349,30 +327,21 @@ class NlessApp(App):
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
         data_table = self.query_one(NlessDataTable)
+        curr_columns = (data_table.columns).copy()
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
         scroll_x = data_table.scroll_x
         scroll_y = data_table.scroll_y
 
-        curr_columns = [self._get_label(c.label) for c in data_table.columns.values()]
-        curr_metadata_columns = {
-            self._strip_column_indicators(c)
-            for c in curr_columns
-            if self._strip_column_indicators(c) in ["count"]
-        }
-        expected_cell_count = len(curr_columns) - len(curr_metadata_columns)
-        data_table.clear(
-            columns=True
-        )  # might be needed to trigger column resizing with longer cell content
-        if len(self.unique_column_names) > 0:
-            if "count" not in curr_metadata_columns:
-                curr_columns.insert(0, "count")
+        data_table.clear(columns=True)
+        default_columns = [v.label for k, v in curr_columns.items() if "count" not in self._get_label(v.label)]
+        column_count = len(default_columns)
+        if len(self.unique_column_indexes) > 0:
+            default_columns.insert(0, Text("count"))
             data_table.fixed_columns = 1
         else:
             data_table.fixed_columns = 0
-
-        data_table.add_columns(*curr_columns)
-
+        data_table.add_columns(*default_columns)
         self.search_matches = []
         self.current_match_index = -1
         self.count_by_column_key = defaultdict(lambda: 0)
@@ -383,11 +352,11 @@ class NlessApp(App):
         if self.current_filter:
             for row_str in self.raw_rows:
                 cells = split_line(row_str, self.delimiter)
-                if len(cells) != expected_cell_count:
+                if len(cells) != column_count:
                     rows_with_inconsistent_length.append(cells)
                     continue
                 if (
-                    self.filter_column_name is None
+                    self.filter_column is None
                 ):  # If we have a current_filter, but filter_column is None, we are searching all columns
                     if any(
                         self.current_filter.search(
@@ -396,45 +365,30 @@ class NlessApp(App):
                         for cell in cells
                     ):
                         filtered_rows.append(cells)
-                else:
-                    col_idx = self._get_col_idx_by_name(self.filter_column_name)
-                    if col_idx is None:
-                        break
-                    if len(self.unique_column_names) > 0:  # account for count column
-                        col_idx -= 1
-                    if self.current_filter.search(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    ):
-                        filtered_rows.append(cells)
+                elif self.filter_column < len(cells) and self.current_filter.search(
+                    self._get_cell_value_without_markup(cells[self.filter_column])
+                ):
+                    # Filter specific column
+                    filtered_rows.append(cells)
         else:
             for row in self.raw_rows:
                 cells = split_line(row, self.delimiter)
-                if len(cells) == expected_cell_count:
+                if len(cells) == column_count:
                     filtered_rows.append(cells)
                 else:
                     rows_with_inconsistent_length.append(row)
 
         # 2. Dedup by composite column key
-        if len(self.unique_column_names) > 0:
+        if len(self.unique_column_indexes) > 0:
             dedup_map = {}
             deduped_rows = []
             for cells in filtered_rows:
                 composite_key = []
-                for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name)
-                    print("Col name:", col_name, "Col idx:", col_idx)
-                    if col_idx is None:
-                        continue
-                    if len(self.unique_column_names) > 0:  # account for count column
-                        col_idx -= 1
-                    composite_key.append(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    )
-                print("Composite key:", composite_key)
+                for col_idx in self.unique_column_indexes:
+                    composite_key.append(self._get_cell_value_without_markup(cells[col_idx]))
                 composite_key = ",".join(composite_key)
-                dedup_map[composite_key] = cells  # always overwrite to keep latest
+                dedup_map[composite_key] = cells
                 self.count_by_column_key[composite_key] += 1
-            print("Dedup map:", dedup_map)
             for k, cells in dedup_map.items():
                 count = self.count_by_column_key[k]
                 cells.insert(0, count)
@@ -443,17 +397,15 @@ class NlessApp(App):
             deduped_rows = filtered_rows
 
         # 3. Sort rows
-        if self.sort_column is not None:
-            sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            if sort_column_idx is not None:
-                try:
-                    deduped_rows.sort(
-                        key=lambda r: r[sort_column_idx],
-                        reverse=self.sort_reverse,
-                    )
-                except (ValueError, IndexError):
-                    # Fallback if column not found or row is malformed
-                    pass
+        if self.sort_index is not None:
+            try:
+                deduped_rows.sort(
+                    key=lambda r: r[self.sort_index],
+                    reverse=self.sort_reverse,
+                )
+            except (ValueError, IndexError):
+                # Fallback if column not found or row is malformed
+                pass
 
         final_rows = []
 
@@ -517,17 +469,20 @@ class NlessApp(App):
         filter_prefix = self._rich_bold("Filter")
         search_prefix = self._rich_bold("Search")
 
-        if self.sort_column is None:
+        if self.sort_index is None:
             sort_text = f"{sort_prefix}: None"
         else:
-            sort_text = f"{sort_prefix}: {self.sort_column} {'desc' if self.sort_reverse else 'asc'}"
+            sort_text = f"{sort_prefix}: {str(data_table.ordered_columns[self.sort_index].label).strip()} {'desc' if self.sort_reverse else 'asc'}"
 
         if self.current_filter is None:
             filter_text = f"{filter_prefix}: None"
-        elif self.filter_column_name is None:
+        elif self.filter_column is None:
             filter_text = f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
         else:
-            filter_text = f"{filter_prefix}: {self.filter_column_name}='{self.current_filter.pattern}'"
+            filter_index = self.filter_column
+            if len(self.unique_column_indexes) > 0:
+                filter_index += 1
+            filter_text = f"{filter_prefix}: {data_table.ordered_columns[filter_index].label}='{self.current_filter.pattern}'"
 
         if self.search_term is not None:
             search_text = f"{search_prefix}: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
@@ -544,15 +499,13 @@ class NlessApp(App):
         position_text = f"{row_prefix}: {current_row}/{total_rows} {col_prefix}: {current_col}/{total_cols}"
 
         if self.is_tailing:
-            tailing_text = "| " + self._rich_bold(
-                "[#00bb00]Tailing (`t` to stop)[/#00bb00]"
-            )
+            tailing_text = "| " + self._rich_bold("[#00bb00]Tailing (`t` to stop)[/#00bb00]")
         else:
             tailing_text = ""
 
         column_text = ""
-        if len(self.unique_column_names):
-            column_names = ",".join(self.unique_column_names)
+        if len(self.unique_column_indexes):
+            column_names = ",".join([data_table.ordered_columns[i+1].label.plain for i in self.unique_column_indexes])
             column_text = f"| unique cols: ({column_names}) "
 
         status_bar = self.query_one("#status_bar", Static)
@@ -564,14 +517,14 @@ class NlessApp(App):
         """Performs a filter across all columns and updates the table."""
         if not filter_value:
             self.current_filter = None
-            self.filter_column_name = None
+            self.filter_column = None
         else:
             try:
                 # Compile the regex pattern
                 filter_value = re.escape(filter_value)
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 # Use None to indicate all-column filter
-                self.filter_column_name = None
+                self.filter_column = None
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -579,19 +532,19 @@ class NlessApp(App):
         self._update_table()
 
     def _perform_filter(
-        self, filter_value: Optional[str], column_name: Optional[str]
+        self, filter_value: Optional[str], column_index: Optional[int]
     ) -> None:
         """Performs a filter on the data and updates the table."""
         if not filter_value:
             self.current_filter = None
-            self.filter_column_name = None
+            self.filter_column = None
         else:
             try:
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
-                self.filter_column_name = (
-                    column_name if column_name is not None else None
-                )
+                self.filter_column = column_index if column_index is not None else 0
+                if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
+                    self.filter_column -= 1  # Adjust for count column
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -666,6 +619,7 @@ class NlessApp(App):
 
         self._update_status_bar()
 
+
     def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
         tmp_list = list(r_list)
         if value.isnumeric():
@@ -678,16 +632,6 @@ class NlessApp(App):
         else:
             return bisect.bisect_left(tmp_list, value)
 
-    def _strip_column_indicators(self, col_name: str) -> str:
-        return col_name.replace(" (U)", "").replace(" ▲", "").replace(" ▼", "")
-
-    def _get_col_idx_by_name(self, col_name: str) -> Optional[int]:
-        data_table = self.query_one(NlessDataTable)
-        for idx, col in enumerate(data_table.ordered_columns):
-            if self._strip_column_indicators(col.label.plain) == col_name:
-                return idx
-        return None
-
     def _add_log_line(self, log_line: str):
         """
         Adds a single log line by determining:
@@ -697,15 +641,19 @@ class NlessApp(App):
         """
         data_table = self.query_one(NlessDataTable)
         cells = split_line(log_line, self.delimiter)
-        if len(self.unique_column_names) > 0:
+        if len(self.unique_column_indexes) > 0:
             cells.insert(0, "1")
 
         if len(cells) != len(data_table.columns):
             return
 
+        filter_column_count_adjusted = self.filter_column
+        if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
+            filter_column_count_adjusted += 1
+
         if self.current_filter:
             matches = False
-            if self.filter_column_name is None:
+            if self.filter_column is None:
                 # We're filtering any column
                 matches = any(
                     self.current_filter.search(
@@ -714,37 +662,29 @@ class NlessApp(App):
                     for cell in cells
                 )
             else:
-                col_idx = self._get_col_idx_by_name(self.filter_column_name)
-                if col_idx is None:
-                    return
-                matches = self.current_filter.search(
-                    self._get_cell_value_without_markup(cells[col_idx])
+                matches = filter_column_count_adjusted < len(
+                    cells
+                ) and self.current_filter.search(
+                    self._get_cell_value_without_markup(cells[filter_column_count_adjusted])
                 )
             if not matches:
+                print(f"{self.filter_column}")
+                print(f"{cells}")
+                print(f"{self.current_filter.pattern}")
                 return
 
         old_index = None
         old_row = None
-        if len(self.unique_column_names) > 0:
+        if len(self.unique_column_indexes) > 0:
             new_row_composite_key = []
-            for col_name in self.unique_column_names:
-                col_idx = self._get_col_idx_by_name(col_name)
-                if col_idx is None:
-                    continue
-                new_row_composite_key.append(
-                    self._get_cell_value_without_markup(cells[col_idx])
-                )
+            for col_idx in self.unique_column_indexes:
+                new_row_composite_key.append(self._get_cell_value_without_markup(cells[col_idx + 1]))
             new_row_composite_key = ",".join(new_row_composite_key)
 
             for row_idx, row in enumerate(self.displayed_rows):
                 composite_key = []
-                for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name)
-                    if col_idx is None:
-                        continue
-                    composite_key.append(
-                        self._get_cell_value_without_markup(row[col_idx])
-                    )
+                for col_idx in self.unique_column_indexes:
+                    composite_key.append(self._get_cell_value_without_markup(row[col_idx + 1]))
                 composite_key = ",".join(composite_key)
 
                 if composite_key == new_row_composite_key:
@@ -764,23 +704,15 @@ class NlessApp(App):
             if old_index is None:
                 self.count_by_column_key[new_row_composite_key] = 1
 
-        if self.sort_column is not None:
-            sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            sort_key = self._get_cell_value_without_markup(str(cells[sort_column_idx]))
-            displayed_row_keys = [
-                self._get_cell_value_without_markup(str(r[sort_column_idx]))
-                for r in self.displayed_rows
-            ]
+        if self.sort_index is not None:
+            sort_key = self._get_cell_value_without_markup(str(cells[self.sort_index]))
+            displayed_row_keys = [self._get_cell_value_without_markup(str(r[self.sort_index])) for r in self.displayed_rows]
             if self.sort_reverse:
-                new_index = self._bisect_left(
-                    displayed_row_keys, sort_key, reverse=True
-                )
+                new_index = self._bisect_left(displayed_row_keys, sort_key, reverse=True)
             else:
-                new_index = self._bisect_left(
-                    displayed_row_keys, sort_key, reverse=False
-                )
+                new_index = self._bisect_left(displayed_row_keys, sort_key, reverse=False)
         else:
-            new_index = len(self.displayed_rows)
+            new_index = len(self.displayed_rows) - 1
 
         if self.search_term:
             highlighted_cells = []
@@ -809,6 +741,7 @@ class NlessApp(App):
         if old_index is not None and old_row_key is not None:
             self.displayed_rows.remove(old_row)
             data_table.remove_row(old_row_key)
+
 
         if self.is_tailing:
             data_table.action_scroll_bottom()
