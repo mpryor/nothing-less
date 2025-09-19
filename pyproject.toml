@@ -1,6 +1,6 @@
 [project]
 name = "nothing-less"
-version = "0.1.2"
+version = "0.1.3"
 description = "A TUI paging application with enhanced support for tabular data and real-time streaming"
 authors = [
     {name = "Matt Pryor",email = "mapryor1991@yahoo.com"}
@@ -23,6 +23,9 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 nless = "nless.cli:main"
+
+[tool.poetry.group.dev.dependencies]
+textual-dev = "^1.7.0"
 
 [tool.poetry]
 packages = [

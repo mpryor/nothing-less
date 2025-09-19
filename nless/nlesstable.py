@@ -6,6 +6,19 @@ from textual.widgets.data_table import CellType, CursorType, DuplicateKey, Row, 
 
 
 class NlessDataTable(DataTable):
+    BINDINGS = [
+        ("G", "scroll_bottom", "Scroll to Bottom"),
+        ("g", "scroll_top", "Scroll to Top"),
+        ("d", "page_down", "Page Down"),
+        ("u", "page_up", "Page up"),
+        ("up,k", "cursor_up", "Up"),
+        ("down,j", "cursor_down", "Down"),
+        ("l,w,W", "cursor_right", "Right"),
+        ("h,b,B", "cursor_left", "Left"),
+        ("$", "scroll_to_end", "End of Line"),
+        ("0", "scroll_to_beginning", "Start of Line"),
+    ]
+
     def __init__(
         self,
         *,
@@ -42,6 +55,17 @@ class NlessDataTable(DataTable):
             classes=classes,
             disabled=disabled,
         )
+
+    def action_scroll_to_end(self) -> None:
+        """Move cursor to end of current row."""
+        last_column = len(self.columns) - 1
+        self.cursor_coordinate = self.cursor_coordinate._replace(
+            column=last_column
+        )
+
+    def action_scroll_to_beginning(self) -> None:
+        """Move cursor to beginning of current row."""
+        self.cursor_coordinate = self.cursor_coordinate._replace(column=0)
 
     def add_row_at(
         self,
