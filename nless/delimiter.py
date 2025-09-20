@@ -134,7 +134,7 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                     else:
                         delimiter_scores[delimiter] -= 20
 
-    # Default to comma if no clear winner
+    # Default to raw if no clear winner
     if not delimiter_scores or max(delimiter_scores.values()) == 0:
         return "raw"
 
