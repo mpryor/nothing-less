@@ -316,7 +316,6 @@ class NlessApp(App):
                 elif col.pinned and col.render_position >= old_position:
                     col.render_position -= 1
 
-        print(self.current_columns)
         self._update_table()
 
         # update the cursor position's index to match the new position of the column
@@ -1033,7 +1032,6 @@ class NlessApp(App):
                         self._get_cell_value_without_markup(row[col_idx])
                     )
                 composite_key = ",".join(composite_key)
-                print(f"  comparing against {composite_key=}")
 
                 if composite_key == new_row_composite_key:
                     new_cells = []
