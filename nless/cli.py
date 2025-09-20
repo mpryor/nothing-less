@@ -154,10 +154,10 @@ class NlessApp(App):
         self.call_after_refresh(lambda: self._open_select(select))
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        col_idex = event.value
+        col_index = event.value
         event.control.remove()
         data_table = self.query_one(NlessDataTable)
-        data_table.move_cursor(column=col_idex)
+        data_table.move_cursor(column=col_index)
 
     def action_filter_columns(self) -> None:
         """Filter columns by user input."""
