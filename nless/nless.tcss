@@ -9,6 +9,10 @@
     height: 3;
 }
 
+.dock-bottom {
+    dock: bottom;
+}
+
 #help-screen {
     background: $surface;
     border: solid $primary;
