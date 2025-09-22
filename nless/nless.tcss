@@ -3,6 +3,7 @@
     dock:bottom;
     width: 100%;
 }
+
 .bottom-input {
     dock: bottom;
     height: 3;
