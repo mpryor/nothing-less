@@ -1,14 +1,14 @@
 import sys
+import re
 from typing import Optional
 from threading import Thread
 from rich.markup import _parse
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
-from textual.theme import BUILTIN_THEMES
-from textual.widgets import DataTable, Footer, Input, Static
+from textual.widgets import DataTable, Input, Static
 from textual.screen import Screen
 from typing import List
 
@@ -97,7 +97,7 @@ class NlessApp(App):
         self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
-        self.delimiter = "n/a"  # Will be inferred from data
+        self.delimiter = None
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -122,7 +122,8 @@ class NlessApp(App):
                 cells = self._split_line(row_str)
                 if (
                     self.filter_column < len(cells)
-                    and self.current_filter.lower() in cells[self.filter_column].lower()
+                    and isinstance(self.current_filter, re.Pattern)
+                    and self.current_filter.search(cells[self.filter_column])
                 ):
                     filtered_rows.append(row_str)
         else:
@@ -204,10 +205,15 @@ class NlessApp(App):
             self.current_filter = None
             self.filter_column = None
         else:
-            self.current_filter = filter_value
-            self.filter_column = column_index if column_index is not None else 0
-            data_table = self.query_one(DataTable)
-            column_label = data_table.ordered_columns[self.filter_column].label
+            try:
+                # Compile the regex pattern
+                self.current_filter = re.compile(filter_value, re.IGNORECASE)
+                self.filter_column = column_index if column_index is not None else 0
+                data_table = self.query_one(DataTable)
+                column_label = data_table.ordered_columns[self.filter_column].label
+            except re.error:
+                self.notify("Invalid regex pattern", severity="error")
+                return
 
         self._update_table()
 
@@ -298,7 +304,7 @@ class NlessApp(App):
             parsed_value = [*_parse(cell_value)]
             if len(parsed_value) > 1:
                 cell_value = parsed_value[1][1]
-            self._perform_filter(cell_value, coordinate.column)
+            self._perform_filter(f"^{cell_value}$", coordinate.column)
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
@@ -497,6 +503,9 @@ class NlessApp(App):
                         else:
                             delimiter_scores[delimiter] -= 20
 
+        print("\n\n\n===========================================")
+        print("Delimiter scores:", delimiter_scores)
+        print("===========================================\n\n\n")
         # Default to comma if no clear winner
         if not delimiter_scores or max(delimiter_scores.values()) == 0:
             return "n/a"
