@@ -1,0 +1,18 @@
+#bottom-container {
+    height:auto;
+    dock:bottom;
+    width: 100%;
+}
+.bottom-input {
+    dock: bottom;
+    height: 3;
+}
+#help-screen {
+    background: $surface;
+    border: solid $primary;
+    padding: 1;
+    margin: 1;
+    height: 80%;
+    width: 80%;
+    align: center middle;
+}
