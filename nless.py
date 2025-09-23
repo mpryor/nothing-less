@@ -55,7 +55,8 @@ class NlessApp(App):
         self.current_filter = None
         self.filter_column = None
         self.search_term = None
-        self.sort_ascending = True
+        self.sort_key = None
+        self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
 
@@ -64,36 +65,68 @@ class NlessApp(App):
         event.input.remove()
         self._perform_search(input_value)
 
+    def _update_table(self) -> None:
+        """Updates the table based on the current filter and search terms."""
+        data_table = self.query_one(DataTable)
+        data_table.clear()
+        self.search_matches = []
+        self.current_match_index = -1
+
+        displayed_row_idx = 0
+        for row_str in self.raw_rows:
+            cells = row_str.split(",")
+
+            # Apply filter
+            if self.current_filter:
+                if not (
+                    self.filter_column < len(cells)
+                    and self.current_filter.lower() in cells[self.filter_column].lower()
+                ):
+                    continue  # Skip row if it doesn't match filter
+
+            # Apply search highlighting
+            highlighted_cells = []
+            for col_idx, cell in enumerate(cells):
+                if self.search_term and self.search_term in cell.lower():
+                    highlighted_cells.append(f"[reverse]{cell}[/reverse]")
+                    self.search_matches.append(Coordinate(displayed_row_idx, col_idx))
+                else:
+                    highlighted_cells.append(cell)
+
+            data_table.add_row(*highlighted_cells)
+            displayed_row_idx += 1
+
+        if self.sort_key:
+            data_table.sort(self.sort_key, reverse=self.sort_reverse)
+
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
     ) -> None:
         """Performs a filter on the data and updates the table."""
-        data_table = self.query_one(DataTable)
-
         if not filter_value:
             self.current_filter = None
             self.filter_column = None
-            data_table.clear()
-            for row in self.raw_rows:
-                data_table.add_row(*row.split(","))
             self.notify("Filter cleared")
-            return
+        else:
+            self.current_filter = filter_value
+            self.filter_column = column_index if column_index is not None else 0
+            data_table = self.query_one(DataTable)
+            column_label = data_table.ordered_columns[self.filter_column].label
+            self.notify(
+                f"Filtered column {column_label} by filter text: '{self.current_filter}'"
+            )
 
-        self.current_filter = filter_value
-        self.filter_column = column_index if column_index is not None else 0
+        self._update_table()
 
-        data_table.clear()
-
-        for row in self.raw_rows:
-            cells = row.split(",")
-            if (
-                self.filter_column < len(cells)
-                and self.current_filter.lower() in cells[self.filter_column].lower()
-            ):
-                data_table.add_row(*cells)
-
-        column_label = data_table.ordered_columns[self.filter_column].label
-        self.notify(f"Filtered column {column_label} by filter text: '{self.current_filter}'")
+    def _perform_search(self, search_term: Optional[str]) -> None:
+        """Performs a search on the data and updates the table."""
+        self.search_term = search_term.lower() if search_term else None
+        self.notify(
+            "Search cleared" if not search_term else f"Searching for '{search_term}'"
+        )
+        self._update_table()
+        if self.search_matches:
+            self._navigate_search(1)  # Jump to first match
 
     def handle_filter_submitted(self, event: Input.Submitted) -> None:
         filter_value = event.value
@@ -101,35 +134,6 @@ class NlessApp(App):
         data_table = self.query_one(DataTable)
         column_index = data_table.cursor_column
         self._perform_filter(filter_value, column_index)
-
-    def _perform_search(self, search_term: Optional[str]) -> None:
-        """Performs a search on the data and updates the table."""
-        self.search_term = search_term.lower() if search_term else None
-        self.search_matches = []
-        self.current_match_index = -1
-        data_table = self.query_one(DataTable)
-        data_table.clear()
-        if not self.first_row_parsed and self.raw_rows:
-            data_table.add_columns(*self.raw_rows[0].split(","))
-            self.first_row_parsed = True
-            self.raw_rows = self.raw_rows[1:]
-
-        for row_idx, row in enumerate(self.raw_rows):
-            cells = row.split(",")
-            highlighted_cells = []
-            for col_idx, cell in enumerate(cells):
-                if self.search_term and self.search_term in cell.lower():
-                    highlighted_cells.append(f"[reverse]{cell}[/reverse]")
-                    self.search_matches.append(Coordinate(row_idx, col_idx))
-                else:
-                    highlighted_cells.append(cell)
-            data_table.add_row(*highlighted_cells)
-
-        self.notify(
-            "Search cleared" if not search_term else f"Searching for '{search_term}'"
-        )
-        if self.search_matches:
-            self._navigate_search(1)  # Jump to first match
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
@@ -201,10 +205,16 @@ class NlessApp(App):
     def action_sort(self) -> None:
         data_table = self.query_one(DataTable)
         selected_column = data_table.ordered_columns[data_table.cursor_column]
-        data_table.sort(selected_column.key, reverse=not self.sort_ascending)
-        self.sort_ascending = not self.sort_ascending
+
+        if self.sort_key == selected_column.key:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_key = selected_column.key
+            self.sort_reverse = False
+
+        data_table.sort(self.sort_key, reverse=self.sort_reverse)
         self.notify(
-            f"Sorted by {selected_column.label} {'descending' if self.sort_ascending else 'ascending'}"
+            f"Sorted by {selected_column.label} {'descending' if self.sort_reverse else 'ascending'}"
         )
 
     def action_filter(self) -> None:
@@ -212,7 +222,10 @@ class NlessApp(App):
         data_table = self.query_one(DataTable)
         column_index = data_table.cursor_column
         column_label = data_table.ordered_columns[column_index].label
-        input = Input(placeholder=f"Type filter text for column: {column_label} and press enter", id="filter_input")
+        input = Input(
+            placeholder=f"Type filter text for column: {column_label} and press enter",
+            id="filter_input",
+        )
         self.mount(input)
         input.focus()
 
