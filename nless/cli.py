@@ -194,8 +194,10 @@ class NlessApp(App):
         data_table = self.query_one(NlessDataTable)
         selected_column_index = data_table.cursor_column
 
-        if self.sort_index == selected_column_index:
-            self.sort_reverse = not self.sort_reverse
+        if self.sort_index == selected_column_index and self.sort_reverse:
+            self.sort_index = None
+        elif self.sort_index == selected_column_index and not self.sort_reverse:
+            self.sort_reverse = True
         else:
             self.sort_index = selected_column_index
             self.sort_reverse = False
@@ -638,6 +640,10 @@ class NlessApp(App):
         if len(cells) != len(data_table.columns):
             return
 
+        filter_column_count_adjusted = self.filter_column
+        if len(self.unique_column_indexes) > 0 and self.filter_column is not None:
+            filter_column_count_adjusted += 1
+
         if self.current_filter:
             matches = False
             if self.filter_column is None:
@@ -649,12 +655,15 @@ class NlessApp(App):
                     for cell in cells
                 )
             else:
-                matches = self.filter_column < len(
+                matches = filter_column_count_adjusted < len(
                     cells
                 ) and self.current_filter.search(
-                    self._get_cell_value_without_markup(cells[self.filter_column])
+                    self._get_cell_value_without_markup(cells[filter_column_count_adjusted])
                 )
             if not matches:
+                print(f"{self.filter_column}")
+                print(f"{cells}")
+                print(f"{self.current_filter.pattern}")
                 return
 
         old_index = None
