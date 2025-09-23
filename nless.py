@@ -1,13 +1,12 @@
 import sys
-from typing import Optional, override
+from typing import Optional
 from threading import Thread
+from rich.markup import _parse
 
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Input
 from typing import List
-import select
-import shlex
 
 
 class NlessApp(App):
@@ -45,6 +44,7 @@ class NlessApp(App):
         ("n", "next_search", "Next Search Result"),
         ("*", "search_cursor_word", "Search for word under cursor"),
         ("p,N", "previous_search", "Previous Search Result"),
+        ("F", "filter_cursor_word", "Filter by word under cursor"),
     ]
 
     def __init__(self):
@@ -63,6 +63,44 @@ class NlessApp(App):
         input_value = event.value
         event.input.remove()
         self._perform_search(input_value)
+
+    def _perform_filter(
+        self, filter_value: Optional[str], column_index: Optional[int]
+    ) -> None:
+        """Performs a filter on the data and updates the table."""
+        data_table = self.query_one(DataTable)
+
+        if not filter_value:
+            self.current_filter = None
+            self.filter_column = None
+            data_table.clear()
+            for row in self.raw_rows:
+                data_table.add_row(*row.split(","))
+            self.notify("Filter cleared")
+            return
+
+        self.current_filter = filter_value
+        self.filter_column = column_index if column_index is not None else 0
+
+        data_table.clear()
+
+        for row in self.raw_rows:
+            cells = row.split(",")
+            if (
+                self.filter_column < len(cells)
+                and self.current_filter.lower() in cells[self.filter_column].lower()
+            ):
+                data_table.add_row(*cells)
+
+        column_label = data_table.ordered_columns[self.filter_column].label
+        self.notify(f"Filtered column {column_label} by filter text: '{self.current_filter}'")
+
+    def handle_filter_submitted(self, event: Input.Submitted) -> None:
+        filter_value = event.value
+        event.input.remove()
+        data_table = self.query_one(DataTable)
+        column_index = data_table.cursor_column
+        self._perform_filter(filter_value, column_index)
 
     def _perform_search(self, search_term: Optional[str]) -> None:
         """Performs a search on the data and updates the table."""
@@ -132,42 +170,6 @@ class NlessApp(App):
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
-    def handle_filter_submitted(self, event: Input.Submitted) -> None:
-        filter_value = event.value
-        event.input.remove()
-        if not filter_value:
-            self.current_filter = None
-            self.filter_column = None
-            data_table = self.query_one(DataTable)
-            data_table.clear()
-            for row in self.raw_rows:
-                data_table.add_row(*row.split(","))
-            self.notify("Filter cleared")
-            return
-
-        self.current_filter = filter_value
-
-        data_table = self.query_one(DataTable)
-        current_column = data_table.cursor_column
-        column_index = current_column if current_column is not None else 0
-        self.filter_column = column_index
-
-        # Clear the table but keep the columns
-        columns = data_table.columns.values()
-        data_table.clear()
-
-        # Filter and re-add matching rows
-        for row in self.raw_rows:
-            cells = row.split(",")
-            if (
-                column_index < len(cells)
-                and filter_value.lower() in cells[column_index].lower()
-            ):
-                data_table.add_row(*cells)
-        self.notify(
-            f"Filtered by '{filter_value}' in column {data_table.ordered_columns[column_index].label}"
-        )
-
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
         search_input = Input(
@@ -183,6 +185,19 @@ class NlessApp(App):
         yield table
         yield Footer()
 
+    def action_filter_cursor_word(self) -> None:
+        """Filter by the word under the cursor."""
+        data_table = self.query_one(DataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            parsed_value = [*_parse(cell_value)]
+            if len(parsed_value) > 1:
+                cell_value = parsed_value[1][1]
+            self._perform_filter(cell_value, coordinate.column)
+        except Exception:
+            self.notify("Cannot get cell value.", severity="error")
+
     def action_sort(self) -> None:
         data_table = self.query_one(DataTable)
         selected_column = data_table.ordered_columns[data_table.cursor_column]
@@ -194,7 +209,10 @@ class NlessApp(App):
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
-        input = Input(placeholder="Type filter and press Enter", id="filter_input")
+        data_table = self.query_one(DataTable)
+        column_index = data_table.cursor_column
+        column_label = data_table.ordered_columns[column_index].label
+        input = Input(placeholder=f"Type filter text for column: {column_label} and press enter", id="filter_input")
         self.mount(input)
         input.focus()
 
