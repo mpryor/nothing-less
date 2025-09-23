@@ -1,5 +1,13 @@
+from errno import EILSEQ
+from io import StringIO, TextIOWrapper
+import select
+from multiprocessing import Process
+import os
+import stat
 import sys
 import re
+import csv
+import time
 from typing import Optional
 from threading import Thread
 from rich.markup import _parse
@@ -82,6 +90,7 @@ class NlessApp(App):
         ("0", "scroll_to_beginning", "Start of Line"),
         ("s", "sort", "Sort selected column"),
         ("f", "filter", "Filter selected column (by prompt)"),
+        ("|", "filter_any", "Filter any column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
         ("/", "search", "Search (all columns, by prompt)"),
         ("&", "search_to_filter", "Apply current search as filter"),
@@ -97,6 +106,7 @@ class NlessApp(App):
         self.mounted = False
         self.first_row_parsed = False
         self.raw_rows = []
+        self.raw_header = ""
         self.current_filter = None
         self.filter_column = None
         self.search_term = None
@@ -127,8 +137,7 @@ class NlessApp(App):
         if self.current_filter:
             for row_str in self.raw_rows:
                 cells = self._split_line(row_str)
-                if self.filter_column is None:
-                    # Filter across all columns
+                if self.filter_column is None: # If we have a current_filter, but filter_column is None, we are searching all columns
                     if any(self.current_filter.search(cell) for cell in cells):
                         filtered_rows.append(row_str)
                 elif self.filter_column < len(cells) and self.current_filter.search(
@@ -153,22 +162,44 @@ class NlessApp(App):
                 # Fallback if column not found or row is malformed
                 pass
 
+        final_rows = []
+
         # 3. Add to table and find search matches
-        for displayed_row_idx, row_str in enumerate(filtered_rows):
-            cells = self._split_line(row_str)
-            highlighted_cells = []
-            for col_idx, cell in enumerate(cells):
-                if self.search_term and isinstance(self.search_term, re.Pattern):
-                    if self.search_term.search(cell):
-                        highlighted_cells.append(f"[reverse]{cell}[/reverse]")
-                        self.search_matches.append(
-                            Coordinate(displayed_row_idx, col_idx)
-                        )
+        if self.search_term:
+            for displayed_row_idx, row_str in enumerate(filtered_rows):
+                cells = self._split_line(row_str)
+                highlighted_cells = []
+                for col_idx, cell in enumerate(cells):
+                    if self.search_term and isinstance(self.search_term, re.Pattern):
+                        if self.search_term.search(cell):
+                            cell = re.sub(self.search_term, lambda m: f"[reverse]{m.group(0)}[/reverse]", cell)
+                            highlighted_cells.append(cell)
+                            self.search_matches.append(
+                                Coordinate(displayed_row_idx, col_idx)
+                            )
+                        else:
+                            highlighted_cells.append(cell)
                     else:
                         highlighted_cells.append(cell)
-                else:
-                    highlighted_cells.append(cell)
-            data_table.add_row(*highlighted_cells, key=str(displayed_row_idx))
+                final_rows.append(highlighted_cells)
+        else:
+            for row_str in filtered_rows:
+                cells = self._split_line(row_str)
+                final_rows.append(cells)
+
+        try:
+            data_table.add_rows(final_rows)
+        except ValueError:
+            data_table.clear(columns=True)
+            data_table.add_column("log")
+            self.delimiter = "raw"
+            self.raw_rows.insert(0, self.raw_header)
+            self.notify(
+                "Inconsistent row lengths detected. Switching to raw mode.",
+                severity="warning",
+            )
+            self._update_table()
+            return
 
         # Restore cursor column position
         if current_column is not None:
@@ -395,7 +426,7 @@ class NlessApp(App):
         if not self.search_term:
             self.notify("No active search to convert to filter", severity="warning")
             return
-            
+
         self.current_filter = self.search_term  # Reuse the compiled regex
         self.filter_column = None  # Filter across all columns
         self._update_table()
@@ -473,34 +504,27 @@ class NlessApp(App):
         self.mounted = True
 
     def add_logs(self, log_lines: list[str]) -> None:
-        print(f"Adding {len(log_lines)} log lines", file=sys.stderr)
         data_table = self.query_one(DataTable)
 
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
             self.delimiter = self._infer_delimiter(log_lines[: min(5, len(log_lines))])
 
-        if self.delimiter != "n/a":
+        if self.delimiter != "raw":
             if not self.first_row_parsed:
                 first_log_line = log_lines[0]
+                self.raw_header = first_log_line
                 parts = self._split_line(first_log_line)
                 data_table.add_columns(*parts)
                 self.first_row_parsed = True
-                log_lines = log_lines[1:]
-
-            for log_line in log_lines:
-                self.raw_rows.append(log_line)
-                data_table.add_row(*self._split_line(log_line))
+                log_lines = log_lines[1:] # Exclude header line
         else:
             # No delimiter found, treat entire line as single column
             if not self.first_row_parsed:
                 data_table.add_column("log")
                 self.first_row_parsed = True
 
-            for log_line in log_lines:
-                self.raw_rows.append(log_line)
-                data_table.add_row(log_line)
-
+        self.raw_rows.extend(log_lines)
         self._update_table()
 
     def _split_line(self, line: str) -> list[str]:
@@ -514,7 +538,9 @@ class NlessApp(App):
         """
         if self.delimiter == " ":
             return self._split_aligned_row(line)
-        if self.delimiter == "n/a":
+        elif self.delimiter == ",":
+            return self._split_csv_row(line)
+        elif self.delimiter == "raw":
             return [line]
         return line.split(self.delimiter)
 
@@ -529,6 +555,24 @@ class NlessApp(App):
         """
         # Split on multiple spaces and filter out empty strings
         return [field for field in line.split() if field]
+
+    def _split_csv_row(self, line: str) -> list[str]:
+        """Split a CSV row properly handling quoted values.
+
+        Args:
+            line: The input line to split
+
+        Returns:
+            List of fields from the line
+        """
+        try:
+            # Use csv module to properly parse the line
+            reader = csv.reader(StringIO(line.strip()))
+            row = next(reader)
+            return row
+        except (csv.Error, StopIteration):
+            # Fallback to simple split if CSV parsing fails
+            return line.split(",")
 
     def _infer_delimiter(self, sample_lines: list[str]) -> str | None:
         """Infer the delimiter from a sample of lines.
@@ -551,6 +595,8 @@ class NlessApp(App):
                 if delimiter == " ":
                     # Special handling for space-aligned tables
                     parts = self._split_aligned_row(line)
+                elif delimiter == ",":
+                    parts = self._split_csv_row(line)
                 else:
                     parts = line.split(delimiter)
 
@@ -583,12 +629,9 @@ class NlessApp(App):
                         else:
                             delimiter_scores[delimiter] -= 20
 
-        print("\n\n\n===========================================")
-        print("Delimiter scores:", delimiter_scores)
-        print("===========================================\n\n\n")
         # Default to comma if no clear winner
         if not delimiter_scores or max(delimiter_scores.values()) == 0:
-            return "n/a"
+            return "raw"
 
         # Return the delimiter with the highest score
         return max(delimiter_scores.items(), key=lambda x: x[1])[0]
@@ -597,24 +640,55 @@ class NlessApp(App):
 class InputConsumer:
     """Handles stdin input and command processing."""
 
-    def __init__(self, app: NlessApp):
+    def __init__(self, app: NlessApp, new_fd: int):
         self.app = app
+        self.new_fd = new_fd
+
+    def is_streaming(self) -> bool:
+        # Returns True if stdin is a pipe (streaming), False if it's a regular file
+        mode = os.fstat(self.new_fd).st_mode
+        return stat.S_ISFIFO(mode)
 
     def run(self) -> None:
         """Read input and handle commands."""
+        stdin = os.fdopen(self.new_fd)
+        streaming = self.is_streaming()
+        buffer = []
+        BATCH_SIZE = 1000
+        TIMEOUT = .5
+
         while True:
             if self.app.mounted:
-                lines = sys.stdin.readlines()
-                if len(lines) > 0:
-                    self.handle_input(lines)
+                if streaming:
+                    rlist, _, _ = select.select([stdin], [], [], TIMEOUT)
+                    if rlist:
+                        line = stdin.readline()
+                        if line:
+                            buffer.append(line)
+                            if len(buffer) >= BATCH_SIZE:
+                                self.handle_input(buffer)
+                                buffer = []
+                    else:
+                        # Timeout reached, process buffer if not empty
+                        if buffer:
+                            self.handle_input(buffer)
+                            buffer = []
+                else:
+                    lines = stdin.readlines()
+                    if len(lines) > 0:
+                        self.handle_input(lines)
+                    else:
+                        time.sleep(1)
 
-    def handle_input(self, line: list[str]) -> None:
-        self.app.add_logs(line)
+    def handle_input(self, lines: list[str]) -> None:
+        self.app.add_logs(lines)
 
 
 if __name__ == "__main__":
     app = NlessApp()
-    ic = InputConsumer(app)
+    new_fd = sys.stdin.fileno()
+    ic = InputConsumer(app, new_fd)
     t = Thread(target=ic.run, daemon=True)
     t.start()
+    sys.__stdin__ = open("/dev/tty")
     app.run()
