@@ -21,6 +21,8 @@ from textual.widgets import DataTable, Input, Static
 from textual.screen import Screen
 from typing import List
 
+from nlesstable import NlessDataTable
+
 
 class HelpScreen(Screen):
     """A widget to display keybindings help."""
@@ -63,6 +65,9 @@ class NlessApp(App):
         align: center middle;
     }
     """
+
+    scroll_x = 100
+    scroll_y = 500
 
     SCREENS = {"HelpScreen": HelpScreen}
 
@@ -112,12 +117,15 @@ class NlessApp(App):
         event.input.remove()
         self._perform_search(input_value)
 
+
     def _update_table(self) -> None:
         """Updates the table based on the current filter and search terms."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
 
         # Store current cursor position
         current_column = data_table.cursor_column
+        current_row = data_table.cursor_row
+        scroll_offset = data_table.scroll_offset
 
         data_table.clear()
         self.search_matches = []
@@ -132,7 +140,12 @@ class NlessApp(App):
                 if (
                     self.filter_column is None
                 ):  # If we have a current_filter, but filter_column is None, we are searching all columns
-                    if any(self.current_filter.search(self.get_cell_value_without_markup(cell)) for cell in cells):
+                    if any(
+                        self.current_filter.search(
+                            self.get_cell_value_without_markup(cell)
+                        )
+                        for cell in cells
+                    ):
                         filtered_rows.append(row_str)
                 elif self.filter_column < len(cells) and self.current_filter.search(
                     self.get_cell_value_without_markup(cells[self.filter_column])
@@ -198,22 +211,19 @@ class NlessApp(App):
             )
 
         data_table.add_rows(final_rows)
+        self.call_after_refresh(lambda: self._restore_position(data_table, current_column, current_row, scroll_offset.x, scroll_offset.y))
 
-        # Restore cursor column position
-        if current_column is not None:
-            data_table.cursor_coordinate = data_table.cursor_coordinate._replace(
-                column=min(current_column, len(data_table.columns) - 1)
-            )
+    def _restore_position(self, data_table, cursor_x, cursor_y, scroll_x, scroll_y):
+        data_table.move_cursor(row=cursor_y, column=cursor_x, animate=False, scroll=False)
+        self.call_after_refresh(lambda: data_table.scroll_to(scroll_x, scroll_y, animate=False, immediate=True))
 
-        self._update_status_bar()
-
-    def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
+    def on_data_table_cell_highlighted(self, event: NlessDataTable.CellHighlighted) -> None:
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
     def _update_status_bar(self) -> None:
         status_bar = self.query_one("#status_bar", Static)
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
 
         total_rows = data_table.row_count
         total_cols = len(data_table.columns)
@@ -275,7 +285,7 @@ class NlessApp(App):
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 self.filter_column = column_index if column_index is not None else 0
-                data_table = self.query_one(DataTable)
+                data_table = self.query_one(NlessDataTable)
                 column_label = data_table.ordered_columns[self.filter_column].label
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
@@ -286,7 +296,10 @@ class NlessApp(App):
     def _perform_search(self, search_term: Optional[str]) -> None:
         """Performs a search on the data and updates the table."""
         try:
-            self.search_term = re.compile(search_term, re.IGNORECASE)
+            if search_term:
+                self.search_term = re.compile(search_term, re.IGNORECASE)
+            else:
+                self.search_term = None
         except re.error:
             self.notify("Invalid regex pattern", severity="error")
             return
@@ -297,7 +310,7 @@ class NlessApp(App):
     def handle_filter_submitted(self, event: Input.Submitted) -> None:
         filter_value = event.value
         event.input.remove()
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
 
         if event.input.id == "filter_input_any":
             self._perform_filter_any(filter_value)
@@ -320,10 +333,17 @@ class NlessApp(App):
         self.search_term = None
         prev_delimiter = self.delimiter
         event.input.remove()
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         self.delimiter_inferred = False
         delimiter = event.value
-        if delimiter not in [",", "\\t", " ", "|", ";", "raw"]: # if our delimiter is not one of the common ones, treat it as a regex
+        if delimiter not in [
+            ",",
+            "\\t",
+            " ",
+            "|",
+            ";",
+            "raw",
+        ]:  # if our delimiter is not one of the common ones, treat it as a regex
             try:
                 pattern = re.compile(rf"{delimiter}")  # Validate regex
                 self.delimiter = pattern
@@ -344,10 +364,15 @@ class NlessApp(App):
             new_header = ["log"]
         elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
             new_header = self._split_line(self.raw_rows[0])
+            self.raw_rows.pop(0)
         else:
             new_header = self._split_line(self.raw_header)
 
-        if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
+        if (
+            (prev_delimiter != delimiter)
+            and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern))
+            and (delimiter == "raw" or isinstance(delimiter, re.Pattern))
+        ):
             self.raw_rows.insert(0, self.raw_header)
 
         data_table.clear(columns=True)
@@ -370,7 +395,7 @@ class NlessApp(App):
             self.current_match_index + direction + num_matches
         ) % num_matches  # Wrap around
         target_coord = self.search_matches[self.current_match_index]
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         data_table.cursor_coordinate = target_coord
         self._update_status_bar()
 
@@ -385,14 +410,13 @@ class NlessApp(App):
     def get_cell_value_without_markup(self, cell_value) -> str:
         """Extract plain text from a cell value, removing any markup."""
         parsed_value = [*_parse(cell_value)]
-        print(parsed_value)
         if len(parsed_value) > 1:
             return "".join([res[1] for res in parsed_value if res[1]])
         return cell_value
 
     def action_search_cursor_word(self) -> None:
         """Search for the word under the cursor."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -424,7 +448,7 @@ class NlessApp(App):
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
-        table = DataTable(zebra_stripes=True, id="data_table")
+        table = NlessDataTable(zebra_stripes=True, id="data_table")
         yield table
         with Vertical(id="bottom-container"):
             yield Static(
@@ -435,7 +459,7 @@ class NlessApp(App):
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -446,7 +470,7 @@ class NlessApp(App):
             self.notify("Cannot get cell value.", severity="error")
 
     def action_sort(self) -> None:
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         selected_column_key = data_table.ordered_columns[data_table.cursor_column].key
 
         if self.sort_key == selected_column_key:
@@ -479,7 +503,7 @@ class NlessApp(App):
 
     def action_filter_any(self) -> None:
         """Filter any column based on user input."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         input = Input(
             placeholder="Type filter text to match across all columns",
             id="filter_input_any",
@@ -490,7 +514,7 @@ class NlessApp(App):
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         column_index = data_table.cursor_column
         column_label = data_table.ordered_columns[column_index].label
         input = Input(
@@ -503,31 +527,31 @@ class NlessApp(App):
 
     def action_cursor_up(self) -> None:
         """Move cursor up."""
-        self.query_one(DataTable).action_cursor_up()
+        self.query_one(NlessDataTable).action_cursor_up()
 
     def action_cursor_down(self) -> None:
         """Move cursor down."""
-        self.query_one(DataTable).action_cursor_down()
+        self.query_one(NlessDataTable).action_cursor_down()
 
     def action_cursor_left(self) -> None:
         """Move cursor left."""
-        self.query_one(DataTable).action_cursor_left()
+        self.query_one(NlessDataTable).action_cursor_left()
 
     def action_cursor_right(self) -> None:
         """Move cursor left."""
-        self.query_one(DataTable).action_cursor_right()
+        self.query_one(NlessDataTable).action_cursor_right()
 
     def action_scroll_to_bottom(self) -> None:
         """Scroll to top."""
-        self.query_one(DataTable).action_scroll_bottom()
+        self.query_one(NlessDataTable).action_scroll_bottom()
 
     def action_scroll_to_top(self) -> None:
         """Scroll to top."""
-        self.query_one(DataTable).action_scroll_top()
+        self.query_one(NlessDataTable).action_scroll_top()
 
     def action_scroll_to_end(self) -> None:
         """Move cursor to end of current row."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         last_column = len(data_table.columns) - 1
         data_table.cursor_coordinate = data_table.cursor_coordinate._replace(
             column=last_column
@@ -535,24 +559,24 @@ class NlessApp(App):
 
     def action_scroll_to_beginning(self) -> None:
         """Move cursor to beginning of current row."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=0)
 
     def action_page_up(self) -> None:
         """Page up."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         data_table.action_page_up()
 
     def action_page_down(self) -> None:
         """Page down."""
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
         data_table.action_page_down()
 
     def on_mount(self) -> None:
         self.mounted = True
 
     def add_logs(self, log_lines: list[str]) -> None:
-        data_table = self.query_one(DataTable)
+        data_table = self.query_one(NlessDataTable)
 
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
@@ -600,7 +624,10 @@ class NlessApp(App):
         else:
             cells = line.split(self.delimiter)
         cells = [txt.replace("\t", "  ") for txt in cells]
-        cells = [f"[#aaaaaa]{cell}[/#aaaaaa]" if i%2!=0 else cell for (i, cell) in enumerate(cells)]
+        cells = [
+            f"[#aaaaaa]{cell}[/#aaaaaa]" if i % 2 != 0 else cell
+            for (i, cell) in enumerate(cells)
+        ]
         return cells
 
     def _split_aligned_row(self, line: str) -> list[str]:
