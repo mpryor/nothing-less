@@ -7,8 +7,8 @@ from textual.widgets.data_table import CellType, CursorType, DuplicateKey, Row, 
 
 class NlessDataTable(DataTable):
     BINDINGS = [
-        ("G", "scroll_to_bottom", "Scroll to Bottom"),
-        ("g", "scroll_to_top", "Scroll to Top"),
+        ("G", "scroll_bottom", "Scroll to Bottom"),
+        ("g", "scroll_top", "Scroll to Top"),
         ("d", "page_down", "Page Down"),
         ("u", "page_up", "Page up"),
         ("up,k", "cursor_up", "Up"),

@@ -25,26 +25,10 @@ from textual.widgets import DataTable, Input, Static
 from textual.screen import Screen
 from typing import List
 
+from .help import HelpScreen
 from .delimiter import infer_delimiter, split_line
 from .nlesstable import NlessDataTable
 from .input import InputConsumer
-
-
-class HelpScreen(Screen):
-    """A widget to display keybindings help."""
-
-    BINDINGS = [("escape", "app.pop_screen", "Close Help")]
-
-    def compose(self) -> ComposeResult:
-        bindings = self.app.BINDINGS
-        help_text = "[bold]Keybindings[/bold]:\n\n"
-        for binding in bindings:
-            keys, _, description = binding
-            help_text += f"{keys:<12} - {description}\n"
-        yield Static(help_text)
-        yield Static(
-            "[bold]Press 'Escape' to close this help.[/bold]", id="help-footer"
-        )
 
 
 class NlessApp(App):
@@ -56,16 +40,6 @@ class NlessApp(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("G", "scroll_to_bottom", "Scroll to Bottom"),
-        ("g", "scroll_to_top", "Scroll to Top"),
-        ("d", "page_down", "Page Down"),
-        ("u", "page_up", "Page up"),
-        ("up,k", "cursor_up", "Up"),
-        ("down,j", "cursor_down", "Down"),
-        ("l,w,W", "cursor_right", "Right"),
-        ("h,b,B", "cursor_left", "Left"),
-        ("$", "scroll_to_end", "End of Line"),
-        ("0", "scroll_to_beginning", "Start of Line"),
         ("D", "delimiter", "Change Delimiter"),
         ("s", "sort", "Sort selected column"),
         ("f", "filter", "Filter selected column (by prompt)"),
@@ -77,6 +51,11 @@ class NlessApp(App):
         ("p,N", "previous_search", "Previous search result"),
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
         ("?", "push_screen('HelpScreen')", "Show Help"),
+        (
+            "t",
+            "toggle_tail",
+            "Keep cursor at the bottom of the screen even as new logs arrive.",
+        ),
     ]
 
     def __init__(self):
@@ -96,6 +75,7 @@ class NlessApp(App):
         self.current_match_index: int = -1
         self.delimiter = None
         self.delimiter_inferred = False
+        self.is_tailing = False
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
@@ -107,6 +87,9 @@ class NlessApp(App):
                 classes="bd",
                 id="status_bar",
             )
+
+    def action_toggle_tail(self) -> None:
+        self.is_tailing = not self.is_tailing
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -220,53 +203,6 @@ class NlessApp(App):
             f"Type filter text for column: {column_label} and press enter",
             "filter_input",
         )
-
-    def action_cursor_up(self) -> None:
-        """Move cursor up."""
-        self.query_one(NlessDataTable).action_cursor_up()
-
-    def action_cursor_down(self) -> None:
-        """Move cursor down."""
-        self.query_one(NlessDataTable).action_cursor_down()
-
-    def action_cursor_left(self) -> None:
-        """Move cursor left."""
-        self.query_one(NlessDataTable).action_cursor_left()
-
-    def action_cursor_right(self) -> None:
-        """Move cursor left."""
-        self.query_one(NlessDataTable).action_cursor_right()
-
-    def action_scroll_to_bottom(self) -> None:
-        """Scroll to top."""
-        self.query_one(NlessDataTable).action_scroll_bottom()
-
-    def action_scroll_to_top(self) -> None:
-        """Scroll to top."""
-        self.query_one(NlessDataTable).action_scroll_top()
-
-    def action_scroll_to_end(self) -> None:
-        """Move cursor to end of current row."""
-        data_table = self.query_one(NlessDataTable)
-        last_column = len(data_table.columns) - 1
-        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(
-            column=last_column
-        )
-
-    def action_scroll_to_beginning(self) -> None:
-        """Move cursor to beginning of current row."""
-        data_table = self.query_one(NlessDataTable)
-        data_table.cursor_coordinate = data_table.cursor_coordinate._replace(column=0)
-
-    def action_page_up(self) -> None:
-        """Page up."""
-        data_table = self.query_one(NlessDataTable)
-        data_table.action_page_up()
-
-    def action_page_down(self) -> None:
-        """Page down."""
-        data_table = self.query_one(NlessDataTable)
-        data_table.action_page_down()
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -490,9 +426,15 @@ class NlessApp(App):
         row_prefix = self._rich_bold("Row")
         col_prefix = self._rich_bold("Col")
         position_text = f"{row_prefix}: {current_row}/{total_rows} {col_prefix}: {current_col}/{total_cols}"
+
+        if self.is_tailing:
+            tailing_text = "| " + self._rich_bold("[#00bb00]Tailing (`t` to stop)[/#00bb00]")
+        else:
+            tailing_text = ""
+
         status_bar = self.query_one("#status_bar", Static)
         status_bar.update(
-            f"{sort_text} | {filter_text} | {search_text} | {position_text}"
+            f"{sort_text} | {filter_text} | {search_text} | {position_text} {tailing_text}"
         )
 
     def _perform_filter_any(self, filter_value: Optional[str]) -> None:
@@ -597,6 +539,8 @@ class NlessApp(App):
             for line in log_lines:
                 self._add_log_line(line)
 
+        self._update_status_bar()
+
     def _add_log_line(self, log_line: str):
         """
         Adds a single log line by determining:
@@ -655,6 +599,9 @@ class NlessApp(App):
 
         self.displayed_rows.append(cells)
         data_table.add_row_at(*cells, row_index=new_index)
+
+        if self.is_tailing:
+            data_table.action_scroll_bottom()
 
     def _create_prompt(self, placeholder, id):
         input = Input(
