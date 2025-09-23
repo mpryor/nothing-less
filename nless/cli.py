@@ -887,7 +887,7 @@ class NlessApp(App):
     ]
 
     async def on_resize(self, event: events.Resize) -> None:
-        pass
+        self.refresh()
 
     def action_filter_columns(self) -> None:
         """Filter columns by user input."""
@@ -1204,8 +1204,12 @@ class NlessApp(App):
             try:
                 pattern = re.compile(rf"{delimiter}")  # Validate regex
                 curr_buffer.delimiter = pattern
-                data_table.clear(columns=True)
-                data_table.add_columns(*list(pattern.groupindex.keys()))
+                curr_buffer.current_columns = [
+                    Column(
+                        name=h, labels=set(), render_position=i, data_position=i, hidden=False
+                    )
+                    for i, h in enumerate(pattern.groupindex.keys())
+                ]
                 if prev_delimiter != "raw" and not isinstance(
                     prev_delimiter, re.Pattern
                 ):
