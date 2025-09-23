@@ -137,6 +137,7 @@ class NlessApp(App):
 
     def action_toggle_tail(self) -> None:
         self.is_tailing = not self.is_tailing
+        self._update_status_bar()
 
     def action_change_cursor(self) -> None:
         data_table = self.query_one(NlessDataTable)
@@ -475,7 +476,10 @@ class NlessApp(App):
         elif self.filter_column is None:
             filter_text = f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
         else:
-            filter_text = f"{filter_prefix}: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter.pattern}'"
+            filter_index = self.filter_column
+            if len(self.unique_column_indexes) > 0:
+                filter_index += 1
+            filter_text = f"{filter_prefix}: {data_table.ordered_columns[filter_index].label}='{self.current_filter.pattern}'"
 
         if self.search_term is not None:
             search_text = f"{search_prefix}: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
@@ -498,12 +502,12 @@ class NlessApp(App):
 
         column_text = ""
         if len(self.unique_column_indexes):
-            column_indexes = ",".join([str(i) for i in self.unique_column_indexes])
-            column_text = f"| unique cols: {column_indexes}"
+            column_names = ",".join([data_table.ordered_columns[i+1].label.plain for i in self.unique_column_indexes])
+            column_text = f"| unique cols: ({column_names}) "
 
         status_bar = self.query_one("#status_bar", Static)
         status_bar.update(
-            f"{sort_text} | {filter_text} | {search_text} | {position_text} | {column_text} {tailing_text}"
+            f"{sort_text} | {filter_text} | {search_text} | {position_text} {column_text}{tailing_text}"
         )
 
     def _perform_filter_any(self, filter_value: Optional[str]) -> None:
