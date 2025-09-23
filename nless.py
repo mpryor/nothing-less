@@ -3,7 +3,7 @@ from typing import Optional
 from threading import Thread
 
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Footer
 from textual import on
 from typing import List, Dict, Optional
 import select
@@ -17,8 +17,8 @@ class NlessApp(App):
         ("q", "quit", "Quit"),
         ("f", "filter", "Filter"),
         ("s", "sort", "Sort"),
-        ("up", "cursor_up", ""),
-        ("down", "cursor_down", ""),
+        ("up", "cursor_up", "Up"),
+        ("down", "cursor_down", "Down"),
     ]
 
     def __init__(self):
@@ -34,6 +34,7 @@ class NlessApp(App):
         self.table = DataTable()
         self.setup_table()
         yield self.table
+        yield Footer()
 
     def setup_table(self) -> None:
         """Initialize table columns."""
