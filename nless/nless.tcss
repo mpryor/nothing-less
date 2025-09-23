@@ -3,9 +3,14 @@
     dock:bottom;
     width: 100%;
 }
+
 .bottom-input {
     dock: bottom;
     height: 3;
+}
+
+.dock-bottom {
+    dock: bottom;
 }
 
 #help-screen {
