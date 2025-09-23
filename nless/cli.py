@@ -25,6 +25,7 @@ from textual.widgets import DataTable, Input, Static
 from textual.screen import Screen
 from typing import List
 
+from .delimiter import infer_delimiter, split_line
 from .nlesstable import NlessDataTable
 from .input import InputConsumer
 
@@ -144,7 +145,7 @@ class NlessApp(App):
         rows_with_inconsistent_length = []
         if self.current_filter:
             for row_str in self.raw_rows:
-                cells = self._split_line(row_str)
+                cells = split_line(row_str, self.delimiter)
                 if len(cells) != column_count:
                     rows_with_inconsistent_length.append(cells)
                     continue
@@ -165,7 +166,7 @@ class NlessApp(App):
                     filtered_rows.append(row_str)
         else:
             for row in self.raw_rows:
-                cells = self._split_line(row)
+                cells = split_line(row, self.delimiter)
                 if len(cells) == column_count:
                     filtered_rows.append(row)
                 else:
@@ -175,7 +176,7 @@ class NlessApp(App):
         if self.sort_index is not None:
             try:
                 filtered_rows.sort(
-                    key=lambda r: self._split_line(r)[self.sort_index],
+                    key=lambda r: split_line(r, self.delimiter)[self.sort_index],
                     reverse=self.sort_reverse,
                 )
             except (ValueError, IndexError):
@@ -187,7 +188,7 @@ class NlessApp(App):
         # 3. Add to table and find search matches
         if self.search_term:
             for displayed_row_idx, row_str in enumerate(filtered_rows):
-                cells = self._split_line(row_str)
+                cells = split_line(row_str, self.delimiter)
                 highlighted_cells = []
                 for col_idx, cell in enumerate(cells):
                     if isinstance(
@@ -208,7 +209,7 @@ class NlessApp(App):
                 final_rows.append(highlighted_cells)
         else:
             for row_str in filtered_rows:
-                cells = self._split_line(row_str)
+                cells = split_line(row_str, self.delimiter)
                 final_rows.append(cells)
 
         if len(rows_with_inconsistent_length) > 0:
@@ -306,9 +307,6 @@ class NlessApp(App):
                 # Compile the regex pattern
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 self.filter_column = column_index if column_index is not None else 0
-                print(
-                    f"Filtering column {self.filter_column} with pattern: {self.current_filter.pattern}"
-                )
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
@@ -390,10 +388,10 @@ class NlessApp(App):
         if delimiter == "raw":
             new_header = ["log"]
         elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
-            new_header = self._split_line(self.raw_rows[0])
+            new_header = split_line(self.raw_rows[0], self.delimiter)
             self.raw_rows.pop(0)
         else:
-            new_header = self._split_line(self.raw_header)
+            new_header = split_line(self.raw_header, self.delimiter)
 
         if (
             (prev_delimiter != delimiter)
@@ -607,14 +605,14 @@ class NlessApp(App):
 
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
-            self.delimiter = self._infer_delimiter(log_lines[: min(5, len(log_lines))])
+            self.delimiter = infer_delimiter(log_lines[: min(5, len(log_lines))])
             self.delimiter_inferred = True
 
         if self.delimiter != "raw":
             if not self.first_row_parsed:
                 first_log_line = log_lines[0]
                 self.raw_header = first_log_line
-                parts = self._split_line(first_log_line)
+                parts = split_line(first_log_line, self.delimiter)
                 data_table.add_columns(*parts)
                 self.first_row_parsed = True
                 log_lines = log_lines[1:]  # Exclude header line
@@ -634,7 +632,7 @@ class NlessApp(App):
 
     def _add_log_line(self, log_line: str):
         data_table = self.query_one(NlessDataTable)
-        cells = self._split_line(log_line)
+        cells = split_line(log_line, self.delimiter)
         if len(cells) != len(data_table.columns):
             return
 
@@ -685,143 +683,6 @@ class NlessApp(App):
         self.displayed_rows.append(cells)
         data_table.add_row_at(*cells, row_index=new_index)
 
-    def _split_line(self, line: str) -> list[str]:
-        """Split a line using the appropriate delimiter method.
-
-        Args:
-            line: The input line to split
-
-        Returns:
-            List of fields from the line
-        """
-        if self.delimiter == " ":
-            cells = self._split_aligned_row(line)
-        elif self.delimiter == "  ":
-            cells = self._split_aligned_row_preserve_single_spaces(line)
-        elif self.delimiter == ",":
-            cells = self._split_csv_row(line)
-        elif self.delimiter == "raw":
-            cells = [line]
-        elif isinstance(self.delimiter, re.Pattern):
-            match = self.delimiter.match(line)
-            if match:
-                cells = [*match.groups()]
-            else:
-                cells = []
-        else:
-            cells = line.split(self.delimiter)
-        cells = [txt.replace("\t", "  ") for txt in cells]
-        cells = [
-            f"[#aaaaaa]{cell}[/#aaaaaa]" if i % 2 != 0 else cell
-            for (i, cell) in enumerate(cells)
-        ]
-        return cells
-
-    def _split_aligned_row_preserve_single_spaces(self, line: str) -> list[str]:
-        """Split a space-aligned row into fields by collapsing multiple spaces, but preserving single spaces within fields.
-
-        Args:
-            line: The input line to split
-
-        Returns:
-            List of fields from the line
-        """
-        # Use regex to split on two or more spaces
-        return [field for field in re.split(r" {2,}", line) if field]
-
-    def _split_aligned_row(self, line: str) -> list[str]:
-        """Split a space-aligned row into fields by collapsing multiple spaces.
-
-        Args:
-            line: The input line to split
-
-        Returns:
-            List of fields from the line
-        """
-        # Split on multiple spaces and filter out empty strings
-        return [field for field in line.split() if field]
-
-    def _split_csv_row(self, line: str) -> list[str]:
-        """Split a CSV row properly handling quoted values.
-
-        Args:
-            line: The input line to split
-
-        Returns:
-            List of fields from the line
-        """
-        try:
-            # Use csv module to properly parse the line
-            reader = csv.reader(StringIO(line.strip()))
-            row = next(reader)
-            return row
-        except (csv.Error, StopIteration):
-            # Fallback to simple split if CSV parsing fails
-            return line.split(",")
-
-    def _infer_delimiter(self, sample_lines: list[str]) -> str | None:
-        """Infer the delimiter from a sample of lines.
-
-        Args:
-            sample_lines: A list of strings to analyze for delimiter detection.
-
-        Returns:
-            The most likely delimiter character.
-        """
-        common_delimiters = [",", "\t", "|", ";", " ", "  "]
-        delimiter_scores = {d: 0 for d in common_delimiters}
-
-        for line in sample_lines:
-            # Skip empty lines
-            if not line.strip():
-                continue
-
-            for delimiter in common_delimiters:
-                if delimiter == " ":
-                    # Special handling for space-aligned tables
-                    parts = self._split_aligned_row(line)
-                elif delimiter == "  ":
-                    parts = self._split_aligned_row_preserve_single_spaces(line)
-                elif delimiter == ",":
-                    parts = self._split_csv_row(line)
-                else:
-                    parts = line.split(delimiter)
-
-                # Score based on number of fields and consistency
-                if len(parts) > 1:
-                    # More fields = higher score
-                    delimiter_scores[delimiter] += len(parts)
-
-                    # Consistent non-empty fields = higher score
-                    non_empty = sum(1 for p in parts if p.strip())
-                    if non_empty == len(parts):
-                        delimiter_scores[delimiter] += 2
-
-                    # If fields are roughly similar lengths = higher score
-                    lengths = [len(p.strip()) for p in parts]
-                    avg_len = sum(lengths) / len(lengths)
-                    if all(abs(l - avg_len) < avg_len for l in lengths):
-                        delimiter_scores[delimiter] += 1
-
-                    # Special case: if tab and consistent fields, boost score
-                    if delimiter == "\t" and non_empty == len(parts):
-                        delimiter_scores[delimiter] += 3
-
-                    # Special case: if space delimiter and parts are consistent across lines
-                    if delimiter == " " and len(sample_lines) > 1:
-                        # Check if number of fields is consistent across lines
-                        first_line_parts = self._split_aligned_row(sample_lines[0])
-                        if len(parts) == len(first_line_parts):
-                            delimiter_scores[delimiter] += 2
-                        else:
-                            delimiter_scores[delimiter] -= 20
-
-        # Default to comma if no clear winner
-        if not delimiter_scores or max(delimiter_scores.values()) == 0:
-            return "raw"
-
-        # Return the delimiter with the highest score
-        return max(delimiter_scores.items(), key=lambda x: x[1])[0]
 
 def main():
     app = NlessApp()
