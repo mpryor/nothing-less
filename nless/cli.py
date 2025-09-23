@@ -1,5 +1,6 @@
 import argparse
 import bisect
+from dataclasses import dataclass
 import re
 import sys
 from collections import defaultdict
@@ -9,15 +10,33 @@ from typing import List, Optional
 from rich.markup import _parse
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Grid, Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
-from textual.widgets import Input, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import DataTable, Input, Select, Static
 
 from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
 from .input import InputConsumer
 from .nlesstable import NlessDataTable
+
+
+from enum import Enum
+
+
+@dataclass
+class Column:
+    name: str
+    labels: set[str]
+    render_position: int
+    data_position: int
+    hidden: bool
+    pinned: bool = False
+
+
+class MetadataColumn(Enum):
+    COUNT = "count"
 
 
 class NlessApp(App):
@@ -29,6 +48,10 @@ class NlessApp(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("C", "filter_columns", "Filter Columns (by prompt)"),
+        ("c", "show_columns", "Select Columns (by prompt)"),
+        (">", "move_column_right", "Move column right"),
+        ("<", "move_column_left", "Move column left"),
         ("D", "delimiter", "Change Delimiter"),
         ("s", "sort", "Sort selected column"),
         ("f", "filter", "Filter selected column (by prompt)"),
@@ -56,11 +79,11 @@ class NlessApp(App):
     def __init__(self):
         super().__init__()
         self.mounted = False
-        self.data_initalized = False
         self.first_row_parsed = False
         self.raw_rows = []
         self.displayed_rows = []
-        self.raw_header = ""
+        self.first_log_line = ""  # used to determine columns when delimiter is set
+        self.current_columns: list[Column] = []
         self.current_filter = None
         self.filter_column_name: str | None = None
         self.search_term = None
@@ -97,6 +120,8 @@ class NlessApp(App):
             self.handle_filter_submitted(event)
         elif event.input.id == "delimiter_input":
             self.handle_delimiter_submitted(event)
+        elif event.input.id == "column_filter_input":
+            self.handle_column_filter_submitted(event)
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
@@ -109,39 +134,201 @@ class NlessApp(App):
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
+    def _open_select(self, select: Select) -> None:
+        select.focus()
+        select.expanded = True
+
+    def action_show_columns(self) -> None:
+        """Show columns by user input."""
+        column_options = [
+            (self._get_cell_value_without_markup(c.name), c.render_position)
+            for c in self.current_columns
+            if not c.hidden
+        ]
+        select = Select(
+            options=column_options,
+            classes="bottom-input",
+            prompt="Type a column to jump to",
+        )
+        self.mount(select)
+        self.call_after_refresh(lambda: self._open_select(select))
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        col_index = event.value
+        event.control.remove()
+        data_table = self.query_one(NlessDataTable)
+        data_table.move_cursor(column=col_index)
+
+    def action_filter_columns(self) -> None:
+        """Filter columns by user input."""
+        self._create_prompt(
+            "Type pipe delimited column names to show (e.g. col1|col2) or 'all' to reset",
+            "column_filter_input",
+        )
+
+    def action_move_column(self, direction: int) -> None:
+        data_table = self.query_one(NlessDataTable)
+        current_cursor_column = data_table.cursor_column
+        selected_column = [
+            c
+            for c in self.current_columns
+            if c.render_position == current_cursor_column
+        ]
+        if not selected_column:
+            self.notify("No column selected to move", severity="error")
+            return
+        selected_column = selected_column[0]
+        if selected_column.name in [m.value for m in MetadataColumn]:
+            return  # can't move metadata columns
+        if (
+            direction == 1
+            and selected_column.render_position == len(self.current_columns) - 1
+        ) or (direction == -1 and selected_column.render_position == 0):
+            return  # can't move further in that direction
+
+        adjacent_column = [
+            c
+            for c in self.current_columns
+            if c.render_position == selected_column.render_position + direction
+        ]
+        if not adjacent_column or adjacent_column[0].name in [
+            m.value for m in MetadataColumn
+        ]:  # can't move past metadata columns
+            return
+        adjacent_column = adjacent_column[0]
+
+        if (
+            adjacent_column.pinned
+            and not selected_column.pinned
+            or (selected_column.pinned and not adjacent_column.pinned)
+        ):
+            return  # can't move a pinned column past a non-pinned column or vice versa
+
+        selected_column.render_position, adjacent_column.render_position = (
+            adjacent_column.render_position,
+            selected_column.render_position,
+        )
+        self._update_table()
+        self.call_after_refresh(
+            lambda: data_table.move_cursor(column=selected_column.render_position)
+        )
+
+    def action_move_column_left(self) -> None:
+        self.action_move_column(-1)
+
+    def action_move_column_right(self) -> None:
+        self.action_move_column(1)
+
     def action_mark_unique(self) -> None:
         data_table = self.query_one(NlessDataTable)
-        curr_col = data_table.ordered_columns[data_table.cursor_column]
-        curr_col_name = self._strip_column_indicators(curr_col.label.plain)
-        curr_col_key = curr_col.key
+        current_cursor_column = data_table.cursor_column
+        new_unique_column = [
+            c
+            for c in self.current_columns
+            if c.render_position == current_cursor_column
+        ]
+        if not new_unique_column:
+            self.notify("No column selected to mark as unique")
+            return
 
-        if curr_col_name == "count":
+        new_unique_column = new_unique_column[0]
+        new_unique_column_name = self._get_cell_value_without_markup(
+            new_unique_column.name
+        )
+
+        if new_unique_column_name in [mc.value for mc in MetadataColumn]:
             # can't toggle count column
             return
 
         self.count_by_column_key = defaultdict(lambda: 0)
 
-        if curr_col_name in self.unique_column_names:
-            self.unique_column_names.remove(curr_col_name)
-            data_table.columns[curr_col_key].label = Text(
-                f"{data_table.columns[curr_col_key].label.plain.replace(' (U)', '')}"
-            )
+        if new_unique_column_name in self.unique_column_names:
+            self.unique_column_names.remove(new_unique_column_name)
+            new_unique_column.labels.discard("U")
         else:
-            self.unique_column_names.add(curr_col_name)
-            data_table.columns[curr_col_key].label = Text(
-                f"{data_table.columns[curr_col_key].label.plain} (U)"
-            )
+            self.unique_column_names.add(new_unique_column_name)
+            new_unique_column.labels.add("U")
 
         if len(self.unique_column_names) == 0:
-            count_column = [
-                c
-                for c in data_table.columns.values()
-                if self._strip_column_indicators(self._get_label(c.label)) == "count"
+            # remove count column
+            self.current_columns = [
+                Column(
+                    name=c.name,
+                    labels=c.labels,
+                    render_position=c.render_position - 1,
+                    data_position=c.data_position - 1,
+                    hidden=c.hidden,
+                )
+                for c in self.current_columns
+                if c.name != MetadataColumn.COUNT.value
             ]
-            if len(count_column) > 0:
-                data_table.remove_column(count_column[0].key)
+        elif MetadataColumn.COUNT.value not in [c.name for c in self.current_columns]:
+            # add count column at the start
+            self.current_columns = [
+                Column(
+                    name=c.name,
+                    labels=c.labels,
+                    render_position=c.render_position + 1,
+                    data_position=c.data_position + 1,
+                    hidden=c.hidden,
+                )
+                for c in self.current_columns
+            ]
+            self.current_columns.insert(
+                0,
+                Column(
+                    name=MetadataColumn.COUNT.value,
+                    labels=set(),
+                    render_position=0,
+                    data_position=0,
+                    hidden=False,
+                    pinned=True,
+                ),
+            )
+
+        pinned_columns_visible = len(
+            [c for c in self.current_columns if c.pinned and not c.hidden]
+        )
+        if new_unique_column_name in self.unique_column_names:
+            old_position = new_unique_column.render_position
+            for col in self.current_columns:
+                col_name = self._get_cell_value_without_markup(col.name)
+                if col_name == new_unique_column_name:
+                    col.render_position = pinned_columns_visible  # bubble to just after last pinned column
+                    col.pinned = True
+                elif (
+                    col_name != new_unique_column_name
+                    and col.render_position <= old_position
+                    and col.name not in [mc.value for mc in MetadataColumn]
+                    and not col.pinned
+                ):
+                    col.render_position += 1  # shift right to make space
+        else:
+            old_position = new_unique_column.render_position
+            pinned_columns_visible -= 1
+            for col in self.current_columns:
+                col_name = self._get_cell_value_without_markup(col.name)
+                if col_name == new_unique_column_name:
+                    col.pinned = False
+                    col.render_position = (
+                        pinned_columns_visible if pinned_columns_visible > 0 else 0
+                    )
+                elif col.pinned and col.render_position >= old_position:
+                    col.render_position -= 1
 
         self._update_table()
+
+        # update the cursor position's index to match the new position of the column
+        new_cursor_position = 0
+        for i, col in enumerate(
+            sorted(self.current_columns, key=lambda c: c.render_position)
+        ):
+            if self._get_cell_value_without_markup(col.name) == new_unique_column_name:
+                new_cursor_position = i
+                break
+        self.call_after_refresh(
+            lambda: data_table.move_cursor(column=new_cursor_position)
+        )
 
     def action_toggle_tail(self) -> None:
         self.is_tailing = not self.is_tailing
@@ -195,43 +382,61 @@ class NlessApp(App):
             cell_value = data_table.get_cell_at(coordinate)
             cell_value = self._get_cell_value_without_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
+            selected_column = [
+                c
+                for c in self.current_columns
+                if c.render_position == coordinate.column
+            ]
+            if not selected_column:
+                self.notify("No column selected for filtering")
+                return
             self._perform_filter(
                 f"^{cell_value}$",
-                self._strip_column_indicators(
-                    data_table.ordered_columns[coordinate.column].label.plain
-                ),
+                self._get_cell_value_without_markup(selected_column[0].name),
             )
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
     def action_sort(self) -> None:
         data_table = self.query_one(NlessDataTable)
-        selected_column_name = self._strip_column_indicators(
-            self._get_label(data_table.ordered_columns[data_table.cursor_column].label)
-        )
+        current_cursor_column = data_table.cursor_column
+        selected_column = [
+            c
+            for c in self.current_columns
+            if c.render_position == current_cursor_column
+        ]
+        if not selected_column:
+            self.notify("No column selected for sorting", severity="error")
+            return
+        else:
+            selected_column = selected_column[0]
 
-        if self.sort_column == selected_column_name and self.sort_reverse:
+        new_sort_column_name = self._get_cell_value_without_markup(selected_column.name)
+
+        if self.sort_column == new_sort_column_name and self.sort_reverse:
             self.sort_column = None
-        elif self.sort_column == selected_column_name and not self.sort_reverse:
+        elif self.sort_column == new_sort_column_name and not self.sort_reverse:
             self.sort_reverse = True
         else:
-            self.sort_column = self._strip_column_indicators(selected_column_name)
+            self.sort_column = new_sort_column_name
             self.sort_reverse = False
 
-        # Update column labels with sort indicators
-        for column in data_table.columns.values():
-            # Remove existing indicators
-            label_text_without_sort_indicators = (
-                self._get_label(column.label).replace(" ▼", "").replace(" ▲", "")
-            )
-            if (
-                self._strip_column_indicators(self._get_label(column.label))
-                == self.sort_column
-            ):
-                indicator = "▼" if self.sort_reverse else "▲"
-                column.label = f"{label_text_without_sort_indicators} {indicator}"
-            else:
-                column.label = label_text_without_sort_indicators
+        # Update sort indicators
+        if self.sort_column is None:
+            selected_column.labels.discard("▲")
+            selected_column.labels.discard("▼")
+        elif self.sort_reverse:
+            selected_column.labels.discard("▲")
+            selected_column.labels.add("▼")
+        else:
+            selected_column.labels.discard("▼")
+            selected_column.labels.add("▲")
+
+        # Remove sort indicators from other columns
+        for col in self.current_columns:
+            if col.name != selected_column.name:
+                col.labels.discard("▲")
+                col.labels.discard("▼")
 
         self._update_table()
 
@@ -275,9 +480,13 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
-            column_label = self._strip_column_indicators(
-                data_table.ordered_columns[column_index].label.plain
-            )
+            column_label = [
+                c for c in self.current_columns if c.render_position == column_index
+            ]
+            if not column_label:
+                self.notify("No column selected for filtering")
+                return
+            column_label = self._get_cell_value_without_markup(column_label[0].name)
             self._perform_filter(filter_value, column_label)
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
@@ -309,7 +518,7 @@ class NlessApp(App):
                 if prev_delimiter != "raw" and not isinstance(
                     prev_delimiter, re.Pattern
                 ):
-                    self.raw_rows.insert(0, self.raw_header)
+                    self.raw_rows.insert(0, self.first_log_line)
                 self._update_table()
                 return
             except:
@@ -327,17 +536,70 @@ class NlessApp(App):
             new_header = split_line(self.raw_rows[0], self.delimiter)
             self.raw_rows.pop(0)
         else:
-            new_header = split_line(self.raw_header, self.delimiter)
+            new_header = split_line(self.first_log_line, self.delimiter)
 
         if (
             (prev_delimiter != delimiter)
             and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern))
             and (delimiter == "raw" or isinstance(delimiter, re.Pattern))
         ):
-            self.raw_rows.insert(0, self.raw_header)
+            self.raw_rows.insert(0, self.first_log_line)
 
-        data_table.clear(columns=True)
-        data_table.add_columns(*new_header)
+        self.current_columns = [
+            Column(
+                name=h, labels=set(), render_position=i, data_position=i, hidden=False
+            )
+            for i, h in enumerate(new_header)
+        ]
+        self._update_table()
+
+    def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
+        input_value = event.value
+        event.input.remove()
+        if input_value.lower() == "all":
+            for col in self.current_columns:
+                col.hidden = False
+        else:
+            column_name_filters = [name.strip() for name in input_value.split("|")]
+            column_name_filter_regexes = [
+                re.compile(rf"{name}", re.IGNORECASE) for name in column_name_filters
+            ]
+            metadata_columns = [mc.value for mc in MetadataColumn]
+            visible_pinned_columns = [
+                col for col in self.current_columns if col.pinned and not col.hidden
+            ]
+            for col in self.current_columns:
+                matched = False
+                plain_name = self._get_cell_value_without_markup(col.name)
+                for i, column_name_filter in enumerate(column_name_filter_regexes):
+                    if column_name_filter.search(plain_name) and not col.pinned:
+                        col.hidden = False
+                        col.render_position = i + len(
+                            visible_pinned_columns
+                        )  # keep metadata columns at the start
+                        matched = True
+                        break
+
+                if matched:
+                    continue
+
+                if (
+                    col.name not in [mc.value for mc in MetadataColumn]
+                    and not col.pinned
+                ):
+                    col.hidden = True
+                    col.render_position = 99999
+
+            # Ensure at least one column is visible
+            if all(col.hidden for col in self.current_columns):
+                self.notify("At least one column must be visible.", severity="warning")
+                for col in self.current_columns:
+                    col.hidden = False
+
+        sorted_columns = sorted(self.current_columns, key=lambda c: c.render_position)
+        for i, col in enumerate(sorted_columns):
+            col.render_position = i
+
         self._update_table()
 
     def _get_label(self, label: Text | str) -> str:
@@ -345,6 +607,13 @@ class NlessApp(App):
             return label.plain
         else:
             return label
+
+    def _get_visible_column_labels(self) -> List[str]:
+        labels = []
+        for col in sorted(self.current_columns, key=lambda c: c.render_position):
+            if not col.hidden:
+                labels.append(f"{col.name} {' '.join(col.labels)}".strip())
+        return labels
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
@@ -354,24 +623,18 @@ class NlessApp(App):
         scroll_x = data_table.scroll_x
         scroll_y = data_table.scroll_y
 
-        curr_columns = [self._get_label(c.label) for c in data_table.columns.values()]
         curr_metadata_columns = {
-            self._strip_column_indicators(c)
-            for c in curr_columns
-            if self._strip_column_indicators(c) in ["count"]
+            c.name
+            for c in self.current_columns
+            if c.name in [m.value for m in MetadataColumn]
         }
-        expected_cell_count = len(curr_columns) - len(curr_metadata_columns)
+        expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
         data_table.clear(
             columns=True
         )  # might be needed to trigger column resizing with longer cell content
-        if len(self.unique_column_names) > 0:
-            if "count" not in curr_metadata_columns:
-                curr_columns.insert(0, "count")
-            data_table.fixed_columns = 1
-        else:
-            data_table.fixed_columns = 0
 
-        data_table.add_columns(*curr_columns)
+        data_table.fixed_columns = len(curr_metadata_columns)
+        data_table.add_columns(*self._get_visible_column_labels())
 
         self.search_matches = []
         self.current_match_index = -1
@@ -422,7 +685,6 @@ class NlessApp(App):
                 composite_key = []
                 for col_name in self.unique_column_names:
                     col_idx = self._get_col_idx_by_name(col_name)
-                    print("Col name:", col_name, "Col idx:", col_idx)
                     if col_idx is None:
                         continue
                     if len(self.unique_column_names) > 0:  # account for count column
@@ -430,11 +692,9 @@ class NlessApp(App):
                     composite_key.append(
                         self._get_cell_value_without_markup(cells[col_idx])
                     )
-                print("Composite key:", composite_key)
                 composite_key = ",".join(composite_key)
                 dedup_map[composite_key] = cells  # always overwrite to keep latest
                 self.count_by_column_key[composite_key] += 1
-            print("Dedup map:", dedup_map)
             for k, cells in dedup_map.items():
                 count = self.count_by_column_key[k]
                 cells.insert(0, count)
@@ -488,6 +748,7 @@ class NlessApp(App):
                 severity="warning",
             )
 
+        final_rows = self._align_cells_to_visible_columns(final_rows)
         self.displayed_rows = final_rows
         data_table.add_rows(final_rows)
         if restore_position:
@@ -496,6 +757,16 @@ class NlessApp(App):
                     data_table, cursor_x, cursor_y, scroll_x, scroll_y
                 )
             )
+
+    def _align_cells_to_visible_columns(self, rows: list[list[str]]) -> list[list[str]]:
+        new_rows = []
+        for row in rows:
+            cells = []
+            for col in sorted(self.current_columns, key=lambda c: c.render_position):
+                if not col.hidden:
+                    cells.append(row[col.data_position])
+            new_rows.append(cells)
+        return new_rows
 
     def _restore_position(self, data_table, cursor_x, cursor_y, scroll_x, scroll_y):
         data_table.move_cursor(
@@ -567,8 +838,6 @@ class NlessApp(App):
             self.filter_column_name = None
         else:
             try:
-                # Compile the regex pattern
-                filter_value = re.escape(filter_value)
                 self.current_filter = re.compile(filter_value, re.IGNORECASE)
                 # Use None to indicate all-column filter
                 self.filter_column_name = None
@@ -642,27 +911,40 @@ class NlessApp(App):
             self.delimiter = infer_delimiter(log_lines[: min(5, len(log_lines))])
             self.delimiter_inferred = True
 
-        if self.delimiter != "raw":
-            if not self.first_row_parsed:
-                first_log_line = log_lines[0]
-                self.raw_header = first_log_line
+        if not self.first_row_parsed:
+            first_log_line = log_lines[0]
+            self.first_log_line = first_log_line
+            if self.delimiter != "raw":
                 parts = split_line(first_log_line, self.delimiter)
                 data_table.add_columns(*parts)
-                self.first_row_parsed = True
+                self.current_columns = [
+                    Column(
+                        name=p,
+                        labels=set(),
+                        render_position=i,
+                        data_position=i,
+                        hidden=False,
+                    )
+                    for i, p in enumerate(parts)
+                ]
                 log_lines = log_lines[1:]  # Exclude header line
-        else:
-            # No delimiter found, treat entire line as single column
-            if not self.first_row_parsed:
+            else:
+                # Delimiter is raw, treat entire line as single column
                 data_table.add_column("log")
-                self.first_row_parsed = True
+                self.current_columns = [
+                    Column(
+                        name="log",
+                        labels=set(),
+                        render_position=0,
+                        data_position=0,
+                        hidden=False,
+                    )
+                ]
+            self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
-        if not self.data_initalized:
-            self.data_initalized = True
-            self._update_table()
-        else:
-            for line in log_lines:
-                self._add_log_line(line)
+        for line in log_lines:
+            self._add_log_line(line)
 
         self._update_status_bar()
 
@@ -679,13 +961,15 @@ class NlessApp(App):
             return bisect.bisect_left(tmp_list, value)
 
     def _strip_column_indicators(self, col_name: str) -> str:
-        return col_name.replace(" (U)", "").replace(" ▲", "").replace(" ▼", "")
+        return col_name.replace(" U", "").replace(" ▲", "").replace(" ▼", "")
 
-    def _get_col_idx_by_name(self, col_name: str) -> Optional[int]:
-        data_table = self.query_one(NlessDataTable)
-        for idx, col in enumerate(data_table.ordered_columns):
-            if self._strip_column_indicators(col.label.plain) == col_name:
-                return idx
+    def _get_col_idx_by_name(self, col_name: str, render_position: bool = False) -> Optional[int]:
+        for col in self.current_columns:
+            if self._get_cell_value_without_markup(col.name) == col_name:
+                if render_position:
+                    return col.render_position
+                else:
+                    return col.data_position
         return None
 
     def _add_log_line(self, log_line: str):
@@ -700,7 +984,9 @@ class NlessApp(App):
         if len(self.unique_column_names) > 0:
             cells.insert(0, "1")
 
-        if len(cells) != len(data_table.columns):
+        expected_cell_count = len([c for c in self.current_columns if not c.hidden])
+        aligned_cells = self._align_cells_to_visible_columns([cells])[0]
+        if len(aligned_cells) != expected_cell_count:
             return
 
         if self.current_filter:
@@ -739,7 +1025,7 @@ class NlessApp(App):
             for row_idx, row in enumerate(self.displayed_rows):
                 composite_key = []
                 for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name)
+                    col_idx = self._get_col_idx_by_name(col_name, render_position=True)
                     if col_idx is None:
                         continue
                     composite_key.append(
@@ -765,10 +1051,12 @@ class NlessApp(App):
                 self.count_by_column_key[new_row_composite_key] = 1
 
         if self.sort_column is not None:
-            sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            sort_key = self._get_cell_value_without_markup(str(cells[sort_column_idx]))
+            displayed_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=True)
+            data_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=False)
+
+            sort_key = self._get_cell_value_without_markup(str(cells[data_sort_column_idx]))
             displayed_row_keys = [
-                self._get_cell_value_without_markup(str(r[sort_column_idx]))
+                self._get_cell_value_without_markup(str(r[displayed_sort_column_idx]))
                 for r in self.displayed_rows
             ]
             if self.sort_reverse:
@@ -803,6 +1091,7 @@ class NlessApp(App):
         if old_index is not None:
             old_row_key = data_table.ordered_rows[old_index].key
 
+        cells = self._align_cells_to_visible_columns([cells])[0]
         data_table.add_row_at(*cells, row_index=new_index)
         self.displayed_rows.insert(new_index, cells)
 
