@@ -148,9 +148,14 @@ class NlessApp(App):
             cells = self._split_line(row_str)
             highlighted_cells = []
             for col_idx, cell in enumerate(cells):
-                if self.search_term and self.search_term in cell.lower():
-                    highlighted_cells.append(f"[reverse]{cell}[/reverse]")
-                    self.search_matches.append(Coordinate(displayed_row_idx, col_idx))
+                if self.search_term and isinstance(self.search_term, re.Pattern):
+                    if self.search_term.search(cell):
+                        highlighted_cells.append(f"[reverse]{cell}[/reverse]")
+                        self.search_matches.append(
+                            Coordinate(displayed_row_idx, col_idx)
+                        )
+                    else:
+                        highlighted_cells.append(cell)
                 else:
                     highlighted_cells.append(cell)
             data_table.add_row(*highlighted_cells, key=str(displayed_row_idx))
@@ -219,7 +224,11 @@ class NlessApp(App):
 
     def _perform_search(self, search_term: Optional[str]) -> None:
         """Performs a search on the data and updates the table."""
-        self.search_term = search_term.lower() if search_term else None
+        try:
+            self.search_term = re.compile(search_term, re.IGNORECASE)
+        except re.error:
+            self.notify("Invalid regex pattern", severity="error")
+            return
         self._update_table()
         if self.search_matches:
             self._navigate_search(1)  # Jump to first match
