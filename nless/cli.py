@@ -1,6 +1,7 @@
 import argparse
 import bisect
 from copy import deepcopy
+import csv
 from dataclasses import dataclass
 import re
 import sys
@@ -63,6 +64,21 @@ class Filter:
     column: str | None  # None means any column
     pattern: re.Pattern[str]
 
+def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
+    if output_path == "-":
+        output_path = "/dev/stdout"
+        while current_buffer.app.is_running:
+            time.sleep(.1)
+        time.sleep(.1)
+
+    with open(output_path, "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(current_buffer._get_visible_column_labels())
+        for row in current_buffer.displayed_rows:
+            plain_row = [current_buffer._get_cell_value_without_markup(str(cell)) for cell in row]
+            writer.writerow(plain_row)
+
+
 class UnparsedLogsScreen(Screen):
     BINDINGS = [("q", "app.pop_screen", "Close")]
 
@@ -106,6 +122,7 @@ class NlessBuffer(Static):
 
     def __init__(self, pane_id: int):
         super().__init__()
+        self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
         self.first_row_parsed = False
@@ -371,6 +388,7 @@ class NlessBuffer(Static):
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
+        self.locked = True
         data_table = self.query_one(NlessDataTable)
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
@@ -514,6 +532,7 @@ class NlessBuffer(Static):
         final_rows = self._apply_styles_to_cells(final_rows)
         self.displayed_rows = final_rows
         data_table.add_rows(final_rows)
+        self.locked = False
 
     def _apply_styles_to_cells(self, rows: list[list[str]]) -> list[list[str]]:
         styled_rows = []
@@ -626,6 +645,7 @@ class NlessBuffer(Static):
         return cell_value
 
     def add_logs(self, log_lines: list[str]) -> None:
+        self.locked = True
         data_table = self.query_one(NlessDataTable)
 
         # Infer delimiter from first few lines if not already set
@@ -681,6 +701,7 @@ class NlessBuffer(Static):
             )
 
         self._update_status_bar()
+        self.locked = False
 
     def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
         tmp_list = list(r_list)
@@ -877,6 +898,7 @@ class NlessApp(App):
         ("f", "filter", "Filter selected column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
         ("D", "delimiter", "Change Delimiter"),
+        ("W", "write_to_file", "Write current view to file"),
         (
             "U",
             "mark_unique",
@@ -888,6 +910,12 @@ class NlessApp(App):
 
     async def on_resize(self, event: events.Resize) -> None:
         self.refresh()
+
+    def action_write_to_file(self) -> None:
+        """Write the current view to a file."""
+        self._create_prompt(
+            "Type output file path (e.g. /tmp/output.csv)", "write_to_file_input"
+        )
 
     def action_filter_columns(self) -> None:
         """Filter columns by user input."""
@@ -1094,6 +1122,22 @@ class NlessApp(App):
         if event.key == "enter" and isinstance(self.focused, NlessDataTable):
             self._filter_composite_key(current_buffer)
 
+    def handle_write_to_file_submitted(self, event: Input.Submitted) -> None:
+        output_path = event.value
+        event.input.remove()
+        current_buffer = self._get_current_buffer()
+        try:
+            t = Thread(target=write_buffer, args=(current_buffer, output_path))
+            if output_path != "-":
+                t.start()
+                t.join()
+                current_buffer.notify(f"Wrote current view to {output_path}")
+            else:
+                t.start()
+                self.exit()
+        except Exception as e:
+            current_buffer.notify(f"Failed to write to file: {e}")
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
             self.handle_search_submitted(event)
@@ -1103,6 +1147,8 @@ class NlessApp(App):
             self.handle_delimiter_submitted(event)
         elif event.input.id == "column_filter_input":
             self.handle_column_filter_submitted(event)
+        elif event.input.id == "write_to_file_input":
+            self.handle_write_to_file_submitted(event)
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -1423,7 +1469,7 @@ class NlessApp(App):
     def add_logs(self, log_lines: list[str]) -> None:
         self.logs.extend(log_lines)
         for buffer in self.buffers:
-            while not buffer.mounted:
+            while not buffer.mounted or buffer.locked:
                 time.sleep(0.5)
             buffer.add_logs(log_lines)
 
@@ -1439,15 +1485,14 @@ def main():
     args = parser.parse_args()
 
     if args.filename:
-        with open(args.filename, "r") as f:
-            ic = InputConsumer(
-                args.filename,
-                None,
-                lambda: app.mounted,
-                lambda lines: app.add_logs(lines),
-            )
-            t = Thread(target=ic.run, daemon=True)
-            t.start()
+        ic = InputConsumer(
+            args.filename,
+            None,
+            lambda: app.mounted,
+            lambda lines: app.add_logs(lines),
+        )
+        t = Thread(target=ic.run, daemon=True)
+        t.start()
     else:
         ic = InputConsumer(
             None, new_fd, lambda: app.mounted, lambda lines: app.add_logs(lines)
