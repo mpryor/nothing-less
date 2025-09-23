@@ -7,6 +7,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
+from textual.theme import BUILTIN_THEMES
 from textual.widgets import DataTable, Footer, Input, Static
 from typing import List
 
@@ -211,7 +212,7 @@ class NlessApp(App):
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
-        table = DataTable()
+        table = DataTable(zebra_stripes=True, id="data_table")
         yield table
         with Vertical(id="bottom-container"):
             yield Static("Sort: None | Filter: None | Search: None", classes="bd", id="status_bar")
