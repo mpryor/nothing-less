@@ -45,6 +45,11 @@ class NlessApp(App):
         visibility: visible;
         height: 3;
     }
+    #filter_input_any {
+        dock: bottom;
+        visibility: visible;
+        height: 3;
+    }
     #search_input {
         dock: bottom;
         visibility: visible;
@@ -73,15 +78,17 @@ class NlessApp(App):
         ("down,j", "cursor_down", "Down"),
         ("l,w,W", "cursor_right", "Right"),
         ("h,b,B", "cursor_left", "Left"),
-        ("s", "sort", "Sort selected column"),
-        ("f", "filter", "Filter selected column (by prompt)"),
-        ("/", "search", "Search (all columns, by prompt)"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
-        ("n", "next_search", "Next search result"),
-        ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
-        ("p,N", "previous_search", "Previous search result"),
+        ("s", "sort", "Sort selected column"),
+        ("f", "filter", "Filter selected column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
+        ("/", "search", "Search (all columns, by prompt)"),
+        ("&", "search_to_filter", "Apply current search as filter"),
+        ("?", "push_screen('HelpScreen')", "Show Help"),
+        ("n", "next_search", "Next search result"),
+        ("p,N", "previous_search", "Previous search result"),
+        ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
         ("?", "push_screen('HelpScreen')", "Show Help"),
     ]
 
@@ -120,11 +127,14 @@ class NlessApp(App):
         if self.current_filter:
             for row_str in self.raw_rows:
                 cells = self._split_line(row_str)
-                if (
-                    self.filter_column < len(cells)
-                    and isinstance(self.current_filter, re.Pattern)
-                    and self.current_filter.search(cells[self.filter_column])
+                if self.filter_column is None:
+                    # Filter across all columns
+                    if any(self.current_filter.search(cell) for cell in cells):
+                        filtered_rows.append(row_str)
+                elif self.filter_column < len(cells) and self.current_filter.search(
+                    cells[self.filter_column]
                 ):
+                    # Filter specific column
                     filtered_rows.append(row_str)
         else:
             filtered_rows = self.raw_rows[:]
@@ -186,11 +196,15 @@ class NlessApp(App):
             if self.sort_key
             else "[bold]Sort[/bold]: None"
         )
-        filter_text = (
-            f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'"
-            if self.current_filter
-            else "[bold]Filter[/bold]: None"
-        )
+        if not self.current_filter:
+            filter_text = "[bold]Filter[/bold]: None"
+        elif self.filter_column is None:
+            filter_text = (
+                f"[bold]Filter[/bold]: Any Column='{self.current_filter.pattern}'"
+            )
+        else:
+            filter_text = f"[bold]Filter[/bold]: {data_table.ordered_columns[self.filter_column].label}='{self.current_filter}'"
+
         search_text = (
             f"[bold]Search[/bold]: '{self.search_term}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
             if self.search_term
@@ -201,6 +215,39 @@ class NlessApp(App):
         status_bar.update(
             f"{sort_text} | {filter_text} | {search_text} | {position_text}"
         )
+
+    def _perform_filter_any(self, filter_value: Optional[str]) -> None:
+        """Performs a filter across all columns and updates the table."""
+        if not filter_value:
+            self.current_filter = None
+            self.filter_column = None
+        else:
+            try:
+                # Compile the regex pattern
+                self.current_filter = re.compile(filter_value, re.IGNORECASE)
+                # Use None to indicate all-column filter
+                self.filter_column = None
+            except re.error:
+                self.notify("Invalid regex pattern", severity="error")
+                return
+
+        # Update filtering logic
+        filtered_rows = []
+        for row_str in self.raw_rows:
+            cells = self._split_line(row_str)
+            # Row matches if any cell matches the filter
+            if not self.current_filter or any(
+                self.current_filter.search(cell) for cell in cells
+            ):
+                filtered_rows.append(row_str)
+
+        # Clear and rebuild table with filtered rows
+        data_table = self.query_one(DataTable)
+        data_table.clear()
+        for row_str in filtered_rows:
+            data_table.add_row(*self._split_line(row_str))
+
+        self._update_status_bar()
 
     def _perform_filter(
         self, filter_value: Optional[str], column_index: Optional[int]
@@ -237,13 +284,17 @@ class NlessApp(App):
         filter_value = event.value
         event.input.remove()
         data_table = self.query_one(DataTable)
-        column_index = data_table.cursor_column
-        self._perform_filter(filter_value, column_index)
+
+        if event.input.id == "filter_input_any":
+            self._perform_filter_any(filter_value)
+        else:
+            column_index = data_table.cursor_column
+            self._perform_filter(filter_value, column_index)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
             self.handle_search_submitted(event)
-        elif event.input.id == "filter_input":
+        elif event.input.id == "filter_input" or event.input.id == "filter_input_any":
             self.handle_filter_submitted(event)
 
     def on_key(self, event: Key) -> None:
@@ -338,6 +389,26 @@ class NlessApp(App):
                 column.label = label_text
 
         self._update_table()
+
+    def action_search_to_filter(self) -> None:
+        """Convert current search into a filter across all columns."""
+        if not self.search_term:
+            self.notify("No active search to convert to filter", severity="warning")
+            return
+            
+        self.current_filter = self.search_term  # Reuse the compiled regex
+        self.filter_column = None  # Filter across all columns
+        self._update_table()
+
+    def action_filter_any(self) -> None:
+        """Filter any column based on user input."""
+        data_table = self.query_one(DataTable)
+        input = Input(
+            placeholder="Type filter text to match across all columns",
+            id="filter_input_any",
+        )
+        self.mount(input)
+        input.focus()
 
     def action_filter(self) -> None:
         """Filter rows based on user input."""
