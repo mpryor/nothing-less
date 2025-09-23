@@ -43,6 +43,7 @@ class NlessApp(App):
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
         ("n", "next_search", "Next Search Result"),
+        ("*", "search_cursor_word", "Search for word under cursor"),
         ("p,N", "previous_search", "Previous Search Result"),
     ]
 
@@ -61,7 +62,11 @@ class NlessApp(App):
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
         event.input.remove()
-        self.search_term = input_value.lower() if input_value else None
+        self._perform_search(input_value)
+
+    def _perform_search(self, search_term: Optional[str]) -> None:
+        """Performs a search on the data and updates the table."""
+        self.search_term = search_term.lower() if search_term else None
         self.search_matches = []
         self.current_match_index = -1
         data_table = self.query_one(DataTable)
@@ -83,10 +88,10 @@ class NlessApp(App):
             data_table.add_row(*highlighted_cells)
 
         self.notify(
-            "Search cleared" if not input_value else f"Searching for '{input_value}'"
+            "Search cleared" if not search_term else f"Searching for '{search_term}'"
         )
-        self.action_next_search()  # Jump to first match if any
-        return
+        if self.search_matches:
+            self._navigate_search(1)  # Jump to first match
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
@@ -116,6 +121,16 @@ class NlessApp(App):
     def action_previous_search(self) -> None:
         """Move cursor to the previous search result."""
         self._navigate_search(-1)
+
+    def action_search_cursor_word(self) -> None:
+        """Search for the word under the cursor."""
+        data_table = self.query_one(DataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            self._perform_search(cell_value)
+        except Exception:
+            self.notify("Cannot get cell value.", severity="error")
 
     def handle_filter_submitted(self, event: Input.Submitted) -> None:
         filter_value = event.value
