@@ -9,7 +9,7 @@ from .nlesstable import NlessDataTable
 class HelpScreen(Screen):
     """A widget to display keybindings help."""
 
-    BINDINGS = [("escape", "app.pop_screen", "Close Help")]
+    BINDINGS = [("q", "app.pop_screen", "Close Help")]
 
     def compose(self) -> ComposeResult:
         bindings = self.app.BINDINGS + NlessDataTable.BINDINGS
@@ -19,6 +19,6 @@ class HelpScreen(Screen):
             help_text += f"{keys:<12} - {description}\n"
         yield Static(help_text)
         yield Static(
-            "[bold]Press 'Escape' to close this help.[/bold]", id="help-footer"
+            "[bold]Press 'q' to close this help.[/bold]", id="help-footer"
         )
 
