@@ -13,7 +13,7 @@ class NlessDataTable(DataTable):
         ("u", "page_up", "Page up"),
         ("up,k", "cursor_up", "Up"),
         ("down,j", "cursor_down", "Down"),
-        ("l,w,W", "cursor_right", "Right"),
+        ("l,w", "cursor_right", "Right"),
         ("h,b,B", "cursor_left", "Left"),
         ("$", "scroll_to_end", "End of Line"),
         ("0", "scroll_to_beginning", "Start of Line"),
