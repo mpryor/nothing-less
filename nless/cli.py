@@ -720,7 +720,7 @@ class NlessBuffer(Static):
         if len(self.unique_column_names) > 0:
             cells.insert(0, "1")
 
-        expected_cell_count = len([c for c in self.current_columns if not c.hidden])
+        expected_cell_count = len([c for c in self.current_columns])
         if len(cells) != expected_cell_count:
             raise RowLengthMismatchError()
 
@@ -915,6 +915,8 @@ class NlessApp(App):
 
         if new_unique_column_name in new_buffer.unique_column_names:
             new_buffer.unique_column_names.remove(new_unique_column_name)
+            if new_buffer.sort_column in [metadata.value for metadata in MetadataColumn]:
+                new_buffer.sort_column = None
             new_unique_column.labels.discard("U")
         else:
             new_buffer.unique_column_names.add(new_unique_column_name)
@@ -1009,7 +1011,8 @@ class NlessApp(App):
         )
 
         self.handle_mark_unique(new_buffer, new_unique_column_name)
-        self.add_buffer(new_buffer, name=f"+u:{new_unique_column_name}")
+        buffer_name = f"+u:{new_unique_column_name}" if new_unique_column_name in new_buffer.unique_column_names else f"-u:{new_unique_column_name}"
+        self.add_buffer(new_buffer, name=buffer_name)
 
         # update the cursor position's index to match the new position of the column
         new_cursor_position = 0
@@ -1064,6 +1067,24 @@ class NlessApp(App):
                 self.call_after_refresh(lambda: input.focus())
                 break
 
+    def _filter_composite_key(self, current_buffer: NlessBuffer) -> None:
+        data_table = current_buffer.query_one(NlessDataTable)
+        cursor_column = data_table.cursor_column
+        selected_column = [c for c in current_buffer.current_columns if c.render_position == cursor_column]
+        if selected_column:
+            selected_column_name = current_buffer._get_cell_value_without_markup(selected_column[0].name)
+            if selected_column_name in current_buffer.unique_column_names:
+                new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
+                filters = []
+                for column in current_buffer.unique_column_names:
+                    col_idx = current_buffer._get_col_idx_by_name(column, render_position=True)
+                    cell_value = data_table.get_cell_at((data_table.cursor_row, col_idx))
+                    cell_value = current_buffer._get_cell_value_without_markup(cell_value)
+                    filters.append(Filter(column=current_buffer._get_cell_value_without_markup(column), pattern=re.compile(re.escape(cell_value), re.IGNORECASE)))
+                    self.handle_mark_unique(new_buffer, column)
+                new_buffer.current_filters.extend(filters)
+                self.add_buffer(new_buffer, name=f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}")
+
     def on_key(self, event: Key) -> None:
         """Handle key events."""
         if event.key == "escape" and (isinstance(self.focused, Input) or isinstance(self.focused, Select)):
@@ -1071,22 +1092,7 @@ class NlessApp(App):
 
         current_buffer = self._get_current_buffer()
         if event.key == "enter" and isinstance(self.focused, NlessDataTable):
-            data_table = current_buffer.query_one(NlessDataTable)
-            cursor_column = data_table.cursor_column
-            selected_column = [c for c in current_buffer.current_columns if c.render_position == cursor_column]
-            if selected_column:
-                selected_column_name = current_buffer._get_cell_value_without_markup(selected_column[0].name)
-                if selected_column_name in current_buffer.unique_column_names:
-                    new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
-                    filters = []
-                    for column in current_buffer.unique_column_names:
-                        col_idx = current_buffer._get_col_idx_by_name(column, render_position=True)
-                        cell_value = data_table.get_cell_at((data_table.cursor_row, col_idx))
-                        cell_value = current_buffer._get_cell_value_without_markup(cell_value)
-                        filters.append(Filter(column=current_buffer._get_cell_value_without_markup(column), pattern=re.compile(re.escape(cell_value), re.IGNORECASE)))
-                        self.handle_mark_unique(new_buffer, column)
-                    new_buffer.current_filters.extend(filters)
-                    self.add_buffer(new_buffer, name=f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}")
+            self._filter_composite_key(current_buffer)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
@@ -1151,14 +1157,16 @@ class NlessApp(App):
         """Performs a filter across all columns and updates the table."""
         if not filter_value:
             new_buffer.current_filters = []
+            new_buf_name = new_buffer.current_filters and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}" or "-f"
         else:
             try:
                 new_buffer.current_filters.append(Filter(column=None, pattern=re.compile(filter_value, re.IGNORECASE)))
             except re.error:
                 new_buffer.notify("Invalid regex pattern", severity="error")
                 return
+            new_buf_name = f"+f:any={filter_value}"
 
-        self.add_buffer(new_buffer, name=f"+f:any={filter_value}")
+        self.add_buffer(new_buffer, name=new_buf_name)
 
     def _perform_filter(
         self, filter_value: Optional[str], column_name: Optional[str]
@@ -1166,6 +1174,7 @@ class NlessApp(App):
         """Performs a filter on the data and updates the table."""
         new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
         if not filter_value:
+            new_buf_name = new_buffer.current_filters and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}" or "-f"
             new_buffer.current_filters = []
         else:
             if column_name in new_buffer.unique_column_names:
@@ -1177,8 +1186,9 @@ class NlessApp(App):
             except re.error:
                 new_buffer.notify("Invalid regex pattern", severity="error")
                 return
+            new_buf_name = f"+f:{column_name}={filter_value}"
 
-        self.add_buffer(new_buffer, name=f"+f:{column_name}={filter_value}")
+        self.add_buffer(new_buffer, name=new_buf_name)
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
@@ -1370,6 +1380,7 @@ class NlessApp(App):
         tabbed_content.query_one(f"#buffer{new_curr_buffer.pane_id}").query_one(
             NlessDataTable
         ).focus()
+        self.call_after_refresh(lambda: new_curr_buffer._update_status_bar())
 
     def action_show_tab_next(self) -> None:
         tabbed_content = self.query_one(TabbedContent)
