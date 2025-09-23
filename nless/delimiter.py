@@ -28,9 +28,9 @@ def split_line(line: str, delimiter: str | re.Pattern[str] | None) -> list[str]:
             cells = []
     else:
         cells = line.split(delimiter)
-    cells = [txt.replace("\t", "  ") for txt in cells]
+    cells = [txt.replace("\t", "  ") for txt in cells] # Rich rendering breaks on tabs
     cells = [
-        f"[#aaaaaa]{cell}[/#aaaaaa]" if i % 2 != 0 else cell
+        cell
         for (i, cell) in enumerate(cells)
     ]
     return cells

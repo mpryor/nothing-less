@@ -1,20 +1,36 @@
 import argparse
 import bisect
+from copy import deepcopy
 from dataclasses import dataclass
 import re
 import sys
 from collections import defaultdict
 from threading import Thread
-from typing import List, Optional
+import time
+from typing import Callable, List, Optional
+from webbrowser import get
 
 from rich.markup import _parse
 from rich.text import Text
+from textual import on
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Vertical
 from textual.coordinate import Coordinate
 from textual.events import Key
+from textual.geometry import Offset
 from textual.screen import ModalScreen, Screen
-from textual.widgets import DataTable, Input, Select, Static
+from textual.scroll_view import ScrollView
+from textual.widgets import (
+    DataTable,
+    Input,
+    RichLog,
+    Select,
+    Static,
+    TabPane,
+    TabbedContent,
+    Static,
+)
 
 from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
@@ -35,40 +51,52 @@ class Column:
     pinned: bool = False
 
 
+class RowLengthMismatchError(Exception):
+    pass
+
 class MetadataColumn(Enum):
     COUNT = "count"
 
 
-class NlessApp(App):
+@dataclass
+class Filter:
+    column: str | None  # None means any column
+    pattern: re.Pattern[str]
+
+class UnparsedLogsScreen(Screen):
+    BINDINGS = [("q", "app.pop_screen", "Close")]
+
+    def __init__(self, unparsed_rows: List[str], delimiter: str):
+        super().__init__()
+        self.unparsed_rows = unparsed_rows
+        self.delimiter = delimiter
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"{len(self.unparsed_rows)} logs not matching columns (delimiter '{self.delimiter}'), press 'q' to close.",
+        )
+        rl = RichLog()
+        for row in self.unparsed_rows:
+            rl.write(row.strip())
+        yield rl
+
+class NlessBuffer(Static):
     """A modern pager with tabular data sorting/filtering capabilities."""
 
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "nless.tcss"
-    SCREENS = {"HelpScreen": HelpScreen}
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("C", "filter_columns", "Filter Columns (by prompt)"),
-        ("c", "show_columns", "Select Columns (by prompt)"),
+        ("c", "jump_columns", "Jump to column (by select)"),
         (">", "move_column_right", "Move column right"),
         ("<", "move_column_left", "Move column left"),
-        ("D", "delimiter", "Change Delimiter"),
         ("s", "sort", "Sort selected column"),
-        ("f", "filter", "Filter selected column (by prompt)"),
-        ("|", "filter_any", "Filter any column (by prompt)"),
-        ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
-        ("/", "search", "Search (all columns, by prompt)"),
-        ("&", "search_to_filter", "Apply current search as filter"),
         ("n", "next_search", "Next search result"),
-        ("p,N", "previous_search", "Previous search result"),
+        ("p", "previous_search", "Previous search result"),
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
-        ("?", "push_screen('HelpScreen')", "Show Help"),
         ("v", "change_cursor", "Change cursor type - row, column, cell"),
-        (
-            "U",
-            "mark_unique",
-            "Mark a column unique to create a composite key for distinct/analysis",
-        ),
+        ("~", "view_unparsed_logs", "View logs not matching delimiter"),
         (
             "t",
             "toggle_tail",
@@ -76,16 +104,16 @@ class NlessApp(App):
         ),
     ]
 
-    def __init__(self):
+    def __init__(self, pane_id: int):
         super().__init__()
+        self.pane_id: int = pane_id
         self.mounted = False
         self.first_row_parsed = False
         self.raw_rows = []
         self.displayed_rows = []
         self.first_log_line = ""  # used to determine columns when delimiter is set
         self.current_columns: list[Column] = []
-        self.current_filter = None
-        self.filter_column_name: str | None = None
+        self.current_filters: List[Filter] = []
         self.search_term = None
         self.sort_column = None
         self.sort_reverse = False
@@ -97,36 +125,37 @@ class NlessApp(App):
         self.unique_column_names = set()
         self.count_by_column_key = defaultdict(lambda: 0)
 
+    def copy(self, pane_id) -> "NlessBuffer":
+        new_buffer = NlessBuffer(pane_id=pane_id)
+        new_buffer.mounted = self.mounted
+        new_buffer.first_row_parsed = self.first_row_parsed
+        new_buffer.raw_rows = deepcopy(self.raw_rows)
+        new_buffer.displayed_rows = deepcopy(self.displayed_rows)
+        new_buffer.first_log_line = self.first_log_line
+        new_buffer.current_columns = deepcopy(self.current_columns)
+        new_buffer.current_filters = deepcopy(self.current_filters)
+        new_buffer.search_term = self.search_term
+        new_buffer.sort_column = self.sort_column
+        new_buffer.sort_reverse = self.sort_reverse
+        new_buffer.search_matches = deepcopy(self.search_matches)
+        new_buffer.current_match_index = self.current_match_index
+        new_buffer.delimiter = self.delimiter
+        new_buffer.delimiter_inferred = self.delimiter_inferred
+        new_buffer.is_tailing = self.is_tailing
+        new_buffer.unique_column_names = deepcopy(self.unique_column_names)
+        new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
+        return new_buffer
+
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
-        table = NlessDataTable(
-            zebra_stripes=True, id="data_table", show_row_labels=True
-        )
-        yield table
-        with Vertical(id="bottom-container"):
-            yield Static(
-                "Sort: None | Filter: None | Search: None",
-                classes="bd",
-                id="status_bar",
+        with Vertical():
+            table = NlessDataTable(
+                zebra_stripes=True, id="data_table", show_row_labels=True
             )
+            yield table
 
     def on_mount(self) -> None:
         self.mounted = True
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "search_input":
-            self.handle_search_submitted(event)
-        elif event.input.id == "filter_input" or event.input.id == "filter_input_any":
-            self.handle_filter_submitted(event)
-        elif event.input.id == "delimiter_input":
-            self.handle_delimiter_submitted(event)
-        elif event.input.id == "column_filter_input":
-            self.handle_column_filter_submitted(event)
-
-    def on_key(self, event: Key) -> None:
-        """Handle key events."""
-        if event.key == "escape" and isinstance(self.focused, Input):
-            self.focused.remove()
 
     def on_data_table_cell_highlighted(
         self, event: NlessDataTable.CellHighlighted
@@ -138,7 +167,32 @@ class NlessApp(App):
         select.focus()
         select.expanded = True
 
-    def action_show_columns(self) -> None:
+
+    def action_view_unparsed_logs(self) -> None:
+        """View logs that do not match the current delimiter."""
+        if self.delimiter == "raw":
+            self.notify("Delimiter is 'raw', all logs are being shown.", severity="info")
+            return
+
+        unparsed_rows = []
+        expected_cell_count = len(
+            [c for c in self.current_columns if not c.hidden]
+        )
+        for row in self.raw_rows:
+            cells = split_line(row, self.delimiter)
+            if len(cells) != expected_cell_count:
+                unparsed_rows.append(row)
+
+        if len(unparsed_rows) == 0:
+            self.notify("All logs match the current delimiter.", severity="info")
+            return
+
+        delimiter = self.delimiter
+
+        self.app.push_screen(UnparsedLogsScreen(unparsed_rows, delimiter))
+
+
+    def action_jump_columns(self) -> None:
         """Show columns by user input."""
         column_options = [
             (self._get_cell_value_without_markup(c.name), c.render_position)
@@ -158,13 +212,6 @@ class NlessApp(App):
         event.control.remove()
         data_table = self.query_one(NlessDataTable)
         data_table.move_cursor(column=col_index)
-
-    def action_filter_columns(self) -> None:
-        """Filter columns by user input."""
-        self._create_prompt(
-            "Type pipe delimited column names to show (e.g. col1|col2) or 'all' to reset",
-            "column_filter_input",
-        )
 
     def action_move_column(self, direction: int) -> None:
         data_table = self.query_one(NlessDataTable)
@@ -219,117 +266,6 @@ class NlessApp(App):
     def action_move_column_right(self) -> None:
         self.action_move_column(1)
 
-    def action_mark_unique(self) -> None:
-        data_table = self.query_one(NlessDataTable)
-        current_cursor_column = data_table.cursor_column
-        new_unique_column = [
-            c
-            for c in self.current_columns
-            if c.render_position == current_cursor_column
-        ]
-        if not new_unique_column:
-            self.notify("No column selected to mark as unique")
-            return
-
-        new_unique_column = new_unique_column[0]
-        new_unique_column_name = self._get_cell_value_without_markup(
-            new_unique_column.name
-        )
-
-        if new_unique_column_name in [mc.value for mc in MetadataColumn]:
-            # can't toggle count column
-            return
-
-        self.count_by_column_key = defaultdict(lambda: 0)
-
-        if new_unique_column_name in self.unique_column_names:
-            self.unique_column_names.remove(new_unique_column_name)
-            new_unique_column.labels.discard("U")
-        else:
-            self.unique_column_names.add(new_unique_column_name)
-            new_unique_column.labels.add("U")
-
-        if len(self.unique_column_names) == 0:
-            # remove count column
-            self.current_columns = [
-                Column(
-                    name=c.name,
-                    labels=c.labels,
-                    render_position=c.render_position - 1,
-                    data_position=c.data_position - 1,
-                    hidden=c.hidden,
-                )
-                for c in self.current_columns
-                if c.name != MetadataColumn.COUNT.value
-            ]
-        elif MetadataColumn.COUNT.value not in [c.name for c in self.current_columns]:
-            # add count column at the start
-            self.current_columns = [
-                Column(
-                    name=c.name,
-                    labels=c.labels,
-                    render_position=c.render_position + 1,
-                    data_position=c.data_position + 1,
-                    hidden=c.hidden,
-                )
-                for c in self.current_columns
-            ]
-            self.current_columns.insert(
-                0,
-                Column(
-                    name=MetadataColumn.COUNT.value,
-                    labels=set(),
-                    render_position=0,
-                    data_position=0,
-                    hidden=False,
-                    pinned=True,
-                ),
-            )
-
-        pinned_columns_visible = len(
-            [c for c in self.current_columns if c.pinned and not c.hidden]
-        )
-        if new_unique_column_name in self.unique_column_names:
-            old_position = new_unique_column.render_position
-            for col in self.current_columns:
-                col_name = self._get_cell_value_without_markup(col.name)
-                if col_name == new_unique_column_name:
-                    col.render_position = pinned_columns_visible  # bubble to just after last pinned column
-                    col.pinned = True
-                elif (
-                    col_name != new_unique_column_name
-                    and col.render_position <= old_position
-                    and col.name not in [mc.value for mc in MetadataColumn]
-                    and not col.pinned
-                ):
-                    col.render_position += 1  # shift right to make space
-        else:
-            old_position = new_unique_column.render_position
-            pinned_columns_visible -= 1
-            for col in self.current_columns:
-                col_name = self._get_cell_value_without_markup(col.name)
-                if col_name == new_unique_column_name:
-                    col.pinned = False
-                    col.render_position = (
-                        pinned_columns_visible if pinned_columns_visible > 0 else 0
-                    )
-                elif col.pinned and col.render_position >= old_position:
-                    col.render_position -= 1
-
-        self._update_table()
-
-        # update the cursor position's index to match the new position of the column
-        new_cursor_position = 0
-        for i, col in enumerate(
-            sorted(self.current_columns, key=lambda c: c.render_position)
-        ):
-            if self._get_cell_value_without_markup(col.name) == new_unique_column_name:
-                new_cursor_position = i
-                break
-        self.call_after_refresh(
-            lambda: data_table.move_cursor(column=new_cursor_position)
-        )
-
     def action_toggle_tail(self) -> None:
         self.is_tailing = not self.is_tailing
         self._update_status_bar()
@@ -363,39 +299,19 @@ class NlessApp(App):
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
-    def action_delimiter(self) -> None:
-        """Change the delimiter used for parsing."""
-        self._create_prompt(
-            "Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
-            "delimiter_input",
-        )
-
-    def action_search(self) -> None:
-        """Bring up search input to highlight matching text."""
-        self._create_prompt("Type search term and press Enter", "search_input")
-
-    def action_filter_cursor_word(self) -> None:
-        """Filter by the word under the cursor."""
-        data_table = self.query_one(NlessDataTable)
-        coordinate = data_table.cursor_coordinate
+    def _perform_search(self, search_term: Optional[str]) -> None:
+        """Performs a search on the data and updates the table."""
         try:
-            cell_value = data_table.get_cell_at(coordinate)
-            cell_value = self._get_cell_value_without_markup(cell_value)
-            cell_value = re.escape(cell_value)  # Validate regex
-            selected_column = [
-                c
-                for c in self.current_columns
-                if c.render_position == coordinate.column
-            ]
-            if not selected_column:
-                self.notify("No column selected for filtering")
-                return
-            self._perform_filter(
-                f"^{cell_value}$",
-                self._get_cell_value_without_markup(selected_column[0].name),
-            )
-        except Exception:
-            self.notify("Cannot get cell value.", severity="error")
+            if search_term:
+                self.search_term = re.compile(search_term, re.IGNORECASE)
+            else:
+                self.search_term = None
+        except re.error:
+            self.notify("Invalid regex pattern", severity="error")
+            return
+        self._update_table(restore_position=False)
+        if self.search_matches:
+            self._navigate_search(1)  # Jump to first match
 
     def action_sort(self) -> None:
         data_table = self.query_one(NlessDataTable)
@@ -440,168 +356,6 @@ class NlessApp(App):
 
         self._update_table()
 
-    def action_search_to_filter(self) -> None:
-        """Convert current search into a filter across all columns."""
-        if not self.search_term:
-            self.notify("No active search to convert to filter", severity="warning")
-            return
-
-        self.current_filter = self.search_term  # Reuse the compiled regex
-        self.filter_column_name = None  # Filter across all columns
-        self._update_table()
-
-    def action_filter_any(self) -> None:
-        """Filter any column based on user input."""
-        self._create_prompt(
-            "Type filter text to match across all columns", "filter_input_any"
-        )
-
-    def action_filter(self) -> None:
-        """Filter rows based on user input."""
-        data_table = self.query_one(NlessDataTable)
-        column_index = data_table.cursor_column
-        column_label = data_table.ordered_columns[column_index].label
-        self._create_prompt(
-            f"Type filter text for column: {column_label} and press enter",
-            "filter_input",
-        )
-
-    def handle_search_submitted(self, event: Input.Submitted) -> None:
-        input_value = event.value
-        event.input.remove()
-        self._perform_search(input_value)
-
-    def handle_filter_submitted(self, event: Input.Submitted) -> None:
-        filter_value = event.value
-        event.input.remove()
-        data_table = self.query_one(NlessDataTable)
-
-        if event.input.id == "filter_input_any":
-            self._perform_filter_any(filter_value)
-        else:
-            column_index = data_table.cursor_column
-            column_label = [
-                c for c in self.current_columns if c.render_position == column_index
-            ]
-            if not column_label:
-                self.notify("No column selected for filtering")
-                return
-            column_label = self._get_cell_value_without_markup(column_label[0].name)
-            self._perform_filter(filter_value, column_label)
-
-    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
-        self.current_filter = None
-        self.filter_column_name = None
-        self.search_term = None
-        self.sort_column = None
-        self.unique_column_names = set()
-        prev_delimiter = self.delimiter
-
-        event.input.remove()
-        data_table = self.query_one(NlessDataTable)
-        self.delimiter_inferred = False
-        delimiter = event.value
-        if delimiter not in [
-            ",",
-            "\\t",
-            " ",
-            "  ",
-            "|",
-            ";",
-            "raw",
-        ]:  # if our delimiter is not one of the common ones, treat it as a regex
-            try:
-                pattern = re.compile(rf"{delimiter}")  # Validate regex
-                self.delimiter = pattern
-                data_table.clear(columns=True)
-                data_table.add_columns(*list(pattern.groupindex.keys()))
-                if prev_delimiter != "raw" and not isinstance(
-                    prev_delimiter, re.Pattern
-                ):
-                    self.raw_rows.insert(0, self.first_log_line)
-                self._update_table()
-                return
-            except:
-                self.notify("Invalid delimiter", severity="error")
-                return
-
-        if delimiter == "\\t":
-            delimiter = "\t"
-
-        self.delimiter = delimiter
-
-        if delimiter == "raw":
-            new_header = ["log"]
-        elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
-            new_header = split_line(self.raw_rows[0], self.delimiter)
-            self.raw_rows.pop(0)
-        else:
-            new_header = split_line(self.first_log_line, self.delimiter)
-
-        if (
-            (prev_delimiter != delimiter)
-            and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern))
-            and (delimiter == "raw" or isinstance(delimiter, re.Pattern))
-        ):
-            self.raw_rows.insert(0, self.first_log_line)
-
-        self.current_columns = [
-            Column(
-                name=h, labels=set(), render_position=i, data_position=i, hidden=False
-            )
-            for i, h in enumerate(new_header)
-        ]
-        self._update_table()
-
-    def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
-        input_value = event.value
-        event.input.remove()
-        if input_value.lower() == "all":
-            for col in self.current_columns:
-                col.hidden = False
-        else:
-            column_name_filters = [name.strip() for name in input_value.split("|")]
-            column_name_filter_regexes = [
-                re.compile(rf"{name}", re.IGNORECASE) for name in column_name_filters
-            ]
-            metadata_columns = [mc.value for mc in MetadataColumn]
-            visible_pinned_columns = [
-                col for col in self.current_columns if col.pinned and not col.hidden
-            ]
-            for col in self.current_columns:
-                matched = False
-                plain_name = self._get_cell_value_without_markup(col.name)
-                for i, column_name_filter in enumerate(column_name_filter_regexes):
-                    if column_name_filter.search(plain_name) and not col.pinned:
-                        col.hidden = False
-                        col.render_position = i + len(
-                            visible_pinned_columns
-                        )  # keep metadata columns at the start
-                        matched = True
-                        break
-
-                if matched:
-                    continue
-
-                if (
-                    col.name not in [mc.value for mc in MetadataColumn]
-                    and not col.pinned
-                ):
-                    col.hidden = True
-                    col.render_position = 99999
-
-            # Ensure at least one column is visible
-            if all(col.hidden for col in self.current_columns):
-                self.notify("At least one column must be visible.", severity="warning")
-                for col in self.current_columns:
-                    col.hidden = False
-
-        sorted_columns = sorted(self.current_columns, key=lambda c: c.render_position)
-        for i, col in enumerate(sorted_columns):
-            col.render_position = i
-
-        self._update_table()
-
     def _get_label(self, label: Text | str) -> str:
         if isinstance(label, Text):
             return label.plain
@@ -643,32 +397,40 @@ class NlessApp(App):
         # 1. Filter rows
         filtered_rows = []
         rows_with_inconsistent_length = []
-        if self.current_filter:
+        if len(self.current_filters) > 0:
             for row_str in self.raw_rows:
                 cells = split_line(row_str, self.delimiter)
                 if len(cells) != expected_cell_count:
                     rows_with_inconsistent_length.append(cells)
                     continue
-                if (
-                    self.filter_column_name is None
-                ):  # If we have a current_filter, but filter_column is None, we are searching all columns
-                    if any(
-                        self.current_filter.search(
-                            self._get_cell_value_without_markup(cell)
-                        )
-                        for cell in cells
-                    ):
-                        filtered_rows.append(cells)
-                else:
-                    col_idx = self._get_col_idx_by_name(self.filter_column_name)
-                    if col_idx is None:
-                        break
-                    if len(self.unique_column_names) > 0:  # account for count column
-                        col_idx -= 1
-                    if self.current_filter.search(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    ):
-                        filtered_rows.append(cells)
+
+                filter_matches = []
+
+                for filter in self.current_filters:
+                    if (
+                        filter.column is None
+                    ):  # If we have a current_filter, but filter_column is None, we are searching all columns
+                        if any(
+                            filter.pattern.search(
+                                self._get_cell_value_without_markup(cell)
+                            )
+                            for cell in cells
+                        ):
+                            filter_matches.append(True)
+                    else:
+                        col_idx = self._get_col_idx_by_name(filter.column)
+                        if col_idx is None:
+                            break
+                        if (
+                            len(self.unique_column_names) > 0
+                        ):  # account for count column
+                            col_idx -= 1
+                        if filter.pattern.search(
+                            self._get_cell_value_without_markup(cells[col_idx])
+                        ):
+                            filter_matches.append(True)
+                if len(filter_matches) == len(self.current_filters):
+                    filtered_rows.append(cells)
         else:
             for row in self.raw_rows:
                 cells = split_line(row, self.delimiter)
@@ -749,14 +511,20 @@ class NlessApp(App):
             )
 
         final_rows = self._align_cells_to_visible_columns(final_rows)
+        final_rows = self._apply_styles_to_cells(final_rows)
         self.displayed_rows = final_rows
         data_table.add_rows(final_rows)
-        if restore_position:
-            self.call_after_refresh(
-                lambda: self._restore_position(
-                    data_table, cursor_x, cursor_y, scroll_x, scroll_y
-                )
-            )
+
+    def _apply_styles_to_cells(self, rows: list[list[str]]) -> list[list[str]]:
+        styled_rows = []
+        for row in rows:
+            styled_cells = []
+            for i, cell in enumerate(row):
+                if i % 2 != 0:
+                    cell = f"[#aaaaaa]{cell}[/#aaaaaa]"
+                styled_cells.append(cell)
+            styled_rows.append(styled_cells)
+        return styled_rows
 
     def _align_cells_to_visible_columns(self, rows: list[list[str]]) -> list[list[str]]:
         new_rows = []
@@ -774,7 +542,7 @@ class NlessApp(App):
         )
         self.call_after_refresh(
             lambda: data_table.scroll_to(
-                scroll_x, scroll_y, animate=False, immediate=True
+                scroll_x, scroll_y, animate=False, immediate=False
             )
         )
 
@@ -793,12 +561,16 @@ class NlessApp(App):
         else:
             sort_text = f"{sort_prefix}: {self.sort_column} {'desc' if self.sort_reverse else 'asc'}"
 
-        if self.current_filter is None:
+        if len(self.current_filters) == 0:
             filter_text = f"{filter_prefix}: None"
-        elif self.filter_column_name is None:
-            filter_text = f"{filter_prefix}: Any Column='{self.current_filter.pattern}'"
         else:
-            filter_text = f"{filter_prefix}: {self.filter_column_name}='{self.current_filter.pattern}'"
+            filter_descriptions = []
+            for f in self.current_filters:
+                if f.column is None:
+                    filter_descriptions.append(f"any='{f.pattern.pattern}'")
+                else:
+                    filter_descriptions.append(f"{f.column}='{f.pattern.pattern}'")
+            filter_text = f"{filter_prefix}: " + ", ".join(filter_descriptions)
 
         if self.search_term is not None:
             search_text = f"{search_prefix}: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
@@ -826,60 +598,10 @@ class NlessApp(App):
             column_names = ",".join(self.unique_column_names)
             column_text = f"| unique cols: ({column_names}) "
 
-        status_bar = self.query_one("#status_bar", Static)
+        status_bar = self.app.query_one("#status_bar", Static)
         status_bar.update(
             f"{sort_text} | {filter_text} | {search_text} | {position_text} {column_text}{tailing_text}"
         )
-
-    def _perform_filter_any(self, filter_value: Optional[str]) -> None:
-        """Performs a filter across all columns and updates the table."""
-        if not filter_value:
-            self.current_filter = None
-            self.filter_column_name = None
-        else:
-            try:
-                self.current_filter = re.compile(filter_value, re.IGNORECASE)
-                # Use None to indicate all-column filter
-                self.filter_column_name = None
-            except re.error:
-                self.notify("Invalid regex pattern", severity="error")
-                return
-
-        self._update_table()
-
-    def _perform_filter(
-        self, filter_value: Optional[str], column_name: Optional[str]
-    ) -> None:
-        """Performs a filter on the data and updates the table."""
-        if not filter_value:
-            self.current_filter = None
-            self.filter_column_name = None
-        else:
-            try:
-                # Compile the regex pattern
-                self.current_filter = re.compile(filter_value, re.IGNORECASE)
-                self.filter_column_name = (
-                    column_name if column_name is not None else None
-                )
-            except re.error:
-                self.notify("Invalid regex pattern", severity="error")
-                return
-
-        self._update_table()
-
-    def _perform_search(self, search_term: Optional[str]) -> None:
-        """Performs a search on the data and updates the table."""
-        try:
-            if search_term:
-                self.search_term = re.compile(search_term, re.IGNORECASE)
-            else:
-                self.search_term = None
-        except re.error:
-            self.notify("Invalid regex pattern", severity="error")
-            return
-        self._update_table(restore_position=False)
-        if self.search_matches:
-            self._navigate_search(1)  # Jump to first match
 
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
@@ -943,8 +665,20 @@ class NlessApp(App):
             self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
+
+        mismatch_count = 0
         for line in log_lines:
-            self._add_log_line(line)
+            try:
+                self._add_log_line(line)
+            except RowLengthMismatchError:
+                mismatch_count += 1
+                continue
+
+        if mismatch_count > 0:
+            self.notify(
+                f"{mismatch_count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
+                severity="warning",
+            )
 
         self._update_status_bar()
 
@@ -963,7 +697,9 @@ class NlessApp(App):
     def _strip_column_indicators(self, col_name: str) -> str:
         return col_name.replace(" U", "").replace(" ▲", "").replace(" ▼", "")
 
-    def _get_col_idx_by_name(self, col_name: str, render_position: bool = False) -> Optional[int]:
+    def _get_col_idx_by_name(
+        self, col_name: str, render_position: bool = False
+    ) -> Optional[int]:
         for col in self.current_columns:
             if self._get_cell_value_without_markup(col.name) == col_name:
                 if render_position:
@@ -984,29 +720,36 @@ class NlessApp(App):
         if len(self.unique_column_names) > 0:
             cells.insert(0, "1")
 
-        expected_cell_count = len([c for c in self.current_columns if not c.hidden])
-        aligned_cells = self._align_cells_to_visible_columns([cells])[0]
-        if len(aligned_cells) != expected_cell_count:
-            return
+        expected_cell_count = len([c for c in self.current_columns])
+        if len(cells) != expected_cell_count:
+            raise RowLengthMismatchError()
 
-        if self.current_filter:
-            matches = False
-            if self.filter_column_name is None:
-                # We're filtering any column
-                matches = any(
-                    self.current_filter.search(
-                        self._get_cell_value_without_markup(cell)
-                    )
-                    for cell in cells
-                )
-            else:
-                col_idx = self._get_col_idx_by_name(self.filter_column_name)
-                if col_idx is None:
-                    return
-                matches = self.current_filter.search(
-                    self._get_cell_value_without_markup(cells[col_idx])
-                )
-            if not matches:
+        try:
+            aligned_cells = self._align_cells_to_visible_columns([cells])[0]
+        except:
+            raise RowLengthMismatchError()
+
+        if len(self.current_filters) > 0:
+            filter_matches = []
+            for filter in self.current_filters:
+                if filter.column is None:
+                    # We're filtering any column
+                    if any(
+                        filter.pattern.search(
+                            self._get_cell_value_without_markup(cell)
+                        )
+                        for cell in cells
+                    ): filter_matches.append(True)
+                else:
+                    col_idx = self._get_col_idx_by_name(filter.column)
+                    if col_idx is None:
+                        return
+                    if filter.pattern.search(
+                        self._get_cell_value_without_markup(cells[col_idx])
+                    ):
+                        filter_matches.append(True)
+
+            if len(filter_matches) != len(self.current_filters):
                 return
 
         old_index = None
@@ -1051,10 +794,16 @@ class NlessApp(App):
                 self.count_by_column_key[new_row_composite_key] = 1
 
         if self.sort_column is not None:
-            displayed_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=True)
-            data_sort_column_idx = self._get_col_idx_by_name(self.sort_column, render_position=False)
+            displayed_sort_column_idx = self._get_col_idx_by_name(
+                self.sort_column, render_position=True
+            )
+            data_sort_column_idx = self._get_col_idx_by_name(
+                self.sort_column, render_position=False
+            )
 
-            sort_key = self._get_cell_value_without_markup(str(cells[data_sort_column_idx]))
+            sort_key = self._get_cell_value_without_markup(
+                str(cells[data_sort_column_idx])
+            )
             displayed_row_keys = [
                 self._get_cell_value_without_markup(str(r[displayed_sort_column_idx]))
                 for r in self.displayed_rows
@@ -1092,6 +841,8 @@ class NlessApp(App):
             old_row_key = data_table.ordered_rows[old_index].key
 
         cells = self._align_cells_to_visible_columns([cells])[0]
+        cells = self._apply_styles_to_cells([cells])[0]
+
         data_table.add_row_at(*cells, row_index=new_index)
         self.displayed_rows.insert(new_index, cells)
 
@@ -1102,14 +853,579 @@ class NlessApp(App):
         if self.is_tailing:
             data_table.action_scroll_bottom()
 
+
+class NlessApp(App):
+    def __init__(self):
+        super().__init__()
+        self.logs = []
+        self.mounted = False
+        self.buffers = [NlessBuffer(pane_id=1)]
+        self.curr_buffer_idx = 0
+
+    SCREENS = {"HelpScreen": HelpScreen}
+
+    CSS_PATH = "nless.tcss"
+
+    BINDINGS = [
+        ("N", "add_buffer", "New Buffer"),
+        ("L", "show_tab_next", "Next Buffer"),
+        ("H", "show_tab_previous", "Previous Buffer"),
+        ("q", "close_active_buffer", "Close Active Buffer"),
+        ("/", "search", "Search (all columns, by prompt)"),
+        ("&", "search_to_filter", "Apply current search as filter"),
+        ("|", "filter_any", "Filter any column (by prompt)"),
+        ("f", "filter", "Filter selected column (by prompt)"),
+        ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
+        ("D", "delimiter", "Change Delimiter"),
+        (
+            "U",
+            "mark_unique",
+            "Mark a column unique to create a composite key for distinct/analysis",
+        ),
+        ("C", "filter_columns", "Filter Columns (by prompt)"),
+        ("?", "push_screen('HelpScreen')", "Show Help"),
+    ]
+
+    async def on_resize(self, event: events.Resize) -> None:
+        self.refresh()
+
+    def action_filter_columns(self) -> None:
+        """Filter columns by user input."""
+        self._create_prompt(
+            "Type pipe delimited column names to show (e.g. col1|col2) or 'all' to reset",
+            "column_filter_input",
+        )
+
+    def _get_new_pane_id(self) -> int:
+        return max(b.pane_id for b in self.buffers) + 1 if self.buffers else 1
+
+
+    def handle_mark_unique(self, new_buffer: NlessBuffer, new_unique_column_name: str) -> None:
+        if new_unique_column_name in [mc.value for mc in MetadataColumn]:
+            # can't toggle count column
+            return
+
+        col_idx = new_buffer._get_col_idx_by_name(new_unique_column_name)
+        new_unique_column = new_buffer.current_columns[col_idx] if col_idx is not None else None
+
+        if new_unique_column is None:
+            return
+
+        new_buffer.count_by_column_key = defaultdict(lambda: 0)
+
+        if new_unique_column_name in new_buffer.unique_column_names:
+            new_buffer.unique_column_names.remove(new_unique_column_name)
+            if new_buffer.sort_column in [metadata.value for metadata in MetadataColumn]:
+                new_buffer.sort_column = None
+            new_unique_column.labels.discard("U")
+        else:
+            new_buffer.unique_column_names.add(new_unique_column_name)
+            new_unique_column.labels.add("U")
+
+        if len(new_buffer.unique_column_names) == 0:
+            # remove count column
+            new_buffer.current_columns = [
+                Column(
+                    name=c.name,
+                    labels=c.labels,
+                    render_position=c.render_position - 1,
+                    data_position=c.data_position - 1,
+                    hidden=c.hidden,
+                )
+                for c in new_buffer.current_columns
+                if c.name != MetadataColumn.COUNT.value
+            ]
+        elif MetadataColumn.COUNT.value not in [
+            c.name for c in new_buffer.current_columns
+        ]:
+            # add count column at the start
+            new_buffer.current_columns = [
+                Column(
+                    name=c.name,
+                    labels=c.labels,
+                    render_position=c.render_position + 1,
+                    data_position=c.data_position + 1,
+                    hidden=c.hidden,
+                )
+                for c in new_buffer.current_columns
+            ]
+            new_buffer.current_columns.insert(
+                0,
+                Column(
+                    name=MetadataColumn.COUNT.value,
+                    labels=set(),
+                    render_position=0,
+                    data_position=0,
+                    hidden=False,
+                    pinned=True,
+                ),
+            )
+
+        pinned_columns_visible = len(
+            [c for c in new_buffer.current_columns if c.pinned and not c.hidden]
+        )
+        if new_unique_column_name in new_buffer.unique_column_names:
+            old_position = new_unique_column.render_position
+            for col in new_buffer.current_columns:
+                col_name = new_buffer._get_cell_value_without_markup(col.name)
+                if col_name == new_unique_column_name:
+                    col.render_position = pinned_columns_visible  # bubble to just after last pinned column
+                    col.pinned = True
+                elif (
+                    col_name != new_unique_column_name
+                    and col.render_position <= old_position
+                    and col.name not in [mc.value for mc in MetadataColumn]
+                    and not col.pinned
+                ):
+                    col.render_position += 1  # shift right to make space
+        else:
+            old_position = new_unique_column.render_position
+            pinned_columns_visible -= 1
+            for col in new_buffer.current_columns:
+                col_name = new_buffer._get_cell_value_without_markup(col.name)
+                if col_name == new_unique_column_name:
+                    col.pinned = False
+                    col.render_position = (
+                        pinned_columns_visible if pinned_columns_visible > 0 else 0
+                    )
+                elif col.pinned and col.render_position >= old_position:
+                    col.render_position -= 1
+
+    def action_mark_unique(self) -> None:
+        curr_buffer = self._get_current_buffer()
+        data_table = curr_buffer.query_one(NlessDataTable)
+        new_buffer = curr_buffer.copy(pane_id=self._get_new_pane_id())
+        current_cursor_column = data_table.cursor_column
+        new_unique_column = [
+            c
+            for c in new_buffer.current_columns
+            if c.render_position == current_cursor_column
+        ]
+        if not new_unique_column:
+            self.notify("No column selected to mark as unique")
+            return
+
+        new_unique_column = new_unique_column[0]
+        new_unique_column_name = new_buffer._get_cell_value_without_markup(
+            new_unique_column.name
+        )
+
+        self.handle_mark_unique(new_buffer, new_unique_column_name)
+        buffer_name = f"+u:{new_unique_column_name}" if new_unique_column_name in new_buffer.unique_column_names else f"-u:{new_unique_column_name}"
+        self.add_buffer(new_buffer, name=buffer_name)
+
+        # update the cursor position's index to match the new position of the column
+        new_cursor_position = 0
+        for i, col in enumerate(
+            sorted(new_buffer.current_columns, key=lambda c: c.render_position)
+        ):
+            if (
+                new_buffer._get_cell_value_without_markup(col.name)
+                == new_unique_column_name
+            ):
+                new_cursor_position = i
+                break
+        self.call_after_refresh(
+            lambda: new_buffer.query_one(NlessDataTable).move_cursor(column=new_cursor_position)
+        )
+
+    def action_delimiter(self) -> None:
+        """Change the delimiter used for parsing."""
+        self._create_prompt(
+            "Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
+            "delimiter_input",
+        )
+
+    def action_search_to_filter(self) -> None:
+        """Convert current search into a filter across all columns."""
+        current_buffer = self._get_current_buffer()
+        if not current_buffer.search_term:
+            current_buffer.notify(
+                "No active search to convert to filter", severity="warning"
+            )
+            return
+        else:
+            new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
+            new_buffer.current_filters.append(Filter(column=None, pattern=current_buffer.search_term))
+            self.add_buffer(new_buffer, name=f"+f:any={current_buffer.search_term.pattern}")
+
+    def action_search(self) -> None:
+        """Bring up search input to highlight matching text."""
+        self._create_prompt("Type search term and press Enter", "search_input")
+
     def _create_prompt(self, placeholder, id):
         input = Input(
             placeholder=placeholder,
             id=id,
             classes="bottom-input",
         )
-        self.mount(input)
-        input.focus()
+        tab_content = self.query_one(TabbedContent)
+        active_tab = tab_content.active
+        for tab_pane in tab_content.query(TabPane):
+            if tab_pane.id == active_tab:
+                tab_pane.mount(input)
+                self.call_after_refresh(lambda: input.focus())
+                break
+
+    def _filter_composite_key(self, current_buffer: NlessBuffer) -> None:
+        data_table = current_buffer.query_one(NlessDataTable)
+        cursor_column = data_table.cursor_column
+        selected_column = [c for c in current_buffer.current_columns if c.render_position == cursor_column]
+        if selected_column:
+            selected_column_name = current_buffer._get_cell_value_without_markup(selected_column[0].name)
+            if selected_column_name in current_buffer.unique_column_names:
+                new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
+                filters = []
+                for column in current_buffer.unique_column_names:
+                    col_idx = current_buffer._get_col_idx_by_name(column, render_position=True)
+                    cell_value = data_table.get_cell_at((data_table.cursor_row, col_idx))
+                    cell_value = current_buffer._get_cell_value_without_markup(cell_value)
+                    filters.append(Filter(column=current_buffer._get_cell_value_without_markup(column), pattern=re.compile(re.escape(cell_value), re.IGNORECASE)))
+                    self.handle_mark_unique(new_buffer, column)
+                new_buffer.current_filters.extend(filters)
+                self.add_buffer(new_buffer, name=f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}")
+
+    def on_key(self, event: Key) -> None:
+        """Handle key events."""
+        if event.key == "escape" and (isinstance(self.focused, Input) or isinstance(self.focused, Select)):
+            self.focused.remove()
+
+        current_buffer = self._get_current_buffer()
+        if event.key == "enter" and isinstance(self.focused, NlessDataTable):
+            self._filter_composite_key(current_buffer)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search_input":
+            self.handle_search_submitted(event)
+        elif event.input.id == "filter_input" or event.input.id == "filter_input_any":
+            self.handle_filter_submitted(event)
+        elif event.input.id == "delimiter_input":
+            self.handle_delimiter_submitted(event)
+        elif event.input.id == "column_filter_input":
+            self.handle_column_filter_submitted(event)
+
+    def handle_search_submitted(self, event: Input.Submitted) -> None:
+        input_value = event.value
+        event.input.remove()
+        current_buffer = self._get_current_buffer()
+        current_buffer._perform_search(input_value)
+
+    def _get_current_buffer(self) -> NlessBuffer:
+        return self.buffers[self.curr_buffer_idx]
+
+    def action_filter(self) -> None:
+        """Filter rows based on user input."""
+        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        column_index = data_table.cursor_column
+        column_label = data_table.ordered_columns[column_index].label
+        self._create_prompt(
+            f"Type filter text for column: {column_label} and press enter",
+            "filter_input",
+        )
+
+    def action_filter_any(self) -> None:
+        """Filter any column based on user input."""
+        self._create_prompt(
+            "Type filter text to match across all columns", "filter_input_any"
+        )
+
+    def handle_filter_submitted(self, event: Input.Submitted) -> None:
+        filter_value = event.value
+        event.input.remove()
+        curr_buffer = self._get_current_buffer()
+        data_table = curr_buffer.query_one(NlessDataTable)
+
+        if event.input.id == "filter_input_any":
+            self._perform_filter_any(filter_value)
+        else:
+            column_index = data_table.cursor_column
+            column_label = [
+                c
+                for c in curr_buffer.current_columns
+                if c.render_position == column_index
+            ]
+            if not column_label:
+                self.notify("No column selected for filtering")
+                return
+            column_label = curr_buffer._get_cell_value_without_markup(
+                column_label[0].name
+            )
+            self._perform_filter(filter_value, column_label)
+
+    def _perform_filter_any(self, filter_value: Optional[str]) -> None:
+        new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
+        """Performs a filter across all columns and updates the table."""
+        if not filter_value:
+            new_buffer.current_filters = []
+            new_buf_name = new_buffer.current_filters and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}" or "-f"
+        else:
+            try:
+                new_buffer.current_filters.append(Filter(column=None, pattern=re.compile(filter_value, re.IGNORECASE)))
+            except re.error:
+                new_buffer.notify("Invalid regex pattern", severity="error")
+                return
+            new_buf_name = f"+f:any={filter_value}"
+
+        self.add_buffer(new_buffer, name=new_buf_name)
+
+    def _perform_filter(
+        self, filter_value: Optional[str], column_name: Optional[str]
+    ) -> None:
+        """Performs a filter on the data and updates the table."""
+        new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
+        if not filter_value:
+            new_buf_name = new_buffer.current_filters and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}" or "-f"
+            new_buffer.current_filters = []
+        else:
+            if column_name in new_buffer.unique_column_names:
+                self.handle_mark_unique(new_buffer, column_name)
+                self.notify(f"Removed unique column: {column_name}, to allow filtering.", severity="info")
+            try:
+                # Compile the regex pattern
+                new_buffer.current_filters.append(Filter(column=column_name, pattern=re.compile(filter_value, re.IGNORECASE)))
+            except re.error:
+                new_buffer.notify("Invalid regex pattern", severity="error")
+                return
+            new_buf_name = f"+f:{column_name}={filter_value}"
+
+        self.add_buffer(new_buffer, name=new_buf_name)
+
+    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
+        curr_buffer = self._get_current_buffer()
+        curr_buffer.current_filters = []
+        curr_buffer.search_term = None
+        curr_buffer.sort_column = None
+        curr_buffer.unique_column_names = set()
+        prev_delimiter = curr_buffer.delimiter
+
+        event.input.remove()
+        data_table = curr_buffer.query_one(NlessDataTable)
+        curr_buffer.delimiter_inferred = False
+        delimiter = event.value
+        if delimiter not in [
+            ",",
+            "\\t",
+            " ",
+            "  ",
+            "|",
+            ";",
+            "raw",
+        ]:  # if our delimiter is not one of the common ones, treat it as a regex
+            try:
+                pattern = re.compile(rf"{delimiter}")  # Validate regex
+                curr_buffer.delimiter = pattern
+                curr_buffer.current_columns = [
+                    Column(
+                        name=h, labels=set(), render_position=i, data_position=i, hidden=False
+                    )
+                    for i, h in enumerate(pattern.groupindex.keys())
+                ]
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+                curr_buffer._update_table()
+                return
+            except:
+                curr_buffer.notify("Invalid delimiter", severity="error")
+                return
+
+        if delimiter == "\\t":
+            delimiter = "\t"
+
+        curr_buffer.delimiter = delimiter
+
+        if delimiter == "raw":
+            new_header = ["log"]
+        elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
+            new_header = split_line(curr_buffer.raw_rows[0], curr_buffer.delimiter)
+            curr_buffer.raw_rows.pop(0)
+        else:
+            new_header = split_line(curr_buffer.first_log_line, curr_buffer.delimiter)
+
+        if (
+            (prev_delimiter != delimiter)
+            and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern))
+            and (delimiter == "raw" or isinstance(delimiter, re.Pattern))
+        ):
+            curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+
+        curr_buffer.current_columns = [
+            Column(
+                name=h, labels=set(), render_position=i, data_position=i, hidden=False
+            )
+            for i, h in enumerate(new_header)
+        ]
+        curr_buffer._update_table()
+
+    def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
+        curr_buffer = self._get_current_buffer()
+        input_value = event.value
+        event.input.remove()
+        if input_value.lower() == "all":
+            for col in curr_buffer.current_columns:
+                col.hidden = False
+        else:
+            column_name_filters = [name.strip() for name in input_value.split("|")]
+            column_name_filter_regexes = [
+                re.compile(rf"{name}", re.IGNORECASE) for name in column_name_filters
+            ]
+            metadata_columns = [mc.value for mc in MetadataColumn]
+            visible_pinned_columns = [
+                col
+                for col in curr_buffer.current_columns
+                if col.pinned and not col.hidden
+            ]
+            for col in curr_buffer.current_columns:
+                matched = False
+                plain_name = curr_buffer._get_cell_value_without_markup(col.name)
+                for i, column_name_filter in enumerate(column_name_filter_regexes):
+                    if column_name_filter.search(plain_name) and not col.pinned:
+                        col.hidden = False
+                        col.render_position = i + len(
+                            visible_pinned_columns
+                        )  # keep metadata columns at the start
+                        matched = True
+                        break
+
+                if matched:
+                    continue
+
+                if (
+                    col.name not in [mc.value for mc in MetadataColumn]
+                    and not col.pinned
+                ):
+                    col.hidden = True
+                    col.render_position = 99999
+
+            # Ensure at least one column is visible
+            if all(col.hidden for col in curr_buffer.current_columns):
+                curr_buffer.notify(
+                    "At least one column must be visible.", severity="warning"
+                )
+                for col in curr_buffer.current_columns:
+                    col.hidden = False
+
+        sorted_columns = sorted(
+            curr_buffer.current_columns, key=lambda c: c.render_position
+        )
+        for i, col in enumerate(sorted_columns):
+            col.render_position = i
+
+        curr_buffer._update_table()
+
+    def action_filter_cursor_word(self) -> None:
+        """Filter by the word under the cursor."""
+        curr_buffer = self._get_current_buffer()
+        data_table = curr_buffer.query_one(NlessDataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            cell_value = re.escape(cell_value)  # Validate regex
+            selected_column = [
+                c
+                for c in curr_buffer.current_columns
+                if c.render_position == coordinate.column
+            ]
+            if not selected_column:
+                self.notify("No column selected for filtering")
+                return
+            self._perform_filter(
+                f"^{cell_value}$",
+                curr_buffer._get_cell_value_without_markup(selected_column[0].name),
+            )
+        except Exception as e:
+            print(e)
+            self.notify("Cannot get cell value.", severity="error")
+
+    def refresh_buffer_and_focus(self, new_buffer: NlessBuffer, cursor_coordinate: Coordinate, offset: Offset) -> None:
+        new_buffer._update_table()
+        data_table = new_buffer.query_one(NlessDataTable)
+        data_table.focus()
+        new_buffer._restore_position(data_table, cursor_coordinate.column, cursor_coordinate.row, offset.x, offset.y)
+
+    def add_buffer(self, new_buffer: NlessBuffer, name: str) -> None:
+        curr_data_table = self._get_current_buffer().query_one(NlessDataTable)
+
+        self.buffers.append(new_buffer)
+        tabbed_content = self.query_one(TabbedContent)
+        tab_pane = TabPane(name, id=f"buffer{new_buffer.pane_id}")
+        tabbed_content.add_pane(tab_pane)
+        scroll_view = ScrollView()
+        tab_pane.mount(scroll_view)
+        scroll_view.mount(new_buffer)
+        self.curr_buffer_idx = len(self.buffers) - 1
+        tabbed_content.active = f"buffer{new_buffer.pane_id}"
+        self.call_after_refresh(lambda: self.refresh_buffer_and_focus(new_buffer, curr_data_table.cursor_coordinate, curr_data_table.scroll_offset))
+
+
+    def action_close_active_buffer(self) -> None:
+        if len(self.buffers) == 1:
+            self.exit()
+            return
+
+        tabbed_content = self.query_one(TabbedContent)
+        current_buffer = self._get_current_buffer()
+
+        tabbed_content.remove_pane(f"buffer{current_buffer.pane_id}")
+        self.buffers.pop(self.curr_buffer_idx)
+
+        if self.curr_buffer_idx >= len(self.buffers):
+            self.curr_buffer_idx = len(self.buffers) - 1
+
+        new_curr_buffer = self.buffers[self.curr_buffer_idx]
+
+        tabbed_content.active = f"buffer{new_curr_buffer.pane_id}"
+        tabbed_content.query_one(f"#buffer{new_curr_buffer.pane_id}").query_one(
+            NlessDataTable
+        ).focus()
+        self.call_after_refresh(lambda: new_curr_buffer._update_status_bar())
+
+    def action_show_tab_next(self) -> None:
+        tabbed_content = self.query_one(TabbedContent)
+        self.curr_buffer_idx = (self.curr_buffer_idx + 1) % len(self.buffers)
+        active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
+        tabbed_content.active = active_buffer_id
+        tabbed_content.query_one(f"#{active_buffer_id}").query_one(
+            NlessDataTable
+        ).focus()
+        self._get_current_buffer()._update_status_bar()
+
+    def action_show_tab_previous(self) -> None:
+        tabbed_content = self.query_one(TabbedContent)
+        self.curr_buffer_idx = (self.curr_buffer_idx - 1) % len(self.buffers)
+        active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
+        tabbed_content.active = active_buffer_id
+        tabbed_content.query_one(f"#{active_buffer_id}").query_one(
+            NlessDataTable
+        ).focus()
+        self._get_current_buffer()._update_status_bar()
+
+    def on_mount(self) -> None:
+        self.mounted = True
+        self.query_one(NlessDataTable).focus()
+
+    def action_add_buffer(self) -> None:
+        max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
+        new_buffer = NlessBuffer(pane_id=max_buffer_id + 1)
+        self.call_after_refresh(lambda: new_buffer.add_logs(self.logs))
+        self.add_buffer(new_buffer, name=f"buffer{new_buffer.pane_id}")
+
+    def compose(self) -> ComposeResult:
+        init_buffer = self.buffers[0]
+        with TabbedContent():
+            with TabPane(f"original", id=f"buffer{init_buffer.pane_id}"):
+                with ScrollView():
+                    yield init_buffer
+        yield Static(id="status_bar", classes="dock-bottom")
+
+    def add_logs(self, log_lines: list[str]) -> None:
+        self.logs.extend(log_lines)
+        for buffer in self.buffers:
+            while not buffer.mounted:
+                time.sleep(0.5)
+            buffer.add_logs(log_lines)
 
 
 def main():
