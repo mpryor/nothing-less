@@ -4,8 +4,7 @@ from threading import Thread
 
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer
-from textual import on
-from typing import List, Dict, Optional
+from typing import List
 import select
 import shlex
 
@@ -23,7 +22,7 @@ class NlessApp(App):
 
     def __init__(self):
         super().__init__()
-        self.lines: List[List[str]] = []  # Store rows as lists of strings
+        self.raw_rows: List[List[str]] = []  # Store all data rows (list of strings)
         self.headers: List[str] = []
         self.sort_column: Optional[int] = None
         self.sort_reverse: bool = False
@@ -40,39 +39,6 @@ class NlessApp(App):
         """Initialize table columns."""
         self.table.zebra_stripes = True
         self.table.cursor_type = "row"
-        if self.headers:
-            self.table.add_columns(*self.headers)
-
-    def on_mount(self) -> None:
-        """Set up periodic updates when the app is mounted."""
-        self.set_interval(0.1, self.update)
-
-    def update(self) -> None:
-        """Update the table with new/filtered/sorted data."""
-        try:
-            # Process any new lines
-            while self.lines:
-                row = self.lines.pop(0)
-                if not self.headers and len(row) > 1:  # Auto-detect headers
-                    self.headers = row
-                    self.setup_table()
-                    continue
-                self.table.add_row(*row)
-
-            # Update existing rows incrementally
-            current_row_count = self.table.row_count
-            new_rows = self.get_filtered_sorted_rows()
-
-            # Add new rows if needed
-            for row in new_rows[current_row_count:]:
-                self.table.add_row(*row)
-
-            # Remove extra rows if needed
-            while self.table.row_count > len(new_rows):
-                self.table.remove_row(self.table.row_count - 1)
-
-        except Exception as e:
-            self.exit(message=f"Error: {e}")
 
     def action_quit(self) -> None:
         """Handle quit action."""
@@ -98,7 +64,7 @@ class NlessApp(App):
 
     def get_filtered_sorted_rows(self) -> List[List[str]]:
         """Return processed rows based on current filters/sorts."""
-        rows = [self.table.get_row_at(i) for i in range(self.table.row_count)]
+        rows = self.raw_rows[:]   # working on a copy
 
         # Filtering
         if self.filter_query:
@@ -110,9 +76,25 @@ class NlessApp(App):
 
         # Sorting
         if self.sort_column is not None:
-            rows.sort(key=lambda x: x[self.sort_column], reverse=self.sort_reverse)
+            try:
+                rows.sort(key=lambda x: x[self.sort_column] if self.sort_column < len(x) else "", reverse=self.sort_reverse)
+            except Exception:
+                pass   # If sorting fails, skip
 
         return rows
+
+    def refresh_table(self) -> None:
+        """Refresh the table with the current raw_rows and filter/sort."""
+        if not self.raw_rows and not self.headers:
+            return   # No data
+
+        rows = self.get_filtered_sorted_rows()
+        
+        self.table.clear()
+        if self.headers:
+            self.table.add_columns(*self.headers)
+        for row in rows:
+            self.table.add_row(*row)
 
     def add_log(self, log_line: str) -> None:
         """Parse and add a tabular data line."""
@@ -120,9 +102,16 @@ class NlessApp(App):
         delimiters = [",", "\t", "|", ";"]
         if any(d in log_line for d in delimiters):
             delimiter = max(delimiters, key=lambda d: log_line.count(d))
-            self.lines.append([cell.strip() for cell in log_line.split(delimiter)])
+            row = [cell.strip() for cell in log_line.split(delimiter)]
         else:  # Space-delimited
-            self.lines.append(shlex.split(log_line))
+            row = shlex.split(log_line)
+
+        if not self.headers and len(row) > 1:
+            self.headers = row
+            self.call_from_thread(self.refresh_table)
+        else:
+            self.raw_rows.append(row)
+            self.call_from_thread(self.refresh_table)
 
 
 class InputConsumer:
@@ -150,10 +139,12 @@ class InputConsumer:
             cmd, *args = line[1:].split(maxsplit=1)
             if cmd == "sort":
                 self.app.sort_column = int(args[0]) if args else None
+                self.app.call_from_thread(self.app.refresh_table)
             elif cmd == "filter":
                 self.app.filter_query = args[0] if args else None
+                self.app.call_from_thread(self.app.refresh_table)
             elif cmd == "quit":
-                self.app.exit()
+                self.app.call_from_thread(self.app.exit)
             # Add more commands as needed
         else:
             self.app.add_log(line)
