@@ -11,7 +11,8 @@ class InputConsumer:
 
     def __init__(self, file_name: str | None, new_fd: int | None, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
         if file_name is not None:
-            self.file = open(file_name, "r+")
+            file_name = os.path.expanduser(file_name)
+            self.file = open(file_name, "r+", errors="ignore")
             self.new_fd = self.file.fileno()
         elif new_fd is not None:
             self.new_fd = new_fd
@@ -26,7 +27,7 @@ class InputConsumer:
     def run(self) -> None:
         """Read input and handle commands."""
         streaming = self.is_streaming()
-        stdin = os.fdopen(self.new_fd)
+        stdin = os.fdopen(self.new_fd, errors="ignore")
         fl = fcntl.fcntl(self.new_fd, fcntl.F_GETFL)
         fcntl.fcntl(self.new_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
         raw_str = ""
