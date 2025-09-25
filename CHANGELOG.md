@@ -1,4 +1,5 @@
-==== 0.1.7 ====
+# Changelog
+## 0.1.7
 - JSON support
   - `D` delimiter supports `json`, now:
     - will convert json object log lines into columns
