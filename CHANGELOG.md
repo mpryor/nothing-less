@@ -7,6 +7,6 @@
   - column delimiters with `d` supporting json
   - `J` command to select json fields as columns
 - Ctrl-d and Ctrl-u for paging (`d` moved to column delimiter command)
-- --version command
+- `--version` command
 - Better automatic pane naming
 - Pressing numeric keys (1-9) focuses corresponding "buffer"
