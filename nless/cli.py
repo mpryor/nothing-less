@@ -3,13 +3,15 @@ import bisect
 from copy import deepcopy
 import csv
 from dataclasses import dataclass
-import re
-import sys
 from collections import defaultdict
 from threading import Thread
 import time
 from typing import Callable, List, Optional
 from webbrowser import get
+import os
+import json
+import re
+import sys
 
 from rich.markup import _parse
 from rich.text import Text
@@ -28,41 +30,40 @@ from textual.widgets import (
     RichLog,
     Select,
     Static,
+    Tab,
     TabPane,
     TabbedContent,
     Static,
 )
 
+from nless.autocomplete import AutocompleteInput
+from nless.version import get_version
+
 from .delimiter import infer_delimiter, split_line
+from .types import Column, Filter, MetadataColumn
 from .help import HelpScreen
 from .input import InputConsumer
 from .nlesstable import NlessDataTable
 
-
 from enum import Enum
-
-
-@dataclass
-class Column:
-    name: str
-    labels: set[str]
-    render_position: int
-    data_position: int
-    hidden: bool
-    pinned: bool = False
-
 
 class RowLengthMismatchError(Exception):
     pass
 
-class MetadataColumn(Enum):
-    COUNT = "count"
+def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
+    if output_path == "-":
+        output_path = "/dev/stdout"
+        while current_buffer.app.is_running:
+            time.sleep(.1)
+        time.sleep(.1)
 
+    with open(output_path, "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(current_buffer._get_visible_column_labels())
+        for row in current_buffer.displayed_rows:
+            plain_row = [current_buffer._get_cell_value_without_markup(str(cell)) for cell in row]
+            writer.writerow(plain_row)
 
-@dataclass
-class Filter:
-    column: str | None  # None means any column
-    pattern: re.Pattern[str]
 
 def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
     if output_path == "-":
@@ -196,7 +197,7 @@ class NlessBuffer(Static):
             [c for c in self.current_columns if not c.hidden]
         )
         for row in self.raw_rows:
-            cells = split_line(row, self.delimiter)
+            cells = split_line(row, self.delimiter, self.current_columns)
             if len(cells) != expected_cell_count:
                 unparsed_rows.append(row)
 
@@ -417,7 +418,7 @@ class NlessBuffer(Static):
         rows_with_inconsistent_length = []
         if len(self.current_filters) > 0:
             for row_str in self.raw_rows:
-                cells = split_line(row_str, self.delimiter)
+                cells = split_line(row_str, self.delimiter, self.current_columns)
                 if len(cells) != expected_cell_count:
                     rows_with_inconsistent_length.append(cells)
                     continue
@@ -451,7 +452,7 @@ class NlessBuffer(Static):
                     filtered_rows.append(cells)
         else:
             for row in self.raw_rows:
-                cells = split_line(row, self.delimiter)
+                cells = split_line(row, self.delimiter, self.current_columns)
                 if len(cells) == expected_cell_count:
                     filtered_rows.append(cells)
                 else:
@@ -533,6 +534,11 @@ class NlessBuffer(Static):
         self.displayed_rows = final_rows
         data_table.add_rows(final_rows)
         self.locked = False
+
+        if restore_position:
+            self._restore_position(
+                data_table, cursor_x, cursor_y, scroll_x, scroll_y
+            ) 
 
     def _apply_styles_to_cells(self, rows: list[list[str]]) -> list[list[str]]:
         styled_rows = []
@@ -657,7 +663,7 @@ class NlessBuffer(Static):
             first_log_line = log_lines[0]
             self.first_log_line = first_log_line
             if self.delimiter != "raw":
-                parts = split_line(first_log_line, self.delimiter)
+                parts = split_line(first_log_line, self.delimiter, self.current_columns)
                 data_table.add_columns(*parts)
                 self.current_columns = [
                     Column(
@@ -737,7 +743,7 @@ class NlessBuffer(Static):
         3. where it should go, based off current sort
         """
         data_table = self.query_one(NlessDataTable)
-        cells = split_line(log_line, self.delimiter)
+        cells = split_line(log_line, self.delimiter, self.current_columns)
         if len(self.unique_column_names) > 0:
             cells.insert(0, "1")
 
@@ -878,12 +884,14 @@ class NlessBuffer(Static):
 class NlessApp(App):
     def __init__(self):
         super().__init__()
+        self.input_history = []
         self.logs = []
         self.mounted = False
         self.buffers = [NlessBuffer(pane_id=1)]
         self.curr_buffer_idx = 0
 
     SCREENS = {"HelpScreen": HelpScreen}
+    HISTORY_FILE = "~/.config/nless/history.json"
 
     CSS_PATH = "nless.tcss"
 
@@ -898,6 +906,9 @@ class NlessApp(App):
         ("f", "filter", "Filter selected column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
         ("D", "delimiter", "Change Delimiter"),
+        ("d", "column_delimiter", "Change Column Delimiter"),
+        ("W", "write_to_file", "Write current view to file"),
+        ("J", "json_header", "Select new header from JSON in cell"),
         ("W", "write_to_file", "Write current view to file"),
         (
             "U",
@@ -910,6 +921,79 @@ class NlessApp(App):
 
     async def on_resize(self, event: events.Resize) -> None:
         self.refresh()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        event.control.remove()
+        if event.control.id == "json_header_select":
+            curr_buffer = self._get_current_buffer()
+            cursor_column = curr_buffer.query_one(NlessDataTable).cursor_column
+            curr_column = [c for c in curr_buffer.current_columns if c.render_position == cursor_column]
+            if not curr_column:
+                curr_buffer.notify("No column selected to add JSON key to", severity="error")
+                return
+            curr_column = curr_column[0]
+            curr_column_name = curr_buffer._get_cell_value_without_markup(curr_column.name)
+
+            new_column_name = f"{curr_column_name}.{event.value}"
+
+            new_col = Column(
+                name=new_column_name,
+                labels=set(),
+                computed=True,
+                render_position=len(curr_buffer.current_columns),
+                data_position=len(curr_buffer.current_columns),
+                hidden=False,
+                json_ref=f"{curr_column_name}.{event.value}"
+            )
+            curr_buffer.current_columns.append(new_col)
+            curr_buffer._update_table()
+            data_table = self.query_one(NlessDataTable)
+            data_table.move_cursor(column=new_col.render_position)
+
+    def action_json_header(self) -> None:
+        """Set the column headers from JSON in the selected cell."""
+        curr_buffer = self._get_current_buffer()
+        data_table = curr_buffer.query_one(NlessDataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            json_data = json.loads(cell_value)
+            if not isinstance(json_data, (dict, list)):
+                curr_buffer.notify("Cell does not contain a JSON object.", severity="error")
+                return
+            new_columns = []
+            #iterate through the full JSON heirarchy of keys, building up a list of keys
+            def extract_keys(obj, prefix=""):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        new_prefix = f"{prefix}.{k}" if prefix else k
+                        new_columns.append(new_prefix)
+                        extract_keys(v, new_prefix)
+                elif isinstance(obj, list) and len(obj) > 0:
+                    for i in range(len(obj)):
+                        extract_keys(obj[i], prefix + f"{i}")
+            extract_keys(json_data)
+            new_columns = list(dict.fromkeys(new_columns))  # deduplicate while preserving order
+
+            #mount a select, with the new_colums as options - when the option is selected, a new column is added to the current buffer
+            select = Select(
+                options=[(col, col) for col in new_columns],
+                classes="bottom-input",
+                prompt="Select a json key to add as a column",
+                id="json_header_select"
+            )
+            self.mount(select)
+            self.call_after_refresh(lambda: curr_buffer._open_select(select))
+        except Exception as e:
+            curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
+
+    def action_column_delimiter(self) -> None:
+        """Change the column delimiter."""
+        self._create_prompt(
+            "Type column delimiter (e.g. , or \\t or 'space' or 'raw')",
+            "column_delimiter_input",
+        )
 
     def action_write_to_file(self) -> None:
         """Write the current view to a file."""
@@ -959,6 +1043,8 @@ class NlessApp(App):
                     render_position=c.render_position - 1,
                     data_position=c.data_position - 1,
                     hidden=c.hidden,
+                    json_ref=c.json_ref,
+                    computed=c.computed,
                 )
                 for c in new_buffer.current_columns
                 if c.name != MetadataColumn.COUNT.value
@@ -974,6 +1060,8 @@ class NlessApp(App):
                     render_position=c.render_position + 1,
                     data_position=c.data_position + 1,
                     hidden=c.hidden,
+                    json_ref=c.json_ref,
+                    computed=c.computed,
                 )
                 for c in new_buffer.current_columns
             ]
@@ -1082,10 +1170,12 @@ class NlessApp(App):
         self._create_prompt("Type search term and press Enter", "search_input")
 
     def _create_prompt(self, placeholder, id):
-        input = Input(
+        input = AutocompleteInput(
             placeholder=placeholder,
             id=id,
             classes="bottom-input",
+            history=[h["val"] for h in self.input_history if h["id"] == id],
+            on_add=lambda val: self.input_history.append({"id": id, "val": val})
         )
         tab_content = self.query_one(TabbedContent)
         active_tab = tab_content.active
@@ -1122,6 +1212,37 @@ class NlessApp(App):
         if event.key == "enter" and isinstance(self.focused, NlessDataTable):
             self._filter_composite_key(current_buffer)
 
+        if event.key in [str(i) for i in range(1, 10)] and isinstance(self.focused, NlessDataTable):
+            self.show_tab_by_index(int(event.key) - 1)
+
+    def handle_column_delimiter_submitted(self, event: Input.Submitted) -> None:
+        event.input.remove()
+        new_col_delimiter = event.value
+        if new_col_delimiter == "json":
+            current_buffer = self._get_current_buffer()
+            data_table = current_buffer.query_one(NlessDataTable)
+            cursor_coordinate = data_table.cursor_coordinate
+            cell = data_table.get_cell_at(cursor_coordinate)
+            selected_column = [c for c in current_buffer.current_columns if c.render_position == cursor_coordinate.column]
+            if not selected_column:
+                current_buffer.notify("No column selected to parse as JSON", severity="error")
+                return
+            selected_column = selected_column[0]
+            try:
+                cell_json = json.loads(current_buffer._get_cell_value_without_markup(cell))
+                if not isinstance(cell_json, (dict, list)):
+                    current_buffer.notify("Selected cell does not contain a JSON object or array", severity="error")
+                    return
+                column_count = len(current_buffer.current_columns)
+                cell_json_keys = list(cell_json.keys()) if isinstance(cell_json, dict) else [i for i in range(len(cell_json))]
+                for i, key in enumerate(cell_json_keys):
+                    if f"{selected_column.name}.{key}" not in [c.name for c in current_buffer.current_columns]:
+                        current_buffer.current_columns.append(Column(name=f"{selected_column.name}.{key}", labels=set(), render_position=column_count+i, data_position=column_count+i, hidden=False, computed=True, json_ref=f"{selected_column.name}.{key}"))
+                current_buffer._update_table()
+            except json.JSONDecodeError:
+                current_buffer.notify("Selected cell does not contain a JSON object or array", severity="error")
+                return
+
     def handle_write_to_file_submitted(self, event: Input.Submitted) -> None:
         output_path = event.value
         event.input.remove()
@@ -1149,6 +1270,8 @@ class NlessApp(App):
             self.handle_column_filter_submitted(event)
         elif event.input.id == "write_to_file_input":
             self.handle_write_to_file_submitted(event)
+        elif event.input.id == "column_delimiter_input":
+            self.handle_column_delimiter_submitted(event)
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -1256,6 +1379,7 @@ class NlessApp(App):
             "|",
             ";",
             "raw",
+            "json",
         ]:  # if our delimiter is not one of the common ones, treat it as a regex
             try:
                 pattern = re.compile(rf"{delimiter}")  # Validate regex
@@ -1281,18 +1405,46 @@ class NlessApp(App):
 
         curr_buffer.delimiter = delimiter
 
+        parsed_full_json_file = False
+
         if delimiter == "raw":
             new_header = ["log"]
+        elif delimiter == "json":
+            try:
+                new_header = json.loads(curr_buffer.first_log_line).keys()
+            except Exception as e:
+                # attempt to read all logs as one json payload
+                try:
+                    all_logs = ""
+                    if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
+                        all_logs = curr_buffer.first_log_line + "\n"
+                    all_logs += "\n".join(curr_buffer.raw_rows)
+                    buffer_json = json.loads(all_logs)
+                    if isinstance(buffer_json, list) and len(buffer_json) > 0 and isinstance(buffer_json[0], dict):
+                        new_header = buffer_json[0].keys()
+                        curr_buffer.raw_rows = [json.dumps(item) for item in buffer_json]
+                    elif isinstance(buffer_json, dict):
+                        new_header = buffer_json.keys()
+                        curr_buffer.raw_rows = [json.dumps(buffer_json)]
+                    else:
+                        curr_buffer.notify(f"Failed to parse JSON logs: {e}", severity="error")
+                        return
+                    curr_buffer.first_log_line = curr_buffer.raw_rows[0]
+                    parsed_full_json_file = True
+                except Exception as e2:
+                    curr_buffer.notify(f"Failed to parse JSON logs: {e2}", severity="error")
+                    return
         elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
-            new_header = split_line(curr_buffer.raw_rows[0], curr_buffer.delimiter)
+            new_header = split_line(curr_buffer.raw_rows[0], curr_buffer.delimiter, curr_buffer.current_columns)
             curr_buffer.raw_rows.pop(0)
         else:
-            new_header = split_line(curr_buffer.first_log_line, curr_buffer.delimiter)
+            new_header = split_line(curr_buffer.first_log_line, curr_buffer.delimiter, curr_buffer.current_columns)
 
         if (
             (prev_delimiter != delimiter)
-            and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern))
-            and (delimiter == "raw" or isinstance(delimiter, re.Pattern))
+            and (prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern) and prev_delimiter != "json")
+            and (delimiter == "raw" or isinstance(delimiter, re.Pattern) or delimiter == "json")
+            and not parsed_full_json_file
         ):
             curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
 
@@ -1382,7 +1534,6 @@ class NlessApp(App):
                 curr_buffer._get_cell_value_without_markup(selected_column[0].name),
             )
         except Exception as e:
-            print(e)
             self.notify("Cannot get cell value.", severity="error")
 
     def refresh_buffer_and_focus(self, new_buffer: NlessBuffer, cursor_coordinate: Coordinate, offset: Offset) -> None:
@@ -1391,12 +1542,13 @@ class NlessApp(App):
         data_table.focus()
         new_buffer._restore_position(data_table, cursor_coordinate.column, cursor_coordinate.row, offset.x, offset.y)
 
-    def add_buffer(self, new_buffer: NlessBuffer, name: str) -> None:
+    def add_buffer(self, new_buffer: NlessBuffer, name: str, add_prev_index: bool = True) -> None:
         curr_data_table = self._get_current_buffer().query_one(NlessDataTable)
 
         self.buffers.append(new_buffer)
         tabbed_content = self.query_one(TabbedContent)
-        tab_pane = TabPane(name, id=f"buffer{new_buffer.pane_id}")
+        buffer_number = len(self.buffers)
+        tab_pane = TabPane(f"[#00ff00]{buffer_number}[/#00ff00] {self.curr_buffer_idx+1 if add_prev_index else ""}{name}", id=f"buffer{new_buffer.pane_id}")
         tabbed_content.add_pane(tab_pane)
         scroll_view = ScrollView()
         tab_pane.mount(scroll_view)
@@ -1405,6 +1557,13 @@ class NlessApp(App):
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
         self.call_after_refresh(lambda: self.refresh_buffer_and_focus(new_buffer, curr_data_table.cursor_coordinate, curr_data_table.scroll_offset))
 
+
+    def on_exit_app(self) -> None:
+        # check if file exists, if not create it
+        os.makedirs(os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True)
+
+        with open(os.path.expanduser(self.HISTORY_FILE), "w") as f:
+            json.dump(self.input_history, f)
 
     def action_close_active_buffer(self) -> None:
         if len(self.buffers) == 1:
@@ -1426,7 +1585,20 @@ class NlessApp(App):
         tabbed_content.query_one(f"#buffer{new_curr_buffer.pane_id}").query_one(
             NlessDataTable
         ).focus()
+
         self.call_after_refresh(lambda: new_curr_buffer._update_status_bar())
+        self.call_after_refresh(lambda: self._update_panes())
+
+    def _update_panes(self) -> None:
+        tabbed_content = self.query_one(TabbedContent)
+        pattern = re.compile(r"((\[#00ff00\])?(\d+?)(\[/#00ff00\])?) .*")
+        for i, pane in enumerate(tabbed_content.query(Tab).results()):
+            curr_title = str(pane.content)
+            pattern_matches = pattern.match(curr_title)
+            if pattern_matches:
+                old_index = pattern_matches.group(1)
+                curr_title = curr_title.replace(old_index, f"[#00ff00]{str(i + 1)}[/#00ff00]", count=1)
+                pane.update(curr_title)
 
     def action_show_tab_next(self) -> None:
         tabbed_content = self.query_one(TabbedContent)
@@ -1448,20 +1620,41 @@ class NlessApp(App):
         ).focus()
         self._get_current_buffer()._update_status_bar()
 
+    def show_tab_by_index(self, index: int) -> None:
+        if index < 0 or index >= len(self.buffers):
+            return
+        tabbed_content = self.query_one(TabbedContent)
+        self.curr_buffer_idx = index
+        active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
+        tabbed_content.active = active_buffer_id
+        tabbed_content.query_one(f"#{active_buffer_id}").query_one(
+            NlessDataTable
+        ).focus()
+        self._get_current_buffer()._update_status_bar()
+
     def on_mount(self) -> None:
         self.mounted = True
         self.query_one(NlessDataTable).focus()
+
+        os.makedirs(os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True)
+        if not os.path.exists(os.path.expanduser(self.HISTORY_FILE)):
+            open(os.path.expanduser(self.HISTORY_FILE), "w").close()
+        with open(os.path.expanduser(self.HISTORY_FILE), "r") as f:
+            try:
+                self.input_history = json.load(f)
+            except:
+                self.input_history = []
 
     def action_add_buffer(self) -> None:
         max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
         new_buffer = NlessBuffer(pane_id=max_buffer_id + 1)
         self.call_after_refresh(lambda: new_buffer.add_logs(self.logs))
-        self.add_buffer(new_buffer, name=f"buffer{new_buffer.pane_id}")
+        self.add_buffer(new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False)
 
     def compose(self) -> ComposeResult:
         init_buffer = self.buffers[0]
         with TabbedContent():
-            with TabPane(f"original", id=f"buffer{init_buffer.pane_id}"):
+            with TabPane(f"[#00ff00]1[/#00ff00] original", id=f"buffer{init_buffer.pane_id}"):
                 with ScrollView():
                     yield init_buffer
         yield Static(id="status_bar", classes="dock-bottom")
@@ -1482,6 +1675,8 @@ def main():
     parser.add_argument(
         "filename", nargs="?", help="File to read input from (defaults to stdin)"
     )
+    parser.add_argument("--version", action="version", version=f"{get_version()}")
+
     args = parser.parse_args()
 
     if args.filename:

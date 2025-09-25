@@ -1,9 +1,14 @@
 import csv
+import json
 import re
 from io import StringIO
 
+from .types import Column, MetadataColumn
 
-def split_line(line: str, delimiter: str | re.Pattern[str] | None) -> list[str]:
+
+def split_line(
+    line: str, delimiter: str | re.Pattern[str] | None, columns: list[Column]
+) -> list[str]:
     """Split a line using the appropriate delimiter method.
 
     Args:
@@ -20,6 +25,11 @@ def split_line(line: str, delimiter: str | re.Pattern[str] | None) -> list[str]:
         cells = split_csv_row(line)
     elif delimiter == "raw":
         cells = [line]
+    elif delimiter == "json":
+        cells = [
+            json.dumps(v) if isinstance(v, dict) or isinstance(v, list) else str(v)
+            for v in json.loads(line).values()
+        ]
     elif isinstance(delimiter, re.Pattern):
         match = delimiter.match(line)
         if match:
@@ -28,12 +38,42 @@ def split_line(line: str, delimiter: str | re.Pattern[str] | None) -> list[str]:
             cells = []
     else:
         cells = line.split(delimiter)
-    cells = [txt.replace("\t", "  ") for txt in cells] # Rich rendering breaks on tabs
-    cells = [
-        cell
-        for (i, cell) in enumerate(cells)
-    ]
+    cells = [txt.replace("\t", "  ") for txt in cells]  # Rich rendering breaks on tabs
+
+    sorted_columns = sorted(columns, key=lambda col: col.data_position)
+    count_metadata_columns = sum(1 for col in sorted_columns if col.name in [mc.value for mc in MetadataColumn])
+
+    for i, col in enumerate(sorted_columns):
+        if col.computed:
+            json_ref = col.json_ref
+            json_path = json_ref.split(".")
+            lookup_column = json_path[0]
+            for c in sorted_columns:
+                if c.name == lookup_column and c.data_position - count_metadata_columns < len(cells):
+                    try:
+                        json_data = json.loads(cells[c.data_position - count_metadata_columns])
+                        for key in json_path[1:]:
+                            if isinstance(json_data, dict):
+                                json_data = json_data.get(key, "")
+                            elif isinstance(json_data, list):
+                                try:
+                                    index = int(key)
+                                    json_data = json_data[index]
+                                except (ValueError, IndexError):
+                                    json_data = ""
+                            else:
+                                json_data = ""
+                    except (json.JSONDecodeError, IndexError):
+                        json_data = ""
+                    cells.insert(
+                        col.data_position - count_metadata_columns,
+                        json.dumps(json_data)
+                        if isinstance(json_data, (dict, list))
+                        else str(json_data),
+                    )
+                    break
     return cells
+
 
 def split_aligned_row_preserve_single_spaces(line: str) -> list[str]:
     """Split a space-aligned row into fields by collapsing multiple spaces, but preserving single spaces within fields.
@@ -47,6 +87,7 @@ def split_aligned_row_preserve_single_spaces(line: str) -> list[str]:
     # Use regex to split on two or more spaces
     return [field for field in re.split(r" {2,}", line) if field]
 
+
 def split_aligned_row(line: str) -> list[str]:
     """Split a space-aligned row into fields by collapsing multiple spaces.
 
@@ -58,6 +99,7 @@ def split_aligned_row(line: str) -> list[str]:
     """
     # Split on multiple spaces and filter out empty strings
     return [field for field in line.split() if field]
+
 
 def split_csv_row(line: str) -> list[str]:
     """Split a CSV row properly handling quoted values.
@@ -76,6 +118,7 @@ def split_csv_row(line: str) -> list[str]:
     except (csv.Error, StopIteration):
         # Fallback to simple split if CSV parsing fails
         return line.split(",")
+
 
 def infer_delimiter(sample_lines: list[str]) -> str | None:
     """Infer the delimiter from a sample of lines.
