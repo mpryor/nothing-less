@@ -37,6 +37,7 @@ from textual.widgets import (
 )
 
 from nless.autocomplete import AutocompleteInput
+from nless.version import get_version
 
 from .delimiter import infer_delimiter, split_line
 from .types import Column, Filter, MetadataColumn
@@ -1674,6 +1675,8 @@ def main():
     parser.add_argument(
         "filename", nargs="?", help="File to read input from (defaults to stdin)"
     )
+    parser.add_argument("--version", action="version", version=f"{get_version()}")
+
     args = parser.parse_args()
 
     if args.filename:
