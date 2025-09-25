@@ -1,4 +1,7 @@
 # Changelog
+## 0.1.9
+- Fix bug with duplicate column indexes
+## 0.1.8 - duplicate of 0.1.7 for pypi release
 ## 0.1.7
 - JSON support
   - `D` delimiter supports `json`, now:
