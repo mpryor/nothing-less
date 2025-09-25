@@ -922,9 +922,8 @@ class NlessApp(App):
         self.refresh()
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        event.control.remove()
         if event.control.id == "json_header_select":
-            new_column_name = event.value
-            event.control.remove()
             curr_buffer = self._get_current_buffer()
             cursor_column = curr_buffer.query_one(NlessDataTable).cursor_column
             curr_column = [c for c in curr_buffer.current_columns if c.render_position == cursor_column]
@@ -934,6 +933,8 @@ class NlessApp(App):
             curr_column = curr_column[0]
             curr_column_name = curr_buffer._get_cell_value_without_markup(curr_column.name)
 
+            new_column_name = f"{curr_column_name}.{event.value}"
+
             new_col = Column(
                 name=new_column_name,
                 labels=set(),
@@ -941,7 +942,7 @@ class NlessApp(App):
                 render_position=len(curr_buffer.current_columns),
                 data_position=len(curr_buffer.current_columns),
                 hidden=False,
-                json_ref=f"{curr_column_name}.{new_column_name}"
+                json_ref=f"{curr_column_name}.{event.value}"
             )
             curr_buffer.current_columns.append(new_col)
             curr_buffer._update_table()
