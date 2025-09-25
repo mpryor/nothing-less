@@ -12,6 +12,23 @@ Nless has enhanced functionality for parsing tabular data:
 - searching
 - real-time event parsing.
 
+## Why?
+As a kubernetes engineer, I frequently need to interact with streaming tabular data. `k get pods -w`, `k get events -w`, etc. I want a TUI tool to quickly dissect and analyze this data - and none of the existing alternatives had exactly what I wanted:
+- streaming support
+- delimiter inference - I don't want to do a bunch of work to tell the program what type of data it's viewing, I want it to infer it if possible
+- vi-like keybindings
+So I decided to build my own tool, integrating some of my favorite features that I've seen in other similar tools.
+
+## Goals
+This project is not meant to be a replacement/competitor for any of the tools mentioned in the alternatives section at the end. Instead, it's meant to bring its own unique set of features to compliment your workflow.
+- UX:
+  - vi-like keybindings, familiar to any VIM user
+  - minimize the number of keypresses to analyze a dataset
+- Kubernetes support:
+  - support for K8s usecases out of the box - such as parsing data streams from kubectl
+- Tabular data toolkit:
+  - broad support for a variety of use-cases analyzing,filtering,sorting, and searching tabular data
+  - converting data streams *into* tabular data, such as JSON log parsing
 
 ## Getting started
 ### Dependencies
@@ -44,6 +61,14 @@ The below demo showcases some of nless's features for handling streaming input, 
 [![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)  
   
 ## Features & Functionality
+**Buffers**:
+- All mutating actions will apply the action by replicating the current "buffer". This allows you to jump up and down the stack to see how you've analyzed your data.
+- `[1-9]` - will select the buffer at the index corresponding to the input number
+- `L` - selects the next buffer
+- `H` - select the previous buffer
+- `q` - closes the current active buffer, or the program if all buffers are closed
+- `N` - creates a new buffer from the original data
+
 **Navigation**:
 - `h` - move cursor left
 - `l` - move cursor right
@@ -55,6 +80,18 @@ The below demo showcases some of nless's features for handling streaming input, 
 - `G` - jump to final row
 - `w` - move cursor right
 - `b` - move cursor left
+- `ctrl+u` - page up
+- `ctrl+d` - page down
+- `c` - to select a column to jump the cursor to
+
+**Column visibility**
+- `C` - will prompt for a regex filter to selectively display columns, or `all` to see all columns. TIP: use a non-existing column (`none`, for example) to only see the current pivots/count
+- `>` - will move the current column one to the right
+- `<` - will move the current column one to the left
+
+**Pivoting**
+- `U` - will mark the selected column as part of a composite key to group records by, adding a `count` column pinned to the left
+  - `enter` - pressing enter while the cursor is over one of the composite key columns will "dive in" to the data set behind the pivot - applying the composite key as a filter in a new buffer 
 
 **Filtering**:
 - `f` - will filter the current column and prompt for a filter
@@ -66,15 +103,31 @@ The below demo showcases some of nless's features for handling streaming input, 
 - `/` - will prompt for a search value and jump to the first match
 - `*` - will search all columns for the current highglighted cell value
 - `n` - jump to the next match
-- `N` - jump to previous match
 - `p` - jump to previous match
+
+**Output**:
+- `W` - will prompt for a file to write the current buffer to. `-` can be used to write to `stdout`, allowing you to use `nless` inside of a command chain `cat $MY_FILE.txt | nless | grep -i active` for example.
 
 **Sorting**:
 - `s` - toggles ascending/descending sort on the current column
+
+**json**:
+- in addition to the `json` delimiter that can be set per session or per column, there's also support for json actions:
+- `J` - will prompt you to select a json field, under the current cell, to add as a column for further filtering/sorting/etc
 
 **Delimiter/file parsing**:
 - By default, `nless` will attempt to infer a file delimiter from the first few rows sent through stdin. It uses common delimiters to start - `,`, ` `, `|`, `\t`, etc.
 - `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and the rows will be re-parsed into a tabular format.
 - `D` - alternatively, you can pass in a regex with named capture groups. Those named groups will become the tabular columns, and each row will be parsed and split across those groups. Example `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)`
 - `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and sarch the raw lines.
+- `D` - pass the word `json` to parse the first set of keys from each JSON line (or read the whole buffer in as a JSON object/list)
 - `D` - last, you can pass a delimiter value of `  ` (two spaces). This will parse text that has been delimited utilizing multiple spaces, while preserving values that have a single space. This is most commonly useful for parsing kubernetes output (`kubectl get pods -w`), for example.
+
+- `d` - transforms a column into more columns using a columnar delimiter (currently `json` is the only delimiter supported)
+
+## Alternatives
+Shout-outs to all of the below wonderful tools! If my tool doesn't have what you need, they likely will:
+- [visidata](https://www.visidata.org/)
+- [csvlens](https://github.com/YS-L/csvlens)
+- [lnav](https://github.com/tstack/lnav)
+- [toolong](https://github.com/Textualize/toolong)
