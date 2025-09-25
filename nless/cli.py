@@ -1632,6 +1632,9 @@ class NlessApp(App):
         self.mounted = True
         self.query_one(NlessDataTable).focus()
 
+        os.makedirs(os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True)
+        if not os.path.exists(os.path.expanduser(self.HISTORY_FILE)):
+            open(os.path.expanduser(self.HISTORY_FILE), "w").close()
         with open(os.path.expanduser(self.HISTORY_FILE), "r") as f:
             try:
                 self.input_history = json.load(f)
