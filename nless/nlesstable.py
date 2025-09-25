@@ -9,8 +9,8 @@ class NlessDataTable(DataTable):
     BINDINGS = [
         ("G", "scroll_bottom", "Scroll to Bottom"),
         ("g", "scroll_top", "Scroll to Top"),
-        ("d", "page_down", "Page Down"),
-        ("u", "page_up", "Page up"),
+        ("ctrl+d", "page_down", "Page Down"),
+        ("ctrl+u", "page_up", "Page up"),
         ("up,k", "cursor_up", "Up"),
         ("down,j", "cursor_down", "Down"),
         ("l,w", "cursor_right", "Right"),
