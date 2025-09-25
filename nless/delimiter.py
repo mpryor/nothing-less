@@ -38,40 +38,84 @@ def split_line(
             cells = []
     else:
         cells = line.split(delimiter)
-    cells = [txt.replace("\t", "  ") for txt in cells]  # Rich rendering breaks on tabs
+
+    cells = [
+        txt.replace("\t", "  ").strip() for txt in cells
+    ]  # Rich rendering breaks on tabs
 
     sorted_columns = sorted(columns, key=lambda col: col.data_position)
-    count_metadata_columns = sum(1 for col in sorted_columns if col.name in [mc.value for mc in MetadataColumn])
+    metadata_columns = [mc.value for mc in MetadataColumn]
+    count_metadata_columns = len(
+        [col for col in sorted_columns if col.name in metadata_columns]
+    )
 
     for i, col in enumerate(sorted_columns):
-        if col.computed:
-            json_ref = col.json_ref
-            json_path = json_ref.split(".")
-            lookup_column = json_path[0]
-            for c in sorted_columns:
-                if c.name == lookup_column and c.data_position - count_metadata_columns < len(cells):
-                    try:
-                        json_data = json.loads(cells[c.data_position - count_metadata_columns])
-                        for key in json_path[1:]:
-                            if isinstance(json_data, dict):
-                                json_data = json_data.get(key, "")
-                            elif isinstance(json_data, list):
-                                try:
-                                    index = int(key)
-                                    json_data = json_data[index]
-                                except (ValueError, IndexError):
+        if col.delimiter:
+            if col.delimiter == "json":
+                json_ref = col.json_ref
+                json_path = json_ref.split(".")
+                lookup_column = json_path[0]
+                for c in sorted_columns:
+                    if (
+                        c.name == lookup_column
+                        and c.data_position - count_metadata_columns < len(cells)
+                    ):
+                        try:
+                            json_data = json.loads(
+                                cells[c.data_position - count_metadata_columns]
+                            )
+                            for key in json_path[1:]:
+                                if isinstance(json_data, dict):
+                                    json_data = json_data.get(key, "")
+                                elif isinstance(json_data, list):
+                                    try:
+                                        index = int(key)
+                                        json_data = json_data[index]
+                                    except (ValueError, IndexError):
+                                        json_data = ""
+                                else:
                                     json_data = ""
-                            else:
-                                json_data = ""
-                    except (json.JSONDecodeError, IndexError):
-                        json_data = ""
-                    cells.insert(
-                        col.data_position - count_metadata_columns,
-                        json.dumps(json_data)
-                        if isinstance(json_data, (dict, list))
-                        else str(json_data),
-                    )
-                    break
+                        except (json.JSONDecodeError, IndexError):
+                            json_data = ""
+                        cells.insert(
+                            col.data_position - count_metadata_columns,
+                            json.dumps(json_data)
+                            if isinstance(json_data, (dict, list))
+                            else str(json_data),
+                        )
+                        break
+            elif isinstance(col.delimiter, re.Pattern):
+                lookup_column = col.col_ref
+                for c in sorted_columns:
+                    if (
+                        c.name == lookup_column
+                        and c.data_position - count_metadata_columns < len(cells)
+                    ):
+                        subline = cells[c.data_position - count_metadata_columns]
+                        match = col.delimiter.match(subline)
+                        if match:
+                            subcells = [*match.groups()]
+                        subcells = [txt.replace("\t", "  ") for txt in subcells]
+                        cells.insert(
+                            c.data_position - count_metadata_columns,
+                            subcells[col.col_ref_index],
+                        )
+            else:
+                lookup_column = col.col_ref
+                for c in sorted_columns:
+                    if (
+                        c.name == lookup_column
+                        and c.data_position - count_metadata_columns < len(cells)
+                    ):
+                        subline = cells[c.data_position - count_metadata_columns]
+                        subcells = split_line(subline, col.delimiter, [])
+                        subcells = [txt.replace("\t", "  ") for txt in subcells]
+                        cells.insert(
+                            col.data_position - count_metadata_columns,
+                            subcells[col.col_ref_index]
+                            if col.col_ref_index < len(subcells)
+                            else "",
+                        )
     return cells
 
 
