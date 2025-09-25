@@ -1235,9 +1235,12 @@ class NlessApp(App):
                     return
                 column_count = len(current_buffer.current_columns)
                 cell_json_keys = list(cell_json.keys()) if isinstance(cell_json, dict) else [i for i in range(len(cell_json))]
+                duplicates = 0
                 for i, key in enumerate(cell_json_keys):
                     if f"{selected_column.name}.{key}" not in [c.name for c in current_buffer.current_columns]:
-                        current_buffer.current_columns.append(Column(name=f"{selected_column.name}.{key}", labels=set(), render_position=column_count+i, data_position=column_count+i, hidden=False, computed=True, json_ref=f"{selected_column.name}.{key}"))
+                        current_buffer.current_columns.append(Column(name=f"{selected_column.name}.{key}", labels=set(), render_position=column_count+i-duplicates, data_position=column_count+i-duplicates, hidden=False, computed=True, json_ref=f"{selected_column.name}.{key}"))
+                    else:
+                        duplicates += 1
                 current_buffer._update_table()
             except json.JSONDecodeError:
                 current_buffer.notify("Selected cell does not contain a JSON object or array", severity="error")
