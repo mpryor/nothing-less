@@ -926,11 +926,13 @@ class NlessApp(App):
             new_column_name = event.value
             event.control.remove()
             curr_buffer = self._get_current_buffer()
-            curr_column_name = curr_buffer._get_cell_value_without_markup(
-                curr_buffer.current_columns[
-                    self.query_one(NlessDataTable).cursor_column
-                ].name
-            )
+            cursor_column = curr_buffer.query_one(NlessDataTable).cursor_column
+            curr_column = [c for c in curr_buffer.current_columns if c.render_position == cursor_column]
+            if not curr_column:
+                curr_buffer.notify("No column selected to add JSON key to", severity="error")
+                return
+            curr_column = curr_column[0]
+            curr_column_name = curr_buffer._get_cell_value_without_markup(curr_column.name)
 
             new_col = Column(
                 name=new_column_name,
