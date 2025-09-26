@@ -19,4 +19,7 @@ class Column:
     hidden: bool
     pinned: bool = False
     computed: bool = False  # whether this column is computed (e.g. count)
+    delimiter: str | re.Pattern[str] | None = None  # delimiter for parsing JSON fields
+    col_ref: str = ""  # reference to the original column name
+    col_ref_index: int = -1  # reference to the original column index
     json_ref: str = ""  # reference to the original JSON field
