@@ -1,17 +1,15 @@
 """Version utilities for nothing-less."""
 
-import sys
-from pathlib import Path
-import tomllib
+from importlib.metadata import version as get_pkg_version, PackageNotFoundError
 
 
 def get_version() -> str:
-    """Get version from pyproject.toml."""
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
-    
+    """Get the current version of the nothing-less package.
+
+    Returns:
+        str: The current version of the nothing-less package.
+    """
     try:
-        with open(pyproject_path, "rb") as f:
-            data = tomllib.load(f)
-        return data["project"]["version"]
-    except (FileNotFoundError, KeyError, Exception):
+        return get_pkg_version("nothing-less")
+    except PackageNotFoundError:
         return "unknown"
