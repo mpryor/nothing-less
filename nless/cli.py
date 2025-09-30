@@ -3,12 +3,14 @@ import bisect
 import csv
 import json
 import os
+from pydoc import cli
 import re
 import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from threading import Thread
+import traceback
 from typing import List, Optional
 
 from rich.markup import _parse
@@ -38,12 +40,119 @@ from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
 from .input import InputConsumer
 from .nlesstable import NlessDataTable
-from .types import Column, Filter, MetadataColumn
+from .types import CliArgs, Column, Filter, MetadataColumn
+from nless import delimiter
 
 
 class RowLengthMismatchError(Exception):
     pass
 
+def handle_mark_unique(
+    new_buffer: "NlessBuffer", new_unique_column_name: str
+) -> None:
+    if new_unique_column_name in [mc.value for mc in MetadataColumn]:
+        # can't toggle count column
+        return
+
+    col_idx = new_buffer._get_col_idx_by_name(new_unique_column_name)
+    new_unique_column = (
+        new_buffer.current_columns[col_idx] if col_idx is not None else None
+    )
+
+    if new_unique_column is None:
+        return
+
+    new_buffer.count_by_column_key = defaultdict(lambda: 0)
+
+    if new_unique_column_name in new_buffer.unique_column_names and new_buffer.first_row_parsed:
+        new_buffer.unique_column_names.remove(new_unique_column_name)
+        if new_buffer.sort_column in [
+            metadata.value for metadata in MetadataColumn
+        ]:
+            new_buffer.sort_column = None
+        new_unique_column.labels.discard("U")
+    else:
+        new_buffer.unique_column_names.add(new_unique_column_name)
+        new_unique_column.labels.add("U")
+
+    if len(new_buffer.unique_column_names) == 0:
+        # remove count column
+        new_buffer.current_columns = [
+            Column(
+                name=c.name,
+                labels=c.labels,
+                render_position=c.render_position - 1,
+                data_position=c.data_position - 1,
+                hidden=c.hidden,
+                json_ref=c.json_ref,
+                computed=c.computed,
+                col_ref=c.col_ref,
+                col_ref_index=c.col_ref_index,
+                delimiter=c.delimiter,
+            )
+            for c in new_buffer.current_columns
+            if c.name != MetadataColumn.COUNT.value
+        ]
+    elif MetadataColumn.COUNT.value not in [
+        c.name for c in new_buffer.current_columns
+    ]:
+        # add count column at the start
+        new_buffer.current_columns = [
+            Column(
+                name=c.name,
+                labels=c.labels,
+                render_position=c.render_position + 1,
+                data_position=c.data_position + 1,
+                hidden=c.hidden,
+                json_ref=c.json_ref,
+                computed=c.computed,
+                col_ref=c.col_ref,
+                col_ref_index=c.col_ref_index,
+                delimiter=c.delimiter,
+            )
+            for c in new_buffer.current_columns
+        ]
+        new_buffer.current_columns.insert(
+            0,
+            Column(
+                name=MetadataColumn.COUNT.value,
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+                pinned=True,
+            ),
+        )
+
+    pinned_columns_visible = len(
+        [c for c in new_buffer.current_columns if c.pinned and not c.hidden]
+    )
+    if new_unique_column_name in new_buffer.unique_column_names:
+        old_position = new_unique_column.render_position
+        for col in new_buffer.current_columns:
+            col_name = new_buffer._get_cell_value_without_markup(col.name)
+            if col_name == new_unique_column_name:
+                col.render_position = pinned_columns_visible  # bubble to just after last pinned column
+                col.pinned = True
+            elif (
+                col_name != new_unique_column_name
+                and col.render_position <= old_position
+                and col.name not in [mc.value for mc in MetadataColumn]
+                and not col.pinned
+            ):
+                col.render_position += 1  # shift right to make space
+    else:
+        old_position = new_unique_column.render_position
+        pinned_columns_visible -= 1
+        for col in new_buffer.current_columns:
+            col_name = new_buffer._get_cell_value_without_markup(col.name)
+            if col_name == new_unique_column_name:
+                col.pinned = False
+                col.render_position = (
+                    pinned_columns_visible if pinned_columns_visible > 0 else 0
+                )
+            elif col.pinned and col.render_position >= old_position:
+                col.render_position -= 1
 
 def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
     if output_path == "-":
@@ -121,7 +230,7 @@ class NlessBuffer(Static):
         ),
     ]
 
-    def __init__(self, pane_id: int):
+    def __init__(self, pane_id: int, cli_args: CliArgs | None):
         super().__init__()
         self.locked = False
         self.pane_id: int = pane_id
@@ -131,20 +240,33 @@ class NlessBuffer(Static):
         self.displayed_rows = []
         self.first_log_line = ""  # used to determine columns when delimiter is set
         self.current_columns: list[Column] = []
-        self.current_filters: List[Filter] = []
+        self.current_filters: List[Filter] = cli_args.filters if cli_args else []
         self.search_term = None
-        self.sort_column = None
-        self.sort_reverse = False
+        if cli_args and cli_args.sort_by:
+            sort_column, direction = cli_args.sort_by.split("=")
+            self.sort_column = sort_column
+            self.sort_reverse = direction.lower() == "desc"
+        else:
+            self.sort_column = None
+            self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
-        self.delimiter = None
+        if cli_args and cli_args.delimiter:
+            pattern = re.compile(cli_args.delimiter)  # validate regex
+            # check if delimiter parses to regex, and has named capture groups
+            if pattern.groups > 0 and pattern.groupindex:
+                self.delimiter = pattern
+            else:
+                self.delimiter = cli_args.delimiter
+        else:
+            self.delimiter = None
         self.delimiter_inferred = False
         self.is_tailing = False
-        self.unique_column_names = set()
+        self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
 
     def copy(self, pane_id) -> "NlessBuffer":
-        new_buffer = NlessBuffer(pane_id=pane_id)
+        new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
         new_buffer.mounted = self.mounted
         new_buffer.first_row_parsed = self.first_row_parsed
         new_buffer.raw_rows = deepcopy(self.raw_rows)
@@ -231,7 +353,6 @@ class NlessBuffer(Static):
 
     def action_move_column(self, direction: int) -> None:
         data_table = self.query_one(NlessDataTable)
-        print(self.current_columns)
         current_cursor_column = data_table.cursor_column
         selected_column = [
             c
@@ -662,7 +783,55 @@ class NlessBuffer(Static):
         if not self.first_row_parsed:
             first_log_line = log_lines[0]
             self.first_log_line = first_log_line
-            if self.delimiter != "raw":
+            if self.delimiter == "raw":
+                # Delimiter is raw, treat entire line as single column
+                data_table.add_column("log")
+                self.current_columns = [
+                    Column(
+                        name="log",
+                        labels=set(),
+                        render_position=0,
+                        data_position=0,
+                        hidden=False,
+                    )
+                ]
+            elif isinstance(self.delimiter, re.Pattern):
+                pattern = self.delimiter
+                parts = list(pattern.groupindex.keys())
+                data_table.add_columns(*parts)
+                self.current_columns = [
+                    Column(
+                        name=p,
+                        labels=set(),
+                        render_position=i,
+                        data_position=i,
+                        hidden=False,
+                    )
+                    for i, p in enumerate(parts)
+                ]
+            elif self.delimiter == "json":
+                try:
+                    json_data = json.loads(first_log_line)
+                    if isinstance(json_data, dict):
+                        parts = list(json_data.keys())
+                    elif isinstance(json_data, list) and len(json_data) > 0:
+                        parts = [i for i in range(len(json_data))]
+                    else:
+                        parts = ["value"]
+                except json.JSONDecodeError:
+                    parts = ["value"]
+                data_table.add_columns(*parts)
+                self.current_columns = [
+                    Column(
+                        name=p,
+                        labels=set(),
+                        render_position=i,
+                        data_position=i,
+                        hidden=False,
+                    )
+                    for i, p in enumerate(parts)
+                ]
+            else:
                 parts = split_line(first_log_line, self.delimiter, self.current_columns)
                 data_table.add_columns(*parts)
                 self.current_columns = [
@@ -676,29 +845,29 @@ class NlessBuffer(Static):
                     for i, p in enumerate(parts)
                 ]
                 log_lines = log_lines[1:]  # Exclude header line
-            else:
-                # Delimiter is raw, treat entire line as single column
-                data_table.add_column("log")
-                self.current_columns = [
-                    Column(
-                        name="log",
-                        labels=set(),
-                        render_position=0,
-                        data_position=0,
-                        hidden=False,
-                    )
-                ]
+
+            if len(self.unique_column_names) > 0:
+                for unique_col_name in self.unique_column_names:
+                    handle_mark_unique(self, unique_col_name)
+                data_table.clear(columns=True)
+                data_table.add_columns(*self._get_visible_column_labels())
+
             self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
 
         mismatch_count = 0
-        for line in log_lines:
-            try:
-                self._add_log_line(line)
-            except RowLengthMismatchError:
-                mismatch_count += 1
-                continue
+        if len(log_lines) > 100:
+            self._update_table()
+        else:
+            for line in log_lines:
+                try:
+                    self._add_log_line(line)
+                except RowLengthMismatchError:
+                    mismatch_count += 1
+                    continue
+                except Exception as e:
+                    pass
 
         if mismatch_count > 0:
             self.notify(
@@ -882,12 +1051,13 @@ class NlessBuffer(Static):
 
 
 class NlessApp(App):
-    def __init__(self):
+    def __init__(self, cli_args: CliArgs):
         super().__init__()
+        self.cli_args = cli_args
         self.input_history = []
         self.logs = []
         self.mounted = False
-        self.buffers = [NlessBuffer(pane_id=1)]
+        self.buffers = [NlessBuffer(pane_id=1, cli_args=cli_args)]
         self.curr_buffer_idx = 0
 
     SCREENS = {"HelpScreen": HelpScreen}
@@ -942,7 +1112,11 @@ class NlessApp(App):
                 curr_column.name
             )
 
-            new_column_name = f"{curr_column_name}.{event.value}"
+            col_ref = str(event.value)
+            if not col_ref.startswith("."):
+                col_ref = f".{col_ref}"
+
+            new_column_name = f"{curr_column_name}{col_ref}"
 
             new_col = Column(
                 name=new_column_name,
@@ -951,7 +1125,7 @@ class NlessApp(App):
                 render_position=len(curr_buffer.current_columns),
                 data_position=len(curr_buffer.current_columns),
                 hidden=False,
-                json_ref=f"{curr_column_name}.{event.value}",
+                json_ref=f"{curr_column_name}{col_ref}",
                 delimiter="json",
             )
             curr_buffer.current_columns.append(new_col)
@@ -984,7 +1158,7 @@ class NlessApp(App):
                         extract_keys(v, new_prefix)
                 elif isinstance(obj, list) and len(obj) > 0:
                     for i in range(len(obj)):
-                        extract_keys(obj[i], prefix + f"{i}")
+                        extract_keys(obj[i], prefix + f".{i}")
 
             extract_keys(json_data)
             new_columns = list(
@@ -1026,112 +1200,6 @@ class NlessApp(App):
     def _get_new_pane_id(self) -> int:
         return max(b.pane_id for b in self.buffers) + 1 if self.buffers else 1
 
-    def handle_mark_unique(
-        self, new_buffer: NlessBuffer, new_unique_column_name: str
-    ) -> None:
-        if new_unique_column_name in [mc.value for mc in MetadataColumn]:
-            # can't toggle count column
-            return
-
-        col_idx = new_buffer._get_col_idx_by_name(new_unique_column_name)
-        new_unique_column = (
-            new_buffer.current_columns[col_idx] if col_idx is not None else None
-        )
-
-        if new_unique_column is None:
-            return
-
-        new_buffer.count_by_column_key = defaultdict(lambda: 0)
-
-        if new_unique_column_name in new_buffer.unique_column_names:
-            new_buffer.unique_column_names.remove(new_unique_column_name)
-            if new_buffer.sort_column in [
-                metadata.value for metadata in MetadataColumn
-            ]:
-                new_buffer.sort_column = None
-            new_unique_column.labels.discard("U")
-        else:
-            new_buffer.unique_column_names.add(new_unique_column_name)
-            new_unique_column.labels.add("U")
-
-        if len(new_buffer.unique_column_names) == 0:
-            # remove count column
-            new_buffer.current_columns = [
-                Column(
-                    name=c.name,
-                    labels=c.labels,
-                    render_position=c.render_position - 1,
-                    data_position=c.data_position - 1,
-                    hidden=c.hidden,
-                    json_ref=c.json_ref,
-                    computed=c.computed,
-                    col_ref=c.col_ref,
-                    col_ref_index=c.col_ref_index,
-                    delimiter=c.delimiter,
-                )
-                for c in new_buffer.current_columns
-                if c.name != MetadataColumn.COUNT.value
-            ]
-        elif MetadataColumn.COUNT.value not in [
-            c.name for c in new_buffer.current_columns
-        ]:
-            # add count column at the start
-            new_buffer.current_columns = [
-                Column(
-                    name=c.name,
-                    labels=c.labels,
-                    render_position=c.render_position + 1,
-                    data_position=c.data_position + 1,
-                    hidden=c.hidden,
-                    json_ref=c.json_ref,
-                    computed=c.computed,
-                    col_ref=c.col_ref,
-                    col_ref_index=c.col_ref_index,
-                    delimiter=c.delimiter,
-                )
-                for c in new_buffer.current_columns
-            ]
-            new_buffer.current_columns.insert(
-                0,
-                Column(
-                    name=MetadataColumn.COUNT.value,
-                    labels=set(),
-                    render_position=0,
-                    data_position=0,
-                    hidden=False,
-                    pinned=True,
-                ),
-            )
-
-        pinned_columns_visible = len(
-            [c for c in new_buffer.current_columns if c.pinned and not c.hidden]
-        )
-        if new_unique_column_name in new_buffer.unique_column_names:
-            old_position = new_unique_column.render_position
-            for col in new_buffer.current_columns:
-                col_name = new_buffer._get_cell_value_without_markup(col.name)
-                if col_name == new_unique_column_name:
-                    col.render_position = pinned_columns_visible  # bubble to just after last pinned column
-                    col.pinned = True
-                elif (
-                    col_name != new_unique_column_name
-                    and col.render_position <= old_position
-                    and col.name not in [mc.value for mc in MetadataColumn]
-                    and not col.pinned
-                ):
-                    col.render_position += 1  # shift right to make space
-        else:
-            old_position = new_unique_column.render_position
-            pinned_columns_visible -= 1
-            for col in new_buffer.current_columns:
-                col_name = new_buffer._get_cell_value_without_markup(col.name)
-                if col_name == new_unique_column_name:
-                    col.pinned = False
-                    col.render_position = (
-                        pinned_columns_visible if pinned_columns_visible > 0 else 0
-                    )
-                elif col.pinned and col.render_position >= old_position:
-                    col.render_position -= 1
 
     def action_mark_unique(self) -> None:
         curr_buffer = self._get_current_buffer()
@@ -1152,7 +1220,7 @@ class NlessApp(App):
             new_unique_column.name
         )
 
-        self.handle_mark_unique(new_buffer, new_unique_column_name)
+        handle_mark_unique(new_buffer, new_unique_column_name)
         buffer_name = (
             f"+u:{new_unique_column_name}"
             if new_unique_column_name in new_buffer.unique_column_names
@@ -1254,7 +1322,7 @@ class NlessApp(App):
                             pattern=re.compile(re.escape(cell_value), re.IGNORECASE),
                         )
                     )
-                    self.handle_mark_unique(new_buffer, column)
+                    handle_mark_unique(new_buffer, column)
                 new_buffer.current_filters.extend(filters)
                 self.add_buffer(
                     new_buffer,
@@ -1368,7 +1436,6 @@ class NlessApp(App):
                     else:
                         duplicates += 1
                 current_buffer._update_table()
-                print(f"{current_buffer.current_columns=}")
                 return
             except Exception:
                 pass
@@ -1526,7 +1593,7 @@ class NlessApp(App):
             new_buffer.current_filters = []
         else:
             if column_name in new_buffer.unique_column_names:
-                self.handle_mark_unique(new_buffer, column_name)
+                handle_mark_unique(new_buffer, column_name)
                 self.notify(
                     f"Removed unique column: {column_name}, to allow filtering.",
                     severity="info",
@@ -1885,7 +1952,7 @@ class NlessApp(App):
 
     def action_add_buffer(self) -> None:
         max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
-        new_buffer = NlessBuffer(pane_id=max_buffer_id + 1)
+        new_buffer = NlessBuffer(pane_id=max_buffer_id + 1, cli_args=self.cli_args)
         self.call_after_refresh(lambda: new_buffer.add_logs(self.logs))
         self.add_buffer(
             new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False
@@ -1910,32 +1977,54 @@ class NlessApp(App):
 
 
 def main():
-    app = NlessApp()
-    new_fd = sys.stdin.fileno()
-
-    parser = argparse.ArgumentParser(description="Test InputConsumer with stdin.")
+    parser = argparse.ArgumentParser(description="nless - A terminal log viewer")
     parser.add_argument(
         "filename", nargs="?", help="File to read input from (defaults to stdin)"
     )
     parser.add_argument("--version", action="version", version=f"{get_version()}")
+    parser.add_argument(
+        "--delimiter", "-d", help="Delimiter to use for splitting fields", default=None
+    )
+    parser.add_argument("--filters", "-f", action="append", help="Initial filter(s)", default=[])
+    parser.add_argument("--unique", "-u", action="append", help="Initial unique key(s)", default=[])
+    parser.add_argument("--sort-by", "-s", help="Column to sort by initially", default=None)
 
     args = parser.parse_args()
+    filters = []
+    if len(args.filters) > 0:
+        for arg_filter in args.filters:
+            try: 
+                column, value = arg_filter.split("=")
+            except ValueError:
+                print(f"Invalid filter format: {arg_filter}. Expected format is column=value or any=value")
+                sys.exit(1)
+            filters.append(Filter(column=column if column != "any" else None, pattern=re.compile(value, re.IGNORECASE)))
+
+    unique_keys = set()
+    if len(args.unique) > 0:
+        for unique_key in args.unique:
+            unique_keys.add(unique_key)
+
+    cli_args = CliArgs(delimiter=args.delimiter, filters=filters, unique_keys=unique_keys, sort_by=args.sort_by)
+
+    app = NlessApp(cli_args=cli_args)
+    new_fd = sys.stdin.fileno()
 
     if args.filename:
-        ic = InputConsumer(
-            args.filename,
-            None,
-            lambda: app.mounted,
-            lambda lines: app.add_logs(lines),
-        )
-        t = Thread(target=ic.run, daemon=True)
-        t.start()
+        filename = args.filename
+        new_fd = None
     else:
-        ic = InputConsumer(
-            None, new_fd, lambda: app.mounted, lambda lines: app.add_logs(lines)
-        )
-        t = Thread(target=ic.run, daemon=True)
-        t.start()
+        filename = None
+
+    ic = InputConsumer(
+        cli_args,
+        filename,
+        new_fd,
+        lambda: app.mounted,
+        lambda lines: app.add_logs(lines),
+    )
+    t = Thread(target=ic.run, daemon=True)
+    t.start()
 
     sys.__stdin__ = open("/dev/tty")
     app.run()

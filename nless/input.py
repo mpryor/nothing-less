@@ -1,21 +1,27 @@
 import fcntl
+import json
 import os
 import select
 import stat
 import time
+import traceback
 from typing import Callable, Tuple
+
+from nless.types import CliArgs
 
 
 class InputConsumer:
     """Handles stdin input and command processing."""
 
-    def __init__(self, file_name: str | None, new_fd: int | None, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
+    def __init__(self, cli_args: CliArgs, file_name: str | None, new_fd: int | None, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
         if file_name is not None:
             file_name = os.path.expanduser(file_name)
             self.file = open(file_name, "r+", errors="ignore")
             self.new_fd = self.file.fileno()
         elif new_fd is not None:
             self.new_fd = new_fd
+
+        self.delimiter = cli_args.delimiter
         self.new_line_callback = output_func
         self.read_condition = output_ready_func
 
@@ -32,19 +38,19 @@ class InputConsumer:
         fcntl.fcntl(self.new_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
         raw_str = ""
         TIMEOUT = 0.5
-        FLUSH_INTERVAL_MS = 1000
-        last_flush_time = time.time_ns() / 1_000_000 - FLUSH_INTERVAL_MS
+        FLUSH_INTERVAL_MS = 20
+        last_read_time = time.time_ns() / 1_000_000 #- FLUSH_INTERVAL_MS
 
         while True:
             if self.read_condition():
                 if streaming:
+                    current_time = time.time_ns() / 1_000_000
                     if raw_str:
-                        current_time = time.time_ns() / 1_000_000
-                        if current_time - last_flush_time >= FLUSH_INTERVAL_MS:
+                        if current_time - last_read_time >= FLUSH_INTERVAL_MS:
                             lines, leftover = self.parse_streaming_line(raw_str)
                             self.handle_input(lines)
                             raw_str = leftover
-                            last_flush_time = current_time
+                            last_read_time = current_time
                     file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
                     if file_readable:
                         while True:
@@ -53,9 +59,15 @@ class InputConsumer:
                                 if not line:
                                     break
                                 raw_str += line
-                                lines, leftover = self.parse_streaming_line(raw_str)
-                                self.handle_input(lines)
-                                raw_str = leftover
+                                last_read_time = current_time
+                                if self.delimiter != "json":
+                                    # If we're reading json - we assume we need to coalesce multiple lines
+                                    #   to account for multi-line json objects during initial read
+                                    # Otherwise, we can process line-by-line
+                                    # This *could* cause a lock if streaming json objects faster than the FLUSH_INTERVAL_MS
+                                    lines, leftover = self.parse_streaming_line(raw_str)
+                                    self.handle_input(lines)
+                                    raw_str = leftover
                             except Exception:
                                 break
                 else:
@@ -74,5 +86,19 @@ class InputConsumer:
 
     def handle_input(self, lines: list[str]) -> None:
         if lines:
-            self.new_line_callback(lines)
+            if self.delimiter == "json":
+                try:
+                    json.loads(lines[0]) # determine if we have a series of json strings, or if we have one json file
+                    self.new_line_callback(lines)
+                except json.JSONDecodeError as e:
+                    try:
+                        parsed_json = json.loads("".join(lines))
+                        if isinstance(parsed_json, list):
+                            self.new_line_callback([json.dumps(item) for item in parsed_json])
+                        else:
+                            self.new_line_callback([json.dumps(parsed_json)])
+                    except json.JSONDecodeError:
+                        self.new_line_callback(lines)
+            else:
+                self.new_line_callback(lines)
 
