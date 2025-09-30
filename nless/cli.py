@@ -41,15 +41,15 @@ from .help import HelpScreen
 from .input import InputConsumer
 from .nlesstable import NlessDataTable
 from .types import CliArgs, Column, Filter, MetadataColumn
+from .nlessselect import NlessSelect
 from nless import delimiter
 
 
 class RowLengthMismatchError(Exception):
     pass
 
-def handle_mark_unique(
-    new_buffer: "NlessBuffer", new_unique_column_name: str
-) -> None:
+
+def handle_mark_unique(new_buffer: "NlessBuffer", new_unique_column_name: str) -> None:
     if new_unique_column_name in [mc.value for mc in MetadataColumn]:
         # can't toggle count column
         return
@@ -64,11 +64,12 @@ def handle_mark_unique(
 
     new_buffer.count_by_column_key = defaultdict(lambda: 0)
 
-    if new_unique_column_name in new_buffer.unique_column_names and new_buffer.first_row_parsed:
+    if (
+        new_unique_column_name in new_buffer.unique_column_names
+        and new_buffer.first_row_parsed
+    ):
         new_buffer.unique_column_names.remove(new_unique_column_name)
-        if new_buffer.sort_column in [
-            metadata.value for metadata in MetadataColumn
-        ]:
+        if new_buffer.sort_column in [metadata.value for metadata in MetadataColumn]:
             new_buffer.sort_column = None
         new_unique_column.labels.discard("U")
     else:
@@ -93,9 +94,7 @@ def handle_mark_unique(
             for c in new_buffer.current_columns
             if c.name != MetadataColumn.COUNT.value
         ]
-    elif MetadataColumn.COUNT.value not in [
-        c.name for c in new_buffer.current_columns
-    ]:
+    elif MetadataColumn.COUNT.value not in [c.name for c in new_buffer.current_columns]:
         # add count column at the start
         new_buffer.current_columns = [
             Column(
@@ -132,7 +131,9 @@ def handle_mark_unique(
         for col in new_buffer.current_columns:
             col_name = new_buffer._get_cell_value_without_markup(col.name)
             if col_name == new_unique_column_name:
-                col.render_position = pinned_columns_visible  # bubble to just after last pinned column
+                col.render_position = (
+                    pinned_columns_visible  # bubble to just after last pinned column
+                )
                 col.pinned = True
             elif (
                 col_name != new_unique_column_name
@@ -153,6 +154,7 @@ def handle_mark_unique(
                 )
             elif col.pinned and col.render_position >= old_position:
                 col.render_position -= 1
+
 
 def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
     if output_path == "-":
@@ -303,10 +305,6 @@ class NlessBuffer(Static):
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
-    def _open_select(self, select: Select) -> None:
-        select.focus()
-        select.expanded = True
-
     def action_view_unparsed_logs(self) -> None:
         """View logs that do not match the current delimiter."""
         if self.delimiter == "raw":
@@ -334,16 +332,15 @@ class NlessBuffer(Static):
         """Show columns by user input."""
         column_options = [
             (self._get_cell_value_without_markup(c.name), c.render_position)
-            for c in self.current_columns
+            for c in sorted(self.current_columns, key=lambda c: c.render_position)
             if not c.hidden
         ]
-        select = Select(
+        select = NlessSelect(
             options=column_options,
-            classes="bottom-input",
+            classes="dock-bottom",
             prompt="Type a column to jump to",
         )
         self.mount(select)
-        self.call_after_refresh(lambda: self._open_select(select))
 
     def on_select_changed(self, event: Select.Changed) -> None:
         col_index = event.value
@@ -1118,20 +1115,25 @@ class NlessApp(App):
 
             new_column_name = f"{curr_column_name}{col_ref}"
 
+            new_pos = len(curr_buffer.current_columns)
+
             new_col = Column(
                 name=new_column_name,
                 labels=set(),
                 computed=True,
-                render_position=len(curr_buffer.current_columns),
-                data_position=len(curr_buffer.current_columns),
+                render_position=new_pos,
+                data_position=new_pos,
                 hidden=False,
                 json_ref=f"{curr_column_name}{col_ref}",
                 delimiter="json",
             )
+
             curr_buffer.current_columns.append(new_col)
-            curr_buffer._update_table()
-            data_table = self.query_one(NlessDataTable)
-            data_table.move_cursor(column=new_col.render_position)
+            curr_buffer._update_table(restore_position=False)
+            data_table = curr_buffer.query_one(NlessDataTable)
+            self.call_after_refresh(
+                lambda: data_table.move_cursor(column=new_pos)
+            )
 
     def action_json_header(self) -> None:
         """Set the column headers from JSON in the selected cell."""
@@ -1154,26 +1156,18 @@ class NlessApp(App):
                 if isinstance(obj, dict):
                     for k, v in obj.items():
                         new_prefix = f"{prefix}.{k}" if prefix else k
-                        new_columns.append(new_prefix)
+                        new_columns.append((new_prefix, v))
                         extract_keys(v, new_prefix)
                 elif isinstance(obj, list) and len(obj) > 0:
                     for i in range(len(obj)):
                         extract_keys(obj[i], prefix + f".{i}")
 
             extract_keys(json_data)
-            new_columns = list(
-                dict.fromkeys(new_columns)
-            )  # deduplicate while preserving order
 
-            # mount a select, with the new_colums as options - when the option is selected, a new column is added to the current buffer
-            select = Select(
-                options=[(col, col) for col in new_columns],
-                classes="bottom-input",
-                prompt="Select a json key to add as a column",
-                id="json_header_select",
-            )
+            select = NlessSelect(
+                options=[(f"{col}: {v}", col) for (col, v) in new_columns],
+                classes="dock-bottom", id="json_header_select")
             self.mount(select)
-            self.call_after_refresh(lambda: curr_buffer._open_select(select))
         except Exception as e:
             curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
 
@@ -1199,7 +1193,6 @@ class NlessApp(App):
 
     def _get_new_pane_id(self) -> int:
         return max(b.pane_id for b in self.buffers) + 1 if self.buffers else 1
-
 
     def action_mark_unique(self) -> None:
         curr_buffer = self._get_current_buffer()
@@ -1239,10 +1232,11 @@ class NlessApp(App):
             ):
                 new_cursor_position = i
                 break
-        self.call_after_refresh(
+        self.set_timer(
+            .2,
             lambda: new_buffer.query_one(NlessDataTable).move_cursor(
                 column=new_cursor_position
-            )
+            ),
         )
 
     def action_delimiter(self) -> None:
@@ -1985,27 +1979,45 @@ def main():
     parser.add_argument(
         "--delimiter", "-d", help="Delimiter to use for splitting fields", default=None
     )
-    parser.add_argument("--filters", "-f", action="append", help="Initial filter(s)", default=[])
-    parser.add_argument("--unique", "-u", action="append", help="Initial unique key(s)", default=[])
-    parser.add_argument("--sort-by", "-s", help="Column to sort by initially", default=None)
+    parser.add_argument(
+        "--filters", "-f", action="append", help="Initial filter(s)", default=[]
+    )
+    parser.add_argument(
+        "--unique", "-u", action="append", help="Initial unique key(s)", default=[]
+    )
+    parser.add_argument(
+        "--sort-by", "-s", help="Column to sort by initially", default=None
+    )
 
     args = parser.parse_args()
     filters = []
     if len(args.filters) > 0:
         for arg_filter in args.filters:
-            try: 
+            try:
                 column, value = arg_filter.split("=")
             except ValueError:
-                print(f"Invalid filter format: {arg_filter}. Expected format is column=value or any=value")
+                print(
+                    f"Invalid filter format: {arg_filter}. Expected format is column=value or any=value"
+                )
                 sys.exit(1)
-            filters.append(Filter(column=column if column != "any" else None, pattern=re.compile(value, re.IGNORECASE)))
+            filters.append(
+                Filter(
+                    column=column if column != "any" else None,
+                    pattern=re.compile(value, re.IGNORECASE),
+                )
+            )
 
     unique_keys = set()
     if len(args.unique) > 0:
         for unique_key in args.unique:
             unique_keys.add(unique_key)
 
-    cli_args = CliArgs(delimiter=args.delimiter, filters=filters, unique_keys=unique_keys, sort_by=args.sort_by)
+    cli_args = CliArgs(
+        delimiter=args.delimiter,
+        filters=filters,
+        unique_keys=unique_keys,
+        sort_by=args.sort_by,
+    )
 
     app = NlessApp(cli_args=cli_args)
     new_fd = sys.stdin.fileno()
