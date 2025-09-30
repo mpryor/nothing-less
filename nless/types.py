@@ -11,6 +11,13 @@ class Filter:
     pattern: re.Pattern[str]
 
 @dataclass
+class CliArgs:
+    delimiter: str | None
+    filters: list[Filter]
+    unique_keys: set[str]
+    sort_by: str | None
+
+@dataclass
 class Column:
     name: str
     labels: set[str]

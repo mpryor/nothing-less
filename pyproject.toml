@@ -1,6 +1,6 @@
 [project]
 name = "nothing-less"
-version = "0.1.10"
+version = "0.1.11"
 description = "A TUI paging application with enhanced support for tabular data and real-time streaming"
 authors = [
     {name = "Matt Pryor",email = "mapryor1991@yahoo.com"}
