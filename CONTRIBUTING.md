@@ -1,4 +1,17 @@
-## Contributing to This Project
+# Contributing to This Project
+## Dependencies
+- This project contains a `~/.tool-versions` to manage Python versions.
+- Make sure you have the correct Python version installed. You can use `mise` to manage multiple Python versions.
+
+## Poetry
+This project uses `poetry` for dependency management.
+- Install poetry if you haven't already. You can find the installation instructions [here](https://python-poetry.org/docs/#installation).
+- To install the dependencies, run the following command:
+```bash
+poetry install
+```
+
+## Pre-commit hooks
 This project uses `pre-commit` to manage and maintain code quality. The pre-commit hooks are defined in the `.pre-commit-config.yaml` file.
 
 This sets up `ruff` for linting and code formatting.
