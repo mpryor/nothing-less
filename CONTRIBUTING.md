@@ -33,3 +33,6 @@ You can also run the pre-commit hooks manually on all files by executing:
 ```bash
 poetry run pre-commit run --all-files
 ```
+
+## Tests
+🚧 UNDER CONSTRUCTION 🚧 
