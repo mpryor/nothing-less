@@ -125,6 +125,9 @@ The below demo showcases some of nless's features for handling streaming input, 
 
 - `d` - transforms a column into more columns using a columnar delimiter (currently `json` is the only delimiter supported)
 
+## Contributing
+Contributions are welcome! Please open an issue or a pull request - check out the [contributing guidelines](CONTRIBUTING.md) for more information.
+
 ## Alternatives
 Shout-outs to all of the below wonderful tools! If my tool doesn't have what you need, they likely will:
 - [visidata](https://www.visidata.org/)
