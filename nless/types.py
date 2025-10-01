@@ -2,13 +2,16 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+
 class MetadataColumn(Enum):
     COUNT = "count"
+
 
 @dataclass
 class Filter:
     column: str | None  # None means any column
     pattern: re.Pattern[str]
+
 
 @dataclass
 class CliArgs:
@@ -16,6 +19,7 @@ class CliArgs:
     filters: list[Filter]
     unique_keys: set[str]
     sort_by: str | None
+
 
 @dataclass
 class Column:

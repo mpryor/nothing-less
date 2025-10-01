@@ -3,14 +3,12 @@ import bisect
 import csv
 import json
 import os
-from pydoc import cli
 import re
 import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from threading import Thread
-import traceback
 from typing import List, Optional
 
 from rich.markup import _parse
@@ -42,7 +40,6 @@ from .input import InputConsumer
 from .nlesstable import NlessDataTable
 from .types import CliArgs, Column, Filter, MetadataColumn
 from .nlessselect import NlessSelect
-from nless import delimiter
 
 
 class RowLengthMismatchError(Exception):
@@ -863,7 +860,7 @@ class NlessBuffer(Static):
                 except RowLengthMismatchError:
                     mismatch_count += 1
                     continue
-                except Exception as e:
+                except Exception:
                     pass
 
         if mismatch_count > 0:
@@ -1131,9 +1128,7 @@ class NlessApp(App):
             curr_buffer.current_columns.append(new_col)
             curr_buffer._update_table(restore_position=False)
             data_table = curr_buffer.query_one(NlessDataTable)
-            self.call_after_refresh(
-                lambda: data_table.move_cursor(column=new_pos)
-            )
+            self.call_after_refresh(lambda: data_table.move_cursor(column=new_pos))
 
     def action_json_header(self) -> None:
         """Set the column headers from JSON in the selected cell."""
@@ -1166,7 +1161,9 @@ class NlessApp(App):
 
             select = NlessSelect(
                 options=[(f"{col}: {v}", col) for (col, v) in new_columns],
-                classes="dock-bottom", id="json_header_select")
+                classes="dock-bottom",
+                id="json_header_select",
+            )
             self.mount(select)
         except Exception as e:
             curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
@@ -1233,7 +1230,7 @@ class NlessApp(App):
                 new_cursor_position = i
                 break
         self.set_timer(
-            .2,
+            0.2,
             lambda: new_buffer.query_one(NlessDataTable).move_cursor(
                 column=new_cursor_position
             ),

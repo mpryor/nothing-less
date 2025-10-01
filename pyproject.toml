@@ -26,6 +26,7 @@ nless = "nless.cli:main"
 
 [tool.poetry.group.dev.dependencies]
 textual-dev = "^1.7.0"
+pre-commit = "^4.3.0"
 
 [tool.poetry]
 packages = [

@@ -1,7 +1,4 @@
-from rich.text import Text
-from textual.scroll_view import ScrollView
-from textual.widget import Widget
-from textual.widgets import Input, RichLog, RichLog, Select, Static
+from textual.widgets import Input, RichLog, Select, Static
 
 
 class NlessSelect(Static):
@@ -11,6 +8,7 @@ class NlessSelect(Static):
       border: solid green;
     }
     """
+
     def __init__(self, options, prompt: str | None = None, *args, **kwargs):
         self.options = options
         self.filtered_options = options
@@ -31,7 +29,9 @@ class NlessSelect(Static):
 
     def on_key(self, event):
         if event.key == "down":
-            self.highlight_index = min(self.highlight_index + 1, len(self.filtered_options) - 1)
+            self.highlight_index = min(
+                self.highlight_index + 1, len(self.filtered_options) - 1
+            )
             self._write_options()
         elif event.key == "up":
             self.highlight_index = max(self.highlight_index - 1, 0)
@@ -49,20 +49,24 @@ class NlessSelect(Static):
         l.clear()
 
         self.filtered_options = []
-        for (k, v) in (self.options):
+        for k, v in self.options:
             if self.filter and self.filter not in k.lower():
                 continue
             self.filtered_options.append((k, v))
         self._write_options()
 
     def on_input_submitted(self, event: Input.Submitted):
-        self.post_message(Select.Changed(self, self.filtered_options[self.highlight_index][1]))
+        self.post_message(
+            Select.Changed(self, self.filtered_options[self.highlight_index][1])
+        )
         self.remove()
 
     def compose(self):
         l = RichLog(markup=True, auto_scroll=False)
-        l.write("[#888888]Select a JSON key to add as a column - Type to filter, Enter to select, Up/Down to navigate")
-        for (i, (k, v)) in enumerate(self.options):
+        l.write(
+            "[#888888]Select a JSON key to add as a column - Type to filter, Enter to select, Up/Down to navigate"
+        )
+        for i, (k, v) in enumerate(self.options):
             if i == self.highlight_index:
                 l.write(f"[reverse]{k}[/reverse]")
             else:

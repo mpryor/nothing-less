@@ -16,8 +16,20 @@ if __name__ == "__main__":
     cli_args = CliArgs(delimiter=args.delimiter)
 
     if args.filename:
-        ic = InputConsumer(cli_args, args.filename, None, lambda: True, lambda lines: print(f"new lines added: {lines}"))
+        ic = InputConsumer(
+            cli_args,
+            args.filename,
+            None,
+            lambda: True,
+            lambda lines: print(f"new lines added: {lines}"),
+        )
         ic.run()
     else:
-        ic = InputConsumer(cli_args, None, sys.stdin.fileno(), lambda: True, lambda lines: print(f"new lines added, {len(lines)}"))
+        ic = InputConsumer(
+            cli_args,
+            None,
+            sys.stdin.fileno(),
+            lambda: True,
+            lambda lines: print(f"new lines added, {len(lines)}"),
+        )
         ic.run()
