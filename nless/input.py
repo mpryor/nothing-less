@@ -4,7 +4,6 @@ import os
 import select
 import stat
 import time
-import traceback
 from typing import Callable, Tuple
 
 from nless.types import CliArgs
@@ -13,7 +12,14 @@ from nless.types import CliArgs
 class InputConsumer:
     """Handles stdin input and command processing."""
 
-    def __init__(self, cli_args: CliArgs, file_name: str | None, new_fd: int | None, output_ready_func: Callable[[], bool], output_func: Callable[[list[str]], None]):
+    def __init__(
+        self,
+        cli_args: CliArgs,
+        file_name: str | None,
+        new_fd: int | None,
+        output_ready_func: Callable[[], bool],
+        output_func: Callable[[list[str]], None],
+    ):
         if file_name is not None:
             file_name = os.path.expanduser(file_name)
             self.file = open(file_name, "r+", errors="ignore")
@@ -39,7 +45,7 @@ class InputConsumer:
         raw_str = ""
         TIMEOUT = 0.5
         FLUSH_INTERVAL_MS = 20
-        last_read_time = time.time_ns() / 1_000_000 #- FLUSH_INTERVAL_MS
+        last_read_time = time.time_ns() / 1_000_000  # - FLUSH_INTERVAL_MS
 
         while True:
             if self.read_condition():
@@ -88,17 +94,20 @@ class InputConsumer:
         if lines:
             if self.delimiter == "json":
                 try:
-                    json.loads(lines[0]) # determine if we have a series of json strings, or if we have one json file
+                    json.loads(
+                        lines[0]
+                    )  # determine if we have a series of json strings, or if we have one json file
                     self.new_line_callback(lines)
-                except json.JSONDecodeError as e:
+                except json.JSONDecodeError:
                     try:
                         parsed_json = json.loads("".join(lines))
                         if isinstance(parsed_json, list):
-                            self.new_line_callback([json.dumps(item) for item in parsed_json])
+                            self.new_line_callback(
+                                [json.dumps(item) for item in parsed_json]
+                            )
                         else:
                             self.new_line_callback([json.dumps(parsed_json)])
                     except json.JSONDecodeError:
                         self.new_line_callback(lines)
             else:
                 self.new_line_callback(lines)
-

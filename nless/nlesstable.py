@@ -59,9 +59,7 @@ class NlessDataTable(DataTable):
     def action_scroll_to_end(self) -> None:
         """Move cursor to end of current row."""
         last_column = len(self.columns) - 1
-        self.cursor_coordinate = self.cursor_coordinate._replace(
-            column=last_column
-        )
+        self.cursor_coordinate = self.cursor_coordinate._replace(column=last_column)
 
     def action_scroll_to_beginning(self) -> None:
         """Move cursor to beginning of current row."""
