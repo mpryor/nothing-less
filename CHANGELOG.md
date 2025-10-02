@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.6 (2025-10-02)
+
+### Fix
+
+- github release tagging to match cz tagging pattern
+
 ## 0.2.5 (2025-10-02)
 
 ### Fix
