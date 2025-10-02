@@ -52,7 +52,16 @@ Markdown {
 
 #dialog {
     border: tall green;
-    background: $surface;
+}
+
+.text-wrap {
+    text-overflow: ellipsis;
+    text-wrap: wrap;
+    max-width: 100%;
+}
+
+.overflow {
+    width: 100vw;
 }
 
 #getting_started {
