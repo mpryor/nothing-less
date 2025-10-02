@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools
+        run: |
+          pip install poetry twine commitizen
+
+      - name: Try version bump with commitizen
+        id: cz
+        run: |
+          set +e
+          cz bump --yes --changelog
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "no_bump=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          VERSION=$(cz version --project)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "no_bump=false" >> $GITHUB_OUTPUT
+
+      - name: Stop if no release needed
+        if: steps.cz.outputs.no_bump == 'true'
+        run: echo "No release needed for docs/chore/etc. Skipping pipeline."
+
+      - name: Commit version bump
+        if: steps.cz.outputs.no_bump == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml CHANGELOG.md
+          git commit -m "chore(release): v${{ steps.cz.outputs.version }}"
+          git tag "v${{ steps.cz.outputs.version }}"
+          git push origin main --tags
+
+      - name: Build package
+        if: steps.cz.outputs.no_bump == 'false'
+        run: poetry build
+
+      - name: Publish to PyPI
+        if: steps.cz.outputs.no_bump == 'false'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload dist/*
+
+      - name: Read latest changelog entry
+        if: steps.cz.outputs.no_bump == 'false'
+        id: changelog
+        uses: mindsers/changelog-reader-action@v2
+        with:
+          version: v${{ steps.cz.outputs.version }}
+          path: ./CHANGELOG.md
+
+      - name: GitHub Release
+        if: steps.cz.outputs.no_bump == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.cz.outputs.version }}"
+          name: "Release v${{ steps.cz.outputs.version }}"
+          body: ${{ steps.changelog.outputs.changes }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
