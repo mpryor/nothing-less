@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.7 (2025-10-02)
+
+### Fix
+
+- getting-started-screen rendering - overflow scrolling, and spacing (#16)
+
 ## 0.2.6 (2025-10-02)
 
 ### Fix
