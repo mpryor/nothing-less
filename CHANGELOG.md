@@ -1,4 +1,10 @@
 # Changelog
+## 0.4.0 (2025-10-02)
+
+### Feat
+
+- don't add prev index to buffer name when using the `!` run_comm… (#18)
+
 ## 0.3.0 (2025-10-02)
 
 ### Feat
