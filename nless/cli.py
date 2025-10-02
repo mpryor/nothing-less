@@ -1,3 +1,4 @@
+import pyperclip
 import argparse
 import bisect
 import csv
@@ -215,6 +216,7 @@ class NlessBuffer(Static):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("y", "copy", "Copy cell contents"),
         ("c", "jump_columns", "Jump to column (by select)"),
         (">", "move_column_right", "Move column right"),
         ("<", "move_column_left", "Move column left"),
@@ -230,6 +232,18 @@ class NlessBuffer(Static):
             "Keep cursor at the bottom of the screen even as new logs arrive.",
         ),
     ]
+
+    def action_copy(self) -> None:
+        """Copy the contents of the currently highlighted cell to the clipboard."""
+        data_table = self.query_one(NlessDataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            cell_value = self._get_cell_value_without_markup(cell_value)
+            pyperclip.copy(cell_value)
+            self.notify("Cell contents copied to clipboard.", severity="info")
+        except Exception:
+            self.notify("Cannot get cell value.", severity="error")
 
     def __init__(
         self,
