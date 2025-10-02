@@ -74,8 +74,8 @@ jobs:
         if: steps.cz.outputs.no_bump == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ steps.cz.outputs.version }}"
-          name: "Release v${{ steps.cz.outputs.version }}"
+          tag_name: "${{ steps.cz.outputs.version }}"
+          name: "Release ${{ steps.cz.outputs.version }}"
           body: ${{ steps.cz.outputs.changes }}
           files: dist/*
         env:
