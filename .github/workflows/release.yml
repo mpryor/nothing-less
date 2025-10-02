@@ -55,9 +55,6 @@ jobs:
         if: steps.cz.outputs.no_bump == 'false'
         run: |
           git status
-          git add pyproject.toml CHANGELOG.md
-          git commit -m "chore(release): v${{ steps.cz.outputs.version }}"
-          git tag "v${{ steps.cz.outputs.version }}"
           git push origin main --tags
 
       - name: Build package
