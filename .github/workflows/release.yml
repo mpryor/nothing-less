@@ -48,7 +48,9 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "no_bump=false" >> $GITHUB_OUTPUT
           CHANGELOG_MESSAGE=$(cz changelog --dry-run "$(cz version -p)")
-          echo "changes=$CHANGELOG_MESSAGE" >> $GITHUB_OUTPUT
+          echo "changes<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG_MESSAGE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Stop if no release needed
         if: steps.cz.outputs.no_bump == 'true'
