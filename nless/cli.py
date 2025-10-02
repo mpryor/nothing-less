@@ -1,4 +1,3 @@
-import pyperclip
 import argparse
 import bisect
 import csv
@@ -13,6 +12,7 @@ from copy import deepcopy
 from threading import Thread
 from typing import IO, List, Optional
 
+import pyperclip
 from rich.markup import _parse
 from rich.text import Text
 from textual import events
@@ -37,12 +37,13 @@ from nless.autocomplete import AutocompleteInput
 from nless.gettingstarted import GettingStartedScreen
 from nless.version import get_version
 
+from .config import NlessConfig, load_config, load_input_history
 from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
 from .input import InputConsumer
+from .nlessselect import NlessSelect
 from .nlesstable import NlessDataTable
 from .types import CliArgs, Column, Filter, MetadataColumn
-from .nlessselect import NlessSelect
 
 
 class RowLengthMismatchError(Exception):
@@ -1071,6 +1072,7 @@ class NlessApp(App):
         super().__init__()
         self.cli_args = cli_args
         self.input_history = []
+        self.config = NlessConfig()
         self.logs = []
         self.show_help = show_help
         self.mounted = False
@@ -1995,21 +1997,14 @@ class NlessApp(App):
 
     def on_mount(self) -> None:
         self.mounted = True
+
+        self.config = load_config()
+        self.input_history = load_input_history()
+
         if not self.show_help:
             self.query_one(NlessDataTable).focus()
-        else:
+        elif self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())
-
-        os.makedirs(
-            os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True
-        )
-        if not os.path.exists(os.path.expanduser(self.HISTORY_FILE)):
-            open(os.path.expanduser(self.HISTORY_FILE), "w").close()
-        with open(os.path.expanduser(self.HISTORY_FILE), "r") as f:
-            try:
-                self.input_history = json.load(f)
-            except:
-                self.input_history = []
 
     def action_add_buffer(self) -> None:
         max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
