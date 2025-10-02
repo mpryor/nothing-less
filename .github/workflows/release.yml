@@ -71,7 +71,7 @@ jobs:
         id: changelog
         uses: mindsers/changelog-reader-action@v2
         with:
-          version: v${{ steps.cz.outputs.version }}
+          version: ${{ steps.cz.outputs.version }}
           path: ./CHANGELOG.md
 
       - name: GitHub Release
