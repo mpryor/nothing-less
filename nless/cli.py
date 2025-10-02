@@ -1138,7 +1138,7 @@ class NlessApp(App):
                 cli_args=self.cli_args,
                 subscribed_to_default_input_consumer=False,
             )
-            self.add_buffer(new_buffer, name=command)
+            self.add_buffer(new_buffer, name=command, add_prev_index=False)
             stdout = result.stdout
             if stdout:
                 self.call_after_refresh(lambda: self._add_lines(stdout))
