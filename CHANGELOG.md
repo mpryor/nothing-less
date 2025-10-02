@@ -1,4 +1,38 @@
 # Changelog
+## 0.2.0 (2025-10-02)
+
+### Feat
+
+- run external commands with ! (#15)
+- add github workflow
+- adds ruff pre-commit hooks for formatting and linting
+- added a new select widget, NlessSelect, which offers type-based completion and arrow selection
+
+### Fix
+
+- cz adds, commits, and tags for us
+- run git status for debugging
+- move git config earlier in the flow
+- testing cz
+
+## 0.1.12 (2025-09-30)
+
+### Feat
+
+- added a new select widget, NlessSelect, which offers type-based completion (#14)
+
+## 0.1.11 (2025-09-29)
+
+### Feat
+
+- CLI flags for delimiter, unique, filters, and sort (#13)
+
+## 0.1.10 (2025-09-25)
+
+### Feat
+
+- arbitrary column delimiters (#12)
+
 ## 0.1.9
 - Fix bug with duplicate column indexes
 ## 0.1.8 - duplicate of 0.1.7 for pypi release
