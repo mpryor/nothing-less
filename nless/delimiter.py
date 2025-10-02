@@ -95,11 +95,11 @@ def split_line(
                         match = col.delimiter.match(subline)
                         if match:
                             subcells = [*match.groups()]
-                        subcells = [txt.replace("\t", "  ") for txt in subcells]
-                        cells.insert(
-                            c.data_position - count_metadata_columns,
-                            subcells[col.col_ref_index],
-                        )
+                            subcells = [txt.replace("\t", "  ") for txt in subcells]
+                            cells.insert(
+                                col.data_position - count_metadata_columns,
+                                subcells[col.col_ref_index],
+                            )
             else:
                 lookup_column = col.col_ref
                 for c in sorted_columns:
@@ -205,7 +205,7 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                 # If fields are roughly similar lengths = higher score
                 lengths = [len(p.strip()) for p in parts]
                 avg_len = sum(lengths) / len(lengths)
-                if all(abs(l - avg_len) < avg_len for l in lengths):
+                if all(abs(field_len - avg_len) < avg_len for field_len in lengths):
                     delimiter_scores[delimiter] += 1
 
                 # Special case: if tab and consistent fields, boost score

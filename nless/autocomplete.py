@@ -1,4 +1,5 @@
 from typing import Callable
+from textual.suggester import SuggestFromList
 from textual.widgets import Input
 
 
@@ -30,7 +31,9 @@ class AutocompleteInput(Input):
             self.value = ""
 
     async def action_select_history(self):
-        if self.value != "" and self.value not in self.history:
+        if self.value != "":
+            if self.value in self.history:
+                self.history.remove(self.value)
             self.on_add(self.value)
         await super().action_submit()
 
@@ -39,3 +42,4 @@ class AutocompleteInput(Input):
         self.history_index = len(history) if history else 0
         self.on_add = on_add
         self.history = history or []
+        self.suggester = SuggestFromList(self.history, case_sensitive=False)

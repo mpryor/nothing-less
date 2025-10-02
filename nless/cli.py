@@ -4,12 +4,13 @@ import csv
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from threading import Thread
-from typing import List, Optional
+from typing import IO, List, Optional
 
 from rich.markup import _parse
 from rich.text import Text
@@ -32,6 +33,7 @@ from textual.widgets import (
 )
 
 from nless.autocomplete import AutocompleteInput
+from nless.gettingstarted import GettingStartedScreen
 from nless.version import get_version
 
 from .delimiter import infer_delimiter, split_line
@@ -229,8 +231,14 @@ class NlessBuffer(Static):
         ),
     ]
 
-    def __init__(self, pane_id: int, cli_args: CliArgs | None):
+    def __init__(
+        self,
+        pane_id: int,
+        cli_args: CliArgs | None,
+        subscribed_to_default_input_consumer: bool = True,
+    ):
         super().__init__()
+        self.subscribed_to_default_input_consumer = subscribed_to_default_input_consumer  # used by NlessApp to determine if add_logs should be called for this buffer, when consuming input from the original input stream
         self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
@@ -1045,21 +1053,23 @@ class NlessBuffer(Static):
 
 
 class NlessApp(App):
-    def __init__(self, cli_args: CliArgs):
+    def __init__(self, cli_args: CliArgs, show_help: bool = False) -> None:
         super().__init__()
         self.cli_args = cli_args
         self.input_history = []
         self.logs = []
+        self.show_help = show_help
         self.mounted = False
         self.buffers = [NlessBuffer(pane_id=1, cli_args=cli_args)]
         self.curr_buffer_idx = 0
 
-    SCREENS = {"HelpScreen": HelpScreen}
+    SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
 
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
+        ("G", "push_screen('GettingStartedScreen')", "Getting Started"),
         ("N", "add_buffer", "New Buffer"),
         ("L", "show_tab_next", "Next Buffer"),
         ("H", "show_tab_previous", "Previous Buffer"),
@@ -1074,6 +1084,7 @@ class NlessApp(App):
         ("W", "write_to_file", "Write current view to file"),
         ("J", "json_header", "Select new header from JSON in cell"),
         ("W", "write_to_file", "Write current view to file"),
+        ("!", "run_command", "Run Shell Command (by prompt)"),
         (
             "U",
             "mark_unique",
@@ -1085,6 +1096,40 @@ class NlessApp(App):
 
     async def on_resize(self, event: events.Resize) -> None:
         self.refresh()
+
+    def action_run_command(self) -> None:
+        """Run a shell command and pipe the output into a new buffer."""
+        self._create_prompt(
+            "Type shell command (e.g. tail -f /var/log/syslog)", "run_command_input"
+        )
+
+    def _setup_io_stream(self, io: IO[str]) -> None:
+        curr_buffer = self._get_current_buffer()
+        while line := io.readline():
+            curr_buffer.add_logs([line])
+
+    def _add_lines(self, io: IO[str]) -> None:
+        Thread(target=self._setup_io_stream, args=(io,), daemon=True).start()
+
+    def handle_run_command_submitted(self, event: Input.Submitted) -> None:
+        event.control.remove()
+        command = event.value.strip()
+        if not command:
+            return
+        command_splits = command.split(" ")
+        try:
+            result = subprocess.Popen(command_splits, stdout=subprocess.PIPE, text=True)
+            new_buffer = NlessBuffer(
+                pane_id=self._get_new_pane_id(),
+                cli_args=self.cli_args,
+                subscribed_to_default_input_consumer=False,
+            )
+            self.add_buffer(new_buffer, name=command)
+            stdout = result.stdout
+            if stdout:
+                self.call_after_refresh(lambda: self._add_lines(stdout))
+        except Exception as e:
+            self.notify(f"Error running command: {str(e)}", severity="error")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         event.control.remove()
@@ -1112,23 +1157,26 @@ class NlessApp(App):
 
             new_column_name = f"{curr_column_name}{col_ref}"
 
-            new_pos = len(curr_buffer.current_columns)
+            new_cursor_x = len(curr_buffer.current_columns)
 
             new_col = Column(
                 name=new_column_name,
                 labels=set(),
                 computed=True,
-                render_position=new_pos,
-                data_position=new_pos,
+                render_position=new_cursor_x,
+                data_position=new_cursor_x,
                 hidden=False,
                 json_ref=f"{curr_column_name}{col_ref}",
                 delimiter="json",
             )
 
             curr_buffer.current_columns.append(new_col)
-            curr_buffer._update_table(restore_position=False)
             data_table = curr_buffer.query_one(NlessDataTable)
-            self.call_after_refresh(lambda: data_table.move_cursor(column=new_pos))
+            old_row = data_table.cursor_row
+            curr_buffer._update_table(restore_position=False)
+            self.call_after_refresh(
+                lambda: data_table.move_cursor(column=new_cursor_x, row=old_row)
+            )
 
     def action_json_header(self) -> None:
         """Set the column headers from JSON in the selected cell."""
@@ -1160,7 +1208,10 @@ class NlessApp(App):
             extract_keys(json_data)
 
             select = NlessSelect(
-                options=[(f"{col}: {v}", col) for (col, v) in new_columns],
+                options=[
+                    (f"[bold]{col}[/bold] - {json.dumps(v)}", col)
+                    for (col, v) in new_columns
+                ],
                 classes="dock-bottom",
                 id="json_header_select",
             )
@@ -1499,6 +1550,8 @@ class NlessApp(App):
             self.handle_write_to_file_submitted(event)
         elif event.input.id == "column_delimiter_input":
             self.handle_column_delimiter_submitted(event)
+        elif event.input.id == "run_command_input":
+            self.handle_run_command_submitted(event)
 
     def handle_search_submitted(self, event: Input.Submitted) -> None:
         input_value = event.value
@@ -1928,7 +1981,10 @@ class NlessApp(App):
 
     def on_mount(self) -> None:
         self.mounted = True
-        self.query_one(NlessDataTable).focus()
+        if not self.show_help:
+            self.query_one(NlessDataTable).focus()
+        else:
+            self.push_screen(GettingStartedScreen())
 
         os.makedirs(
             os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True
@@ -1957,14 +2013,16 @@ class NlessApp(App):
             ):
                 with ScrollView():
                     yield init_buffer
+
         yield Static(id="status_bar", classes="dock-bottom")
 
     def add_logs(self, log_lines: list[str]) -> None:
         self.logs.extend(log_lines)
         for buffer in self.buffers:
-            while not buffer.mounted or buffer.locked:
-                time.sleep(0.5)
-            buffer.add_logs(log_lines)
+            if buffer.subscribed_to_default_input_consumer:
+                while not buffer.mounted or buffer.locked:
+                    time.sleep(0.5)
+                buffer.add_logs(log_lines)
 
 
 def main():
@@ -2016,7 +2074,6 @@ def main():
         sort_by=args.sort_by,
     )
 
-    app = NlessApp(cli_args=cli_args)
     new_fd = sys.stdin.fileno()
 
     if args.filename:
@@ -2025,17 +2082,21 @@ def main():
     else:
         filename = None
 
-    ic = InputConsumer(
-        cli_args,
-        filename,
-        new_fd,
-        lambda: app.mounted,
-        lambda lines: app.add_logs(lines),
-    )
-    t = Thread(target=ic.run, daemon=True)
-    t.start()
-
-    sys.__stdin__ = open("/dev/tty")
+    stdin_contains_data = not sys.stdin.isatty()
+    if stdin_contains_data or filename:
+        app = NlessApp(cli_args=cli_args)
+        ic = InputConsumer(
+            cli_args,
+            filename,
+            new_fd,
+            lambda: app.mounted,
+            lambda lines: app.add_logs(lines),
+        )
+        t = Thread(target=ic.run, daemon=True)
+        t.start()
+        sys.__stdin__ = open("/dev/tty")
+    else:
+        app = NlessApp(cli_args=cli_args, show_help=True)
     app.run()
 
 

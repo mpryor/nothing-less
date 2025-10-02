@@ -13,7 +13,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    cli_args = CliArgs(delimiter=args.delimiter)
+    cli_args = CliArgs(
+        delimiter=args.delimiter, filters=[], unique_keys=set(), sort_by=None
+    )
 
     if args.filename:
         ic = InputConsumer(
