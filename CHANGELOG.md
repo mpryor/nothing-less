@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.4 (2025-10-02)
+
+### Fix
+
+- remove v from changelog version
+
 ## 0.2.3 (2025-10-02)
 
 ### Fix
