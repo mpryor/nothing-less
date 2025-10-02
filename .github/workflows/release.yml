@@ -32,6 +32,8 @@ jobs:
         id: cz
         run: |
           set +e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           cz bump --yes --changelog
           EXIT_CODE=$?
           set -e
@@ -52,8 +54,6 @@ jobs:
       - name: Commit version bump
         if: steps.cz.outputs.no_bump == 'false'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml CHANGELOG.md
           git commit -m "chore(release): v${{ steps.cz.outputs.version }}"
           git tag "v${{ steps.cz.outputs.version }}"
