@@ -47,6 +47,8 @@ jobs:
           VERSION=$(cz version --project)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "no_bump=false" >> $GITHUB_OUTPUT
+          CHANGELOG_MESSAGE=$(cz changelog --dry-run "$(cz version -p)")
+          echo "changes=$CHANGELOG_MESSAGE" >> $GITHUB_OUTPUT
 
       - name: Stop if no release needed
         if: steps.cz.outputs.no_bump == 'true'
@@ -66,21 +68,13 @@ jobs:
         if: steps.cz.outputs.no_bump == 'false'
         run: twine upload dist/*
 
-      - name: Read latest changelog entry
-        if: steps.cz.outputs.no_bump == 'false'
-        id: changelog
-        uses: mindsers/changelog-reader-action@v2
-        with:
-          version: ${{ steps.cz.outputs.version }}
-          path: ./CHANGELOG.md
-
       - name: GitHub Release
         if: steps.cz.outputs.no_bump == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.cz.outputs.version }}"
           name: "Release v${{ steps.cz.outputs.version }}"
-          body: ${{ steps.changelog.outputs.changes }}
+          body: ${{ steps.cz.outputs.changes }}
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
