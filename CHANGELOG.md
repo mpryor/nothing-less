@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.3 (2025-10-02)
+
+### Fix
+
+- remove env vars for twine
+
 ## 0.2.2 (2025-10-02)
 
 ### Fix
