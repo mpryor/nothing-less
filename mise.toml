@@ -1,0 +1,14 @@
+[env]
+_.python.venv = { path = ".venv", create=true }
+
+[tasks.install]
+alias="i"
+description = "Install project dependencies"
+run = "poetry install --all-groups"
+
+[tasks.run]
+description = "Run the application"
+run = "python index.py < /tmp/insights-prod.csv"
+
+[tools]
+pipx = "latest"

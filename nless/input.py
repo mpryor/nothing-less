@@ -42,7 +42,7 @@ class InputConsumer:
         stdin = os.fdopen(self.new_fd, errors="ignore")
         fl = fcntl.fcntl(self.new_fd, fcntl.F_GETFL)
         fcntl.fcntl(self.new_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-        raw_str = ""
+        buffer = ""
         TIMEOUT = 0.5
         FLUSH_INTERVAL_MS = 20
         last_read_time = time.time_ns() / 1_000_000  # - FLUSH_INTERVAL_MS
@@ -51,11 +51,11 @@ class InputConsumer:
             if self.read_condition():
                 if streaming:
                     current_time = time.time_ns() / 1_000_000
-                    if raw_str:
+                    if buffer:
                         if current_time - last_read_time >= FLUSH_INTERVAL_MS:
-                            lines, leftover = self.parse_streaming_line(raw_str)
+                            lines, leftover = self.parse_streaming_line(buffer)
                             self.handle_input(lines)
-                            raw_str = leftover
+                            buffer = leftover
                             last_read_time = current_time
                     file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
                     if file_readable:
@@ -64,16 +64,16 @@ class InputConsumer:
                                 line = stdin.read()
                                 if not line:
                                     break
-                                raw_str += line
+                                buffer += line
                                 last_read_time = current_time
                                 if self.delimiter != "json":
                                     # If we're reading json - we assume we need to coalesce multiple lines
                                     #   to account for multi-line json objects during initial read
+                                    #   This *could* cause a lock if streaming json objects faster than the FLUSH_INTERVAL_MS
                                     # Otherwise, we can process line-by-line
-                                    # This *could* cause a lock if streaming json objects faster than the FLUSH_INTERVAL_MS
-                                    lines, leftover = self.parse_streaming_line(raw_str)
+                                    lines, leftover = self.parse_streaming_line(buffer)
                                     self.handle_input(lines)
-                                    raw_str = leftover
+                                    buffer = leftover
                             except Exception:
                                 break
                 else:
@@ -82,6 +82,8 @@ class InputConsumer:
                         self.handle_input(lines)
                     else:
                         time.sleep(1)
+            else:
+                time.sleep(0.5)
 
     def parse_streaming_line(self, line: str) -> Tuple[list[str], str]:
         lines = line.split("\n")
