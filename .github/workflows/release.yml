@@ -64,9 +64,6 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.cz.outputs.no_bump == 'false'
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: twine upload dist/*
 
       - name: Read latest changelog entry
