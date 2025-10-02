@@ -1,4 +1,10 @@
 # Changelog
+## 0.3.0 (2025-10-02)
+
+### Feat
+
+- add ability to yank a cell with `y` keybinding (#17)
+
 ## 0.2.7 (2025-10-02)
 
 ### Fix
