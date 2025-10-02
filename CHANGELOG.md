@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.1 (2025-10-02)
+
+### Fix
+
+- python version in GH workflow
+
 ## 0.2.0 (2025-10-02)
 
 ### Feat
