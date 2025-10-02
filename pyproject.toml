@@ -1,6 +1,6 @@
 [project]
 name = "nothing-less"
-version = "0.2.3"
+version = "0.2.4"
 description = "A TUI paging application with enhanced support for tabular data and real-time streaming"
 authors = [
     {name = "Matt Pryor",email = "mapryor1991@yahoo.com"}
@@ -35,7 +35,7 @@ packages = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.3"
+version = "0.2.4"
 update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"
 version_files = ["pyproject.toml:^version"]
