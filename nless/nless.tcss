@@ -51,10 +51,10 @@ Markdown {
 }
 
 #dialog {
-    layout: grid;
-    grid-size: 1;
-    grid-rows: auto;
-    height: 20;
     border: tall green;
     background: $surface;
+}
+
+#getting_started {
+    overflow: auto;
 }
