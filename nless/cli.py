@@ -2055,7 +2055,6 @@ def main():
         "--sort-by", "-s", help="Column to sort by initially", default=None
     )
 
-
     args = parser.parse_args()
 
     if args.sort_by and len(args.sort_by.split("=")) != 2:
