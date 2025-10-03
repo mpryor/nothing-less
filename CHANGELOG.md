@@ -1,4 +1,10 @@
 # Changelog
+## 0.5.1 (2025-10-03)
+
+### Fix
+
+- external command streaming
+
 ## 0.5.0 (2025-10-02)
 
 ### Feat
