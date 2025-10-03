@@ -4,13 +4,12 @@ import csv
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from threading import Thread
-from typing import IO, List, Optional
+from typing import List, Optional
 
 import pyperclip
 from rich.markup import _parse
@@ -40,7 +39,7 @@ from nless.version import get_version
 from .config import NlessConfig, load_config, load_input_history
 from .delimiter import infer_delimiter, split_line
 from .help import HelpScreen
-from .input import InputConsumer
+from .input import LineStream, ShellCommmandLineStream, StdinLineStream
 from .nlessselect import NlessSelect
 from .nlesstable import NlessDataTable
 from .types import CliArgs, Column, Filter, MetadataColumn
@@ -250,13 +249,17 @@ class NlessBuffer(Static):
         self,
         pane_id: int,
         cli_args: CliArgs | None,
-        subscribed_to_default_input_consumer: bool = True,
+        line_stream: LineStream | None = None,
     ):
         super().__init__()
-        self.subscribed_to_default_input_consumer = subscribed_to_default_input_consumer  # used by NlessApp to determine if add_logs should be called for this buffer, when consuming input from the original input stream
+        self.line_stream = line_stream
         self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
+        if line_stream:
+            line_stream.subscribe(
+                self, self.add_logs, lambda: not self.locked and self.mounted
+            )
         self.first_row_parsed = False
         self.raw_rows = []
         self.displayed_rows = []
@@ -306,6 +309,13 @@ class NlessBuffer(Static):
         new_buffer.is_tailing = self.is_tailing
         new_buffer.unique_column_names = deepcopy(self.unique_column_names)
         new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
+        new_buffer.line_stream = self.line_stream
+        if self.line_stream:
+            self.line_stream.subscribe(
+                new_buffer,
+                new_buffer.add_logs,
+                lambda: not new_buffer.locked and new_buffer.mounted,
+            )
         return new_buffer
 
     def compose(self) -> ComposeResult:
@@ -789,6 +799,7 @@ class NlessBuffer(Static):
         return cell_value
 
     def add_logs(self, log_lines: list[str]) -> None:
+        # print stack trace for debugging
         self.locked = True
         data_table = self.query_one(NlessDataTable)
 
@@ -1068,15 +1079,23 @@ class NlessBuffer(Static):
 
 
 class NlessApp(App):
-    def __init__(self, cli_args: CliArgs, show_help: bool = False) -> None:
+    def __init__(
+        self,
+        cli_args: CliArgs,
+        starting_stream: LineStream | None,
+        show_help: bool = False,
+    ) -> None:
         super().__init__()
+        self.starting_stream = starting_stream
         self.cli_args = cli_args
         self.input_history = []
         self.config = NlessConfig()
         self.logs = []
         self.show_help = show_help
         self.mounted = False
-        self.buffers = [NlessBuffer(pane_id=1, cli_args=cli_args)]
+        self.buffers = [
+            NlessBuffer(pane_id=1, cli_args=cli_args, line_stream=starting_stream)
+        ]
         self.curr_buffer_idx = 0
 
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
@@ -1119,31 +1138,17 @@ class NlessApp(App):
             "Type shell command (e.g. tail -f /var/log/syslog)", "run_command_input"
         )
 
-    def _setup_io_stream(self, io: IO[str]) -> None:
-        curr_buffer = self._get_current_buffer()
-        while line := io.readline():
-            curr_buffer.add_logs([line])
-
-    def _add_lines(self, io: IO[str]) -> None:
-        Thread(target=self._setup_io_stream, args=(io,), daemon=True).start()
-
     def handle_run_command_submitted(self, event: Input.Submitted) -> None:
         event.control.remove()
         command = event.value.strip()
-        if not command:
-            return
-        command_splits = command.split(" ")
         try:
-            result = subprocess.Popen(command_splits, stdout=subprocess.PIPE, text=True)
+            line_stream = ShellCommmandLineStream(command)
             new_buffer = NlessBuffer(
                 pane_id=self._get_new_pane_id(),
                 cli_args=self.cli_args,
-                subscribed_to_default_input_consumer=False,
+                line_stream=line_stream,
             )
             self.add_buffer(new_buffer, name=command, add_prev_index=False)
-            stdout = result.stdout
-            if stdout:
-                self.call_after_refresh(lambda: self._add_lines(stdout))
         except Exception as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
 
@@ -1933,6 +1938,8 @@ class NlessApp(App):
 
         tabbed_content = self.query_one(TabbedContent)
         current_buffer = self._get_current_buffer()
+        if current_buffer.line_stream:
+            current_buffer.line_stream.unsubscribe(current_buffer)
 
         tabbed_content.remove_pane(f"buffer{current_buffer.pane_id}")
         self.buffers.pop(self.curr_buffer_idx)
@@ -2001,15 +2008,18 @@ class NlessApp(App):
         self.config = load_config()
         self.input_history = load_input_history()
 
-        if not self.show_help:
-            self.query_one(NlessDataTable).focus()
-        elif self.config.show_getting_started:
+        if self.show_help and self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())
+        else:
+            self.query_one(NlessDataTable).focus()
 
     def action_add_buffer(self) -> None:
         max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
-        new_buffer = NlessBuffer(pane_id=max_buffer_id + 1, cli_args=self.cli_args)
-        self.call_after_refresh(lambda: new_buffer.add_logs(self.logs))
+        new_buffer = NlessBuffer(
+            pane_id=max_buffer_id + 1,
+            cli_args=self.cli_args,
+            line_stream=self.starting_stream,
+        )
         self.add_buffer(
             new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False
         )
@@ -2024,14 +2034,6 @@ class NlessApp(App):
                     yield init_buffer
 
         yield Static(id="status_bar", classes="dock-bottom")
-
-    def add_logs(self, log_lines: list[str]) -> None:
-        self.logs.extend(log_lines)
-        for buffer in self.buffers:
-            if buffer.subscribed_to_default_input_consumer:
-                while not buffer.mounted or buffer.locked:
-                    time.sleep(0.5)
-                buffer.add_logs(log_lines)
 
 
 def main():
@@ -2053,7 +2055,15 @@ def main():
         "--sort-by", "-s", help="Column to sort by initially", default=None
     )
 
+
     args = parser.parse_args()
+
+    if args.sort_by and len(args.sort_by.split("=")) != 2:
+        print(
+            f"Invalid sort-by format: {args.sort_by}. Expected format is column=asc|desc"
+        )
+        sys.exit(1)
+
     filters = []
     if len(args.filters) > 0:
         for arg_filter in args.filters:
@@ -2093,19 +2103,17 @@ def main():
 
     stdin_contains_data = not sys.stdin.isatty()
     if stdin_contains_data or filename:
-        app = NlessApp(cli_args=cli_args)
-        ic = InputConsumer(
+        ic = StdinLineStream(
             cli_args,
             filename,
             new_fd,
-            lambda: app.mounted,
-            lambda lines: app.add_logs(lines),
         )
+        app = NlessApp(cli_args=cli_args, starting_stream=ic)
         t = Thread(target=ic.run, daemon=True)
         t.start()
         sys.__stdin__ = open("/dev/tty")
     else:
-        app = NlessApp(cli_args=cli_args, show_help=True)
+        app = NlessApp(cli_args=cli_args, show_help=True, starting_stream=None)
     app.run()
 
 
