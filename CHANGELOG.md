@@ -1,4 +1,10 @@
 # Changelog
+## 0.5.3 (2025-10-07)
+
+### Fix
+
+- fixes the initialization bug for real this time
+
 ## 0.5.2 (2025-10-07)
 
 ### Fix
