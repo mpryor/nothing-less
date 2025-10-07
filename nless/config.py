@@ -13,7 +13,7 @@ def _load_config_json_file(file_name: str, defaults):
     with open(os.path.expanduser(file_name), "r") as f:
         try:
             config = json.load(f)
-        except:
+        except:  # noqa: E722
             config = defaults
             save_config(NlessConfig(**config))
     return config
@@ -25,7 +25,7 @@ class NlessConfig:
 
 
 def load_input_history():
-    return _load_config_json_file(HISTORY_FILE, [])
+    return _load_config_json_file(HISTORY_FILE, {})
 
 
 def load_config() -> NlessConfig:
