@@ -1,4 +1,10 @@
 # Changelog
+## 0.5.2 (2025-10-07)
+
+### Fix
+
+- bug with initializing empty config file
+
 ## 0.5.1 (2025-10-03)
 
 ### Fix
