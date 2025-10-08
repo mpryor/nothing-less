@@ -645,6 +645,14 @@ class NlessBuffer(Static):
                 except (ValueError, IndexError):
                     # Fallback if column not found or row is malformed
                     pass
+                except:
+                    try:
+                        deduped_rows.sort(
+                            key=lambda r: r[sort_column_idx],
+                            reverse=self.sort_reverse,
+                        )
+                    except:
+                        pass
 
         aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
         unstyled_rows = []
