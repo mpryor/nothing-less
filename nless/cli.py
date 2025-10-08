@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from copy import deepcopy
 from threading import Thread
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pyperclip
 from rich.markup import _parse
@@ -639,12 +639,20 @@ class NlessBuffer(Static):
             if sort_column_idx is not None:
                 try:
                     deduped_rows.sort(
-                        key=lambda r: r[sort_column_idx],
+                        key=lambda r: self.str_to_int(r[sort_column_idx]),
                         reverse=self.sort_reverse,
                     )
                 except (ValueError, IndexError):
                     # Fallback if column not found or row is malformed
                     pass
+                except:
+                    try:
+                        deduped_rows.sort(
+                            key=lambda r: r[sort_column_idx],
+                            reverse=self.sort_reverse,
+                        )
+                    except:
+                        pass
 
         aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
         unstyled_rows = []
@@ -905,6 +913,15 @@ class NlessBuffer(Static):
 
         self._update_status_bar()
         self.locked = False
+
+    def str_to_int(self, value: Any) -> int | float | str:
+        if isinstance(value, int):
+            return value
+        try:
+            return float(value)
+        except:
+            pass
+        return value
 
     def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
         tmp_list = list(r_list)
