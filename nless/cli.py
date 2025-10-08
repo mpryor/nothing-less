@@ -906,11 +906,13 @@ class NlessBuffer(Static):
         self._update_status_bar()
         self.locked = False
 
-    def str_to_int(self, value: Any) -> int | str:
+    def str_to_int(self, value: Any) -> int | float | str:
         if isinstance(value, int):
             return value
-        if isinstance(value, str) and value.isnumeric():
-            return int(value)
+        try:
+            return float(value)
+        except:
+            pass
         return value
 
     def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
