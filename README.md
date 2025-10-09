@@ -12,6 +12,21 @@ Nless has enhanced functionality for parsing tabular data:
 - searching
 - real-time event parsing.
 
+## Getting started
+### Dependencies
+- python>=3.13  
+OR  
+- [brew](https://brew.sh/)
+### Installation
+`pip install nothing-less`  
+OR  
+`brew install mpryor/tap/nless`  
+### Usage
+- pipe the output of a command to nless to parse the output `$COMMAND | nless`
+- read a file with nless `nless $FILE_NAME`
+- redirect a file into nless `nless < $FILE_NAME`
+- Once output is loaded, press `?` to view the keybindings
+
 ## Why?
 As a kubernetes engineer, I frequently need to interact with streaming tabular data. `k get pods -w`, `k get events -w`, etc. I want a TUI tool to quickly dissect and analyze this data - and none of the existing alternatives had exactly what I wanted:
 - streaming support
@@ -29,18 +44,7 @@ This project is not meant to be a replacement/competitor for any of the tools me
 - Tabular data toolkit:
   - broad support for a variety of use-cases analyzing,filtering,sorting, and searching tabular data
   - converting data streams *into* tabular data, such as JSON log parsing
-
-## Getting started
-### Dependencies
-- python>=3.13
-### Installation
-`pip install nothing-less`
-### Usage
-- pipe the output of a command to nless to parse the output `$COMMAND | nless`
-- read a file with nless `nless $FILE_NAME`
-- redirect a file into nless `nless < $FILE_NAME`
-- Once output is loaded, press `?` to view the keybindings
-
+    
 ## Demos
 ### Basic functionality
 The below demo shows basic functionality:
