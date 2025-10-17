@@ -20,7 +20,7 @@ from textual.widgets import (
 )
 
 from nless.autocomplete import AutocompleteInput
-from nless.buffer import NlessBuffer
+from nless.buffer import NlessBuffer, handle_mark_unique
 from nless.gettingstarted import GettingStartedScreen
 
 from .config import NlessConfig, load_config, load_input_history
