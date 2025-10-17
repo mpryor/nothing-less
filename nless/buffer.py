@@ -155,6 +155,7 @@ def handle_mark_unique(new_buffer: "NlessBuffer", new_unique_column_name: str) -
             elif col.pinned and col.render_position >= old_position:
                 col.render_position -= 1
 
+
 def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
     if output_path == "-":
         output_path = "/dev/stdout"
