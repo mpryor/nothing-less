@@ -173,23 +173,6 @@ def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
             writer.writerow(plain_row)
 
 
-def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
-    if output_path == "-":
-        output_path = "/dev/stdout"
-        while current_buffer.app.is_running:
-            time.sleep(0.1)
-        time.sleep(0.1)
-
-    with open(output_path, "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(current_buffer._get_visible_column_labels())
-        for row in current_buffer.displayed_rows:
-            plain_row = [
-                current_buffer._get_cell_value_without_markup(str(cell)) for cell in row
-            ]
-            writer.writerow(plain_row)
-
-
 class NlessBuffer(Static):
     """A modern pager with tabular data sorting/filtering capabilities."""
 
