@@ -221,13 +221,19 @@ class NlessApp(App):
         data_table = curr_buffer.query_one(NlessDataTable)
         new_buffer = curr_buffer.copy(pane_id=self._get_new_pane_id())
         current_cursor_column = data_table.cursor_column
+
         new_unique_column = [
             c
             for c in new_buffer.current_columns
             if c.render_position == current_cursor_column
         ]
+
         if not new_unique_column:
             self.notify("No column selected to mark as unique")
+            return
+
+        if data_table.columns[current_cursor_column] == "count":
+            self.notify("Cannot mark 'count' column as unique", severity="error")
             return
 
         new_unique_column = new_unique_column[0]
@@ -254,8 +260,9 @@ class NlessApp(App):
             ):
                 new_cursor_position = i
                 break
+
         self.set_timer(
-            0.2,
+            0.3,
             lambda: new_buffer.query_one(NlessDataTable).move_cursor(
                 column=new_cursor_position
             ),
@@ -296,6 +303,7 @@ class NlessApp(App):
             classes="bottom-input",
             history=[h["val"] for h in self.input_history if h["id"] == id],
             on_add=lambda val: self.input_history.append({"id": id, "val": val}),
+            on_remove=lambda val: self.input_history.remove({"id": id, "val": val})
         )
         tab_content = self.query_one(TabbedContent)
         active_tab = tab_content.active

@@ -31,15 +31,17 @@ class AutocompleteInput(Input):
             self.value = ""
 
     async def action_select_history(self):
+        print(self.history)
         if self.value != "":
             if self.value in self.history:
-                self.history.remove(self.value)
+                self.on_remove(self.value)
             self.on_add(self.value)
         await super().action_submit()
 
-    def __init__(self, *args, on_add: Callable[[str], None], history=None, **kwargs):
+    def __init__(self, *args, on_add: Callable[[str], None], on_remove: Callable[[str], None], history=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.history_index = len(history) if history else 0
         self.on_add = on_add
+        self.on_remove = on_remove
         self.history = history or []
         self.suggester = SuggestFromList(self.history, case_sensitive=False)

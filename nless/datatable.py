@@ -40,6 +40,7 @@ class Datatable(ScrollView):
     cursor_coordinate = var(Coordinate(0, 0))
     col_separator: str = "   "
     col_separator_width: int = len(col_separator)
+    fixed_columns: int = 0
 
     def action_scroll_bottom(self) -> None:
         self.move_cursor(row=len(self.rows) - 1)
@@ -98,11 +99,23 @@ class Datatable(ScrollView):
             self.cursor_column = len(self.columns) - 1
 
         self.cursor_coordinate = Coordinate(self.cursor_row, self.cursor_column)
-        total_width = sum(self.column_widths[0 : self.cursor_column + 1]) + (
-            3 * self.cursor_column
+
+        total_width = sum(self.column_widths[0 : self.cursor_column]) + (
+            self.col_separator_width * self.cursor_column
         )
+
+        sum_fixed_column_widths = sum(
+            self.column_widths[0 : self.fixed_columns]
+        ) + (self.col_separator_width * self.fixed_columns)
+
+        if self.scroll_offset.x < total_width: # we're left of the column, so we need to scroll the right edge into view
+            total_width += self.column_widths[self.cursor_column] + self.col_separator_width
+
         if self.cursor_column == 0:
             total_width = 0
+
+        total_width = max(total_width - sum_fixed_column_widths, 0)
+
         self.scroll_to_region(
             region=Region(
                 x=total_width,
@@ -150,7 +163,7 @@ class Datatable(ScrollView):
             if col in self.columns:
                 continue
             self.columns.append(col)
-        self.column_widths = [15 for _ in self.columns]  # default width
+        self.column_widths = [len(col) for col in self.columns]  # default width
 
     def add_rows(self, rows_data: list[list[str]]) -> None:
         for row in rows_data:
@@ -188,14 +201,21 @@ class Datatable(ScrollView):
         self.refresh()
 
     def _render_column_headers(self, x: int) -> Strip:
+        fixed_columns_str = ""
+        for i in range(self.fixed_columns):
+            fixed_columns_str += self.columns[i].ljust(self.column_widths[i]) + self.col_separator
+
         segment_str = ""
         for i, col in enumerate(self.columns):
+            if i < self.fixed_columns:
+                continue
             segment_str += col.ljust(self.column_widths[i])
-            segment_str += "   "
+            segment_str += self.col_separator
+
         return Strip(
             [
                 Segment(
-                    segment_str[x : x + self.size.width],
+                    fixed_columns_str + segment_str[x: x + self.size.width],
                     Style(bold=True, bgcolor="#005f5f", color="#d7ffff"),
                 )
             ]
@@ -214,11 +234,20 @@ class Datatable(ScrollView):
             segments = []
             accumulated_x = 0  # track how far we've rendered horizontally
             for i, cell in enumerate(row):
-                curr_column_width = self.column_widths[i] + 3
-                if accumulated_x + curr_column_width <= x:
+                curr_column_width = self.column_widths[i] + self.col_separator_width
+                if accumulated_x + curr_column_width <= x and i > self.fixed_columns - 1:
                     # skip this cell if it's before the x offset
                     accumulated_x += curr_column_width
                     continue
+                elif i < self.fixed_columns:
+                    is_cursor_cell = (
+                        i == self.cursor_column and (y - 1) == self.cursor_row
+                    )
+                    cursor_style = Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
+                    fixed_column_style = Style(bgcolor="#111177") if not is_cursor_cell else cursor_style
+                    cell_text = Text.from_markup(str(cell))  # validate markup
+                    for parsed_text, parsed_style, _ in cell_text.render(self.app.console):
+                        segments.append(Segment(parsed_text + "   ".rjust(curr_column_width - len(parsed_text)), fixed_column_style + parsed_style))
                 else:
                     is_cursor_cell = (
                         i == self.cursor_column and (y - 1) == self.cursor_row
@@ -235,13 +264,17 @@ class Datatable(ScrollView):
                         Style(color="#bbbbbb") if is_zebra_column and not is_cursor_cell
                         else Style(color="#dddddd")
                     )
+
                     zebra_style = (
                         Style(bgcolor="#0087d7", bold=True, color="#d7ffff") if is_cursor_cell
                         else Style(bgcolor="#222222") if is_zebra_row
                         else Style(bgcolor="#333333")
                     )
+
+                    fixed_column_style = Style(bgcolor="blue") if i < self.fixed_columns else Style()
+
                     segment_style = Style.combine(
-                        [cursor_style, column_style, zebra_style]
+                        [cursor_style, column_style, zebra_style, fixed_column_style]
                     )
 
                     str_len = 0
@@ -282,7 +315,7 @@ class Datatable(ScrollView):
                     segments.append(
                         Segment(
                             self.col_separator[separator_trim_amt:].rjust(rjust_amt),
-                            Style.combine([zebra_style, cursor_style]),
+                            Style.combine([zebra_style, cursor_style, fixed_column_style]),
                         )
                     )
                     accumulated_x += curr_column_width

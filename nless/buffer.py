@@ -198,18 +198,6 @@ class NlessBuffer(Static):
         ),
     ]
 
-    def action_copy(self) -> None:
-        """Copy the contents of the currently highlighted cell to the clipboard."""
-        data_table = self.query_one(NlessDataTable)
-        coordinate = data_table.cursor_coordinate
-        try:
-            cell_value = data_table.get_cell_at(coordinate)
-            cell_value = self._get_cell_value_without_markup(cell_value)
-            pyperclip.copy(cell_value)
-            self.notify("Cell contents copied to clipboard.", severity="info")
-        except Exception:
-            self.notify("Cannot get cell value.", severity="error")
-
     def __init__(
         self,
         pane_id: int,
@@ -241,6 +229,7 @@ class NlessBuffer(Static):
             self.sort_reverse = False
         self.search_matches: List[Coordinate] = []
         self.current_match_index: int = -1
+
         if cli_args and cli_args.delimiter:
             pattern = re.compile(cli_args.delimiter)  # validate regex
             # check if delimiter parses to regex, and has named capture groups
@@ -250,10 +239,23 @@ class NlessBuffer(Static):
                 self.delimiter = cli_args.delimiter
         else:
             self.delimiter = None
+
         self.delimiter_inferred = False
         self.is_tailing = False
         self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
+
+    def action_copy(self) -> None:
+        """Copy the contents of the currently highlighted cell to the clipboard."""
+        data_table = self.query_one(NlessDataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            cell_value = self._get_cell_value_without_markup(cell_value)
+            pyperclip.copy(cell_value)
+            self.notify("Cell contents copied to clipboard.", severity="info")
+        except Exception:
+            self.notify("Cannot get cell value.", severity="error")
 
     def copy(self, pane_id) -> "NlessBuffer":
         new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
@@ -512,7 +514,9 @@ class NlessBuffer(Static):
             if c.name in [m.value for m in MetadataColumn]
         }
         expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
-        data_table.clear(columns=True)  # might be needed to trigger column resizing with longer cell content
+        data_table.clear(
+            columns=True
+        )  # might be needed to trigger column resizing with longer cell content
 
         data_table.fixed_columns = len(curr_metadata_columns)
         data_table.add_columns(self._get_visible_column_labels())
@@ -623,9 +627,11 @@ class NlessBuffer(Static):
             for displayed_row_idx, cells in enumerate(aligned_rows):
                 highlighted_cells = []
                 for col_idx, cell in enumerate(cells):
-                    if isinstance(
-                        self.search_term, re.Pattern
-                    ) and self.search_term.search(str(cell)):
+                    if (
+                        isinstance(self.search_term, re.Pattern)
+                        and self.search_term.search(str(cell))
+                        and col_idx > data_table.fixed_columns - 1
+                    ):
                         cell = re.sub(
                             self.search_term,
                             lambda m: f"[reverse]{m.group(0)}[/reverse]",
@@ -770,7 +776,7 @@ class NlessBuffer(Static):
             self.first_log_line = first_log_line
             if self.delimiter == "raw":
                 # Delimiter is raw, treat entire line as single column
-                data_table.add_column("log")
+                data_table.add_columns(["log"])
                 self.current_columns = [
                     Column(
                         name="log",
@@ -835,24 +841,25 @@ class NlessBuffer(Static):
                 for unique_col_name in self.unique_column_names:
                     handle_mark_unique(self, unique_col_name)
                 data_table.clear(columns=True)
-                data_table.add_columns(*self._get_visible_column_labels())
+                data_table.add_columns(self._get_visible_column_labels())
 
             self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
 
         mismatch_count = 0
-        if len(log_lines) > 100:
-            self._update_table()
-        else:
-            for line in log_lines:
-                try:
-                    self._add_log_line(line)
-                except RowLengthMismatchError:
-                    mismatch_count += 1
-                    continue
-                except Exception:
-                    pass
+
+        # if len(log_lines) > 100:
+        #     self._update_table()
+        # else:
+        for line in log_lines:
+            try:
+                self._add_log_line(line)
+            except RowLengthMismatchError:
+                mismatch_count += 1
+                continue
+            except Exception:
+                pass
 
         if mismatch_count > 0:
             self.notify(
@@ -1015,7 +1022,7 @@ class NlessBuffer(Static):
             for col_idx, cell in enumerate(cells):
                 if isinstance(self.search_term, re.Pattern) and self.search_term.search(
                     cell
-                ):
+                ) and col_idx > data_table.fixed_columns - 1:
                     cell = re.sub(
                         self.search_term,
                         lambda m: f"[reverse]{m.group(0)}[/reverse]",
