@@ -20,7 +20,7 @@ from textual.widgets import (
 )
 
 from nless.autocomplete import AutocompleteInput
-from nless.buffer import NlessBuffer, handle_mark_unique
+from nless.buffer import NlessBuffer, handle_mark_unique, write_buffer
 from nless.gettingstarted import GettingStartedScreen
 
 from .config import NlessConfig, load_config, load_input_history
@@ -28,7 +28,7 @@ from .delimiter import split_line
 from .help import HelpScreen
 from .input import LineStream, ShellCommmandLineStream
 from .nlessselect import NlessSelect
-from .nlesstable import NlessDataTable
+from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
 from .types import CliArgs, Column, Filter, MetadataColumn
 
 
@@ -58,7 +58,6 @@ class NlessApp(App):
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
-        ("G", "push_screen('GettingStartedScreen')", "Getting Started"),
         ("N", "add_buffer", "New Buffer"),
         ("L", "show_tab_next", "Next Buffer"),
         ("H", "show_tab_previous", "Previous Buffer"),
@@ -326,7 +325,7 @@ class NlessApp(App):
                         column, render_position=True
                     )
                     cell_value = data_table.get_cell_at(
-                        (data_table.cursor_row, col_idx)
+                        NlessCoordinate(data_table.cursor_row, col_idx)
                     )
                     cell_value = current_buffer._get_cell_value_without_markup(
                         cell_value
@@ -541,7 +540,7 @@ class NlessApp(App):
         """Filter rows based on user input."""
         data_table = self._get_current_buffer().query_one(NlessDataTable)
         column_index = data_table.cursor_column
-        column_label = data_table.ordered_columns[column_index].label
+        column_label = data_table.columns[column_index]
         self._create_prompt(
             f"Type filter text for column: {column_label} and press enter",
             "filter_input",

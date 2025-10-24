@@ -23,7 +23,7 @@ from textual.widgets import (
 from .delimiter import infer_delimiter, split_line
 from .input import LineStream
 from .nlessselect import NlessSelect
-from .nlesstable import NlessDataTable
+from .datatable import Datatable as NlessDataTable
 from .types import CliArgs, Column, Filter, MetadataColumn
 
 
@@ -286,15 +286,13 @@ class NlessBuffer(Static):
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
         with Vertical():
-            table = NlessDataTable(
-                zebra_stripes=True, id="data_table", show_row_labels=True
-            )
+            table = NlessDataTable()
             yield table
 
     def on_mount(self) -> None:
         self.mounted = True
 
-    def on_data_table_cell_highlighted(
+    def on_datatable_cell_highlighted(
         self, event: NlessDataTable.CellHighlighted
     ) -> None:
         """Handle cell highlighted events to update the status bar."""
@@ -514,12 +512,10 @@ class NlessBuffer(Static):
             if c.name in [m.value for m in MetadataColumn]
         }
         expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
-        data_table.clear(
-            columns=True
-        )  # might be needed to trigger column resizing with longer cell content
+        data_table.clear(columns=True)  # might be needed to trigger column resizing with longer cell content
 
         data_table.fixed_columns = len(curr_metadata_columns)
-        data_table.add_columns(*self._get_visible_column_labels())
+        data_table.add_columns(self._get_visible_column_labels())
 
         self.search_matches = []
         self.current_match_index = -1
@@ -653,24 +649,12 @@ class NlessBuffer(Static):
                 severity="warning",
             )
 
-        styled_rows = self._apply_styles_to_cells(unstyled_rows)
-        self.displayed_rows = styled_rows
-        data_table.add_rows(styled_rows)
+        self.displayed_rows = unstyled_rows
+        data_table.add_rows(unstyled_rows)
         self.locked = False
 
         if restore_position:
             self._restore_position(data_table, cursor_x, cursor_y, scroll_x, scroll_y)
-
-    def _apply_styles_to_cells(self, rows: list[list[str]]) -> list[list[str]]:
-        styled_rows = []
-        for row in rows:
-            styled_cells = []
-            for i, cell in enumerate(row):
-                if i % 2 != 0:
-                    cell = f"[#aaaaaa]{cell}[/#aaaaaa]"
-                styled_cells.append(cell)
-            styled_rows.append(styled_cells)
-        return styled_rows
 
     def _align_cells_to_visible_columns(self, rows: list[list[str]]) -> list[list[str]]:
         new_rows = []
@@ -799,7 +783,7 @@ class NlessBuffer(Static):
             elif isinstance(self.delimiter, re.Pattern):
                 pattern = self.delimiter
                 parts = list(pattern.groupindex.keys())
-                data_table.add_columns(*parts)
+                data_table.add_columns(parts)
                 self.current_columns = [
                     Column(
                         name=p,
@@ -821,7 +805,7 @@ class NlessBuffer(Static):
                         parts = ["value"]
                 except json.JSONDecodeError:
                     parts = ["value"]
-                data_table.add_columns(*parts)
+                data_table.add_columns(parts)
                 self.current_columns = [
                     Column(
                         name=p,
@@ -834,7 +818,7 @@ class NlessBuffer(Static):
                 ]
             else:
                 parts = split_line(first_log_line, self.delimiter, self.current_columns)
-                data_table.add_columns(*parts)
+                data_table.add_columns(parts)
                 self.current_columns = [
                     Column(
                         name=p,
@@ -1043,18 +1027,12 @@ class NlessBuffer(Static):
                     highlighted_cells.append(cell)
             cells = highlighted_cells
 
-        old_row_key = None
         if old_index is not None:
-            old_row_key = data_table.ordered_rows[old_index].key
-
-        cells = self._apply_styles_to_cells([cells])[0]
-
-        data_table.add_row_at(*cells, row_index=new_index)
-        self.displayed_rows.insert(new_index, cells)
-
-        if old_index is not None and old_row_key is not None:
             self.displayed_rows.remove(old_row)
-            data_table.remove_row(old_row_key)
+            data_table.remove_row(old_index)
+
+        data_table.add_row_at(index=new_index, row_data=cells)
+        self.displayed_rows.insert(new_index, cells)
 
         if self.is_tailing:
             data_table.action_scroll_bottom()
