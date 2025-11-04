@@ -189,7 +189,6 @@ class NlessBuffer(Static):
         ("n", "next_search", "Next search result"),
         ("p", "previous_search", "Previous search result"),
         ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
-        ("v", "change_cursor", "Change cursor type - row, column, cell"),
         ("~", "view_unparsed_logs", "View logs not matching delimiter"),
         (
             "t",
@@ -400,15 +399,6 @@ class NlessBuffer(Static):
         self.is_tailing = not self.is_tailing
         self._update_status_bar()
 
-    def action_change_cursor(self) -> None:
-        data_table = self.query_one(NlessDataTable)
-        if data_table.cursor_type == "cell":
-            data_table.cursor_type = "column"
-        elif data_table.cursor_type == "column":
-            data_table.cursor_type = "row"
-        else:
-            data_table.cursor_type = "cell"
-
     def action_next_search(self) -> None:
         """Move cursor to the next search result."""
         self._navigate_search(1)
@@ -593,7 +583,7 @@ class NlessBuffer(Static):
                 self.count_by_column_key[composite_key] += 1
             for k, cells in dedup_map.items():
                 count = self.count_by_column_key[k]
-                cells.insert(0, count)
+                cells.insert(0, str(count))
                 deduped_rows.append(cells)
         else:
             deduped_rows = filtered_rows
@@ -686,6 +676,8 @@ class NlessBuffer(Static):
         return f"[bold]{text}[/bold]"
 
     def _update_status_bar(self) -> None:
+        if self.pane_id != self.app.buffers[self.app.curr_buffer_idx].pane_id:
+            return
         data_table = self.query_one(NlessDataTable)
 
         sort_prefix = self._rich_bold("Sort")
@@ -849,17 +841,17 @@ class NlessBuffer(Static):
 
         mismatch_count = 0
 
-        # if len(log_lines) > 100:
-        #     self._update_table()
-        # else:
-        for line in log_lines:
-            try:
-                self._add_log_line(line)
-            except RowLengthMismatchError:
-                mismatch_count += 1
-                continue
-            except Exception:
-                pass
+        if len(log_lines) > 1000:
+            self._update_table()
+        else:
+            for line in log_lines:
+                try:
+                    self._add_log_line(line)
+                except RowLengthMismatchError:
+                    mismatch_count += 1
+                    continue
+                except Exception:
+                    pass
 
         if mismatch_count > 0:
             self.notify(
