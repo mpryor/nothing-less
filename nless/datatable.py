@@ -159,7 +159,9 @@ class Datatable(ScrollView):
         self.refresh()
 
     def _calc_max_width(self) -> int:
-        return sum(self.column_widths) + len(self.column_widths) * self.col_separator_width
+        return (
+            sum(self.column_widths) + len(self.column_widths) * self.col_separator_width
+        )
 
     def add_columns(self, columns: list[str]) -> None:
         for col in columns:
@@ -269,7 +271,9 @@ class Datatable(ScrollView):
                         segments.append(
                             Segment(
                                 parsed_text
-                                + self.col_separator.rjust(curr_column_width - len(parsed_text)),
+                                + self.col_separator.rjust(
+                                    curr_column_width - len(parsed_text)
+                                ),
                                 fixed_column_style + parsed_style,
                             )
                         )
@@ -314,7 +318,7 @@ class Datatable(ScrollView):
                             x - accumulated_x
                         )  # amount to trim from start of cell, because we have scrolled to the middle of a cell
 
-                    cell_render_len = 0                
+                    cell_render_len = 0
                     if "[" in cell:
                         parsed_markup_text = Text.from_markup(
                             cell
@@ -349,12 +353,18 @@ class Datatable(ScrollView):
 
                     segments.append(
                         Segment(
-                            self.col_separator[separator_trim_amt:].rjust(rjust_amt), Style.combine(
+                            self.col_separator[separator_trim_amt:].rjust(rjust_amt),
+                            Style.combine(
                                 [zebra_style, cursor_style, fixed_column_style]
                             ),
                         )
                     )
-                    accumulated_x += curr_column_width + rjust_amt - separator_trim_amt + self.col_separator_width
+                    accumulated_x += (
+                        curr_column_width
+                        + rjust_amt
+                        - separator_trim_amt
+                        + self.col_separator_width
+                    )
             return Strip(segments)
         else:
             return Strip([])

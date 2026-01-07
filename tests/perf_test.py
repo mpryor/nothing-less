@@ -1,10 +1,9 @@
-import cProfile
 import csv
 import time
-from turtle import end_fill
 from textual.app import App, ComposeResult
 from nless.datatable import Datatable
 from nless.nlesstable import NlessDataTable as OldDatatable
+
 
 class TestAppOld(App):
     start_time = time.time_ns()
@@ -12,7 +11,7 @@ class TestAppOld(App):
 
     def compose(self) -> ComposeResult:
         table = OldDatatable()
-        with open('./example_data/people-1000000.csv') as f:
+        with open("./example_data/people-1000000.csv") as f:
             lines = f.readlines()
             rows = []
             for i, line in enumerate(lines):
@@ -29,8 +28,9 @@ class TestAppOld(App):
         self.end_time = time.time_ns()
         self.exit()
 
+
 def load_data():
-    with open('./example_data/people-1000000.csv') as f:
+    with open("./example_data/people-1000000.csv") as f:
         lines = f.readlines()
         rows = []
         for i, line in enumerate(lines):
@@ -41,8 +41,8 @@ def load_data():
                 rows.append(row)
     return columns, rows
 
-class TestApp(App):
 
+class TestApp(App):
     def __init__(self, rows, columns):
         super().__init__()
         self.start_time = time.time_ns()
@@ -60,8 +60,11 @@ class TestApp(App):
         self.end_time = time.time_ns()
         self.exit()
 
+
 if __name__ == "__main__":
     columns, rows = load_data()
     t = TestApp(rows=rows, columns=columns)
     t.run()
-    print(f"Elapsed time with new datatable (seconds): {(t.end_time - t.start_time) / 1_000_000_000}")
+    print(
+        f"Elapsed time with new datatable (seconds): {(t.end_time - t.start_time) / 1_000_000_000}"
+    )
