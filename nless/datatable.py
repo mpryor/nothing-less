@@ -98,6 +98,10 @@ class Datatable(ScrollView):
         if len(self.columns) > 0 and self.cursor_column > len(self.columns) - 1:
             self.cursor_column = len(self.columns) - 1
 
+        if len(self.columns) == 0 and len(self.rows) == 0:
+            self.cursor_column = 0
+            self.cursor_row = 0
+
         self.cursor_coordinate = Coordinate(self.cursor_row, self.cursor_column)
 
         total_width = sum(self.column_widths[0 : self.cursor_column]) + (
@@ -110,6 +114,7 @@ class Datatable(ScrollView):
 
         if (
             self.scroll_offset.x < total_width
+            and self.cursor_column <= len(self.columns) - 1
         ):  # we're left of the column, so we need to scroll the right edge into view
             total_width += (
                 self.column_widths[self.cursor_column] + self.col_separator_width

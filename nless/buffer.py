@@ -662,7 +662,9 @@ class NlessBuffer(Static):
             new_rows.append(cells)
         return new_rows
 
-    def _restore_position(self, data_table, cursor_x, cursor_y, scroll_x, scroll_y):
+    def _restore_position(
+        self, data_table: NlessDataTable, cursor_x, cursor_y, scroll_x, scroll_y
+    ):
         data_table.move_cursor(
             row=cursor_y, column=cursor_x, animate=False, scroll=False
         )
