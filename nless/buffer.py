@@ -1012,9 +1012,11 @@ class NlessBuffer(Static):
         if self.search_term:
             highlighted_cells = []
             for col_idx, cell in enumerate(cells):
-                if isinstance(self.search_term, re.Pattern) and self.search_term.search(
-                    cell
-                ) and col_idx > data_table.fixed_columns - 1:
+                if (
+                    isinstance(self.search_term, re.Pattern)
+                    and self.search_term.search(cell)
+                    and col_idx > data_table.fixed_columns - 1
+                ):
                     cell = re.sub(
                         self.search_term,
                         lambda m: f"[reverse]{m.group(0)}[/reverse]",
