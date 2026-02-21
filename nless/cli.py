@@ -18,28 +18,6 @@ from .input import StdinLineStream
 from .types import CliArgs, Filter
 
 
-class RowLengthMismatchError(Exception):
-    pass
-
-
-class UnparsedLogsScreen(Screen):
-    BINDINGS = [("q", "app.pop_screen", "Close")]
-
-    def __init__(self, unparsed_rows: List[str], delimiter: str):
-        super().__init__()
-        self.unparsed_rows = unparsed_rows
-        self.delimiter = delimiter
-
-    def compose(self) -> ComposeResult:
-        yield Static(
-            f"{len(self.unparsed_rows)} logs not matching columns (delimiter '{self.delimiter}'), press 'q' to close.",
-        )
-        rl = RichLog()
-        for row in self.unparsed_rows:
-            rl.write(row.strip())
-        yield rl
-
-
 def main():
     parser = argparse.ArgumentParser(description="nless - A terminal log viewer")
     parser.add_argument(
@@ -106,15 +84,17 @@ def main():
 
     stdin_contains_data = not sys.stdin.isatty()
     if stdin_contains_data or filename:
-        ic = StdinLineStream(
+        stdin_line_stream = StdinLineStream(
             cli_args,
             filename,
             new_fd,
         )
-        app = NlessApp(cli_args=cli_args, starting_stream=ic)
-        t = Thread(target=ic.run, daemon=True)
+        app = NlessApp(cli_args=cli_args, starting_stream=stdin_line_stream)
+        t = Thread(target=stdin_line_stream.run, daemon=True)
         t.start()
-        sys.__stdin__ = open("/dev/tty")
+        sys.__stdin__ = open(
+            "/dev/tty"
+        )  # hack to allow textual to read input from terminal, while still reading piped data from stdin
     else:
         app = NlessApp(cli_args=cli_args, show_help=True, starting_stream=None)
     app.run()
