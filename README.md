@@ -83,7 +83,7 @@ The below demo showcases some of nless's features for handling streaming input, 
 - `g` - jump to first row
 - `G` - jump to final row
 - `w` - move cursor right
-- `b` - move cursor left
+- `b`/`B` - move cursor left
 - `ctrl+u` - page up
 - `ctrl+d` - page down
 - `c` - to select a column to jump the cursor to
@@ -105,12 +105,25 @@ The below demo showcases some of nless's features for handling streaming input, 
 
 **Searching**:
 - `/` - will prompt for a search value and jump to the first match
-- `*` - will search all columns for the current highglighted cell value
+- `*` - will search all columns for the current highlighted cell value
 - `n` - jump to the next match
 - `p` - jump to previous match
 
 **Output**:
 - `W` - will prompt for a file to write the current buffer to. `-` can be used to write to `stdout`, allowing you to use `nless` inside of a command chain `cat $MY_FILE.txt | nless | grep -i active` for example.
+- `y` - copies the contents of the currently highlighted cell to the clipboard
+
+**Shell Commands**:
+- `!` - run a shell command and pipe its output into a new buffer for analysis
+
+**Tail Mode**:
+- `t` - toggle tail mode, which keeps the cursor at the bottom as new data arrives (useful for streaming input)
+
+**Unparsed Logs**:
+- `~` - view logs that did not match the current delimiter, useful for spotting malformed or unexpected lines
+
+**Help**:
+- `?` - show the help screen with all keybindings
 
 **Sorting**:
 - `s` - toggles ascending/descending sort on the current column
@@ -123,11 +136,14 @@ The below demo showcases some of nless's features for handling streaming input, 
 - By default, `nless` will attempt to infer a file delimiter from the first few rows sent through stdin. It uses common delimiters to start - `,`, ` `, `|`, `\t`, etc.
 - `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and the rows will be re-parsed into a tabular format.
 - `D` - alternatively, you can pass in a regex with named capture groups. Those named groups will become the tabular columns, and each row will be parsed and split across those groups. Example `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)`
-- `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and sarch the raw lines.
+- `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and search the raw lines.
 - `D` - pass the word `json` to parse the first set of keys from each JSON line (or read the whole buffer in as a JSON object/list)
 - `D` - last, you can pass a delimiter value of `  ` (two spaces). This will parse text that has been delimited utilizing multiple spaces, while preserving values that have a single space. This is most commonly useful for parsing kubernetes output (`kubectl get pods -w`), for example.
 
-- `d` - transforms a column into more columns using a columnar delimiter (currently `json` is the only delimiter supported)
+- `d` - transforms a column into more columns using a columnar delimiter. Supports three modes:
+  - `json` — extracts keys from JSON objects in the selected column into new columns
+  - A regex with named capture groups — each group becomes a new column (e.g. `(?P<host>[^:]+):(?P<port>\d+)`)
+  - Any string delimiter — splits the column's values by the given string (e.g. `:`, `-`, etc.)
 
 ## Contributing
 Contributions are welcome! Please open an issue or a pull request - check out the [contributing guidelines](CONTRIBUTING.md) for more information.

@@ -29,6 +29,15 @@ nless = "nless.cli:main"
 textual-dev = "^1.7.0"
 pre-commit = "^4.3.0"
 
+[tool.poetry.group.test.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.25.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["perf: performance regression tests (may be slow)"]
+
 [tool.poetry]
 packages = [
     {include="nless"}

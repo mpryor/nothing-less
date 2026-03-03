@@ -7,7 +7,7 @@ import stat
 import subprocess
 from threading import Thread
 import time
-from typing import IO, Any, Callable, Tuple
+from typing import IO, Any, Callable
 
 from nless.types import CliArgs
 
@@ -43,6 +43,15 @@ class LineStream:
             self._initial_notify, is_ready_func, add_lines_func, self.lines.copy()
         )
 
+    def subscribe_future_only(
+        self,
+        subscriber: Any,
+        add_lines_func: AddLinesCallback,
+        is_ready_func: IsReadyCallback,
+    ) -> None:
+        """Register for future lines without replaying history."""
+        self.subscribers.append((subscriber, is_ready_func, add_lines_func))
+
     def unsubscribe(self, subscriber: Any) -> None:
         self.subscribers = [s for s in self.subscribers if s[0] != subscriber]
 
@@ -51,14 +60,21 @@ class LineStream:
         for subscriber, is_ready, callback in self.subscribers:
             while not is_ready():
                 time.sleep(0.1)
-            callback(lines)
+            try:
+                callback(lines)
+            except Exception:
+                pass
 
 
-class ShellCommmandLineStream(LineStream):
+class ShellCommandLineStream(LineStream):
     def __init__(self, command: str):
         super().__init__()
         result = subprocess.Popen(
-            command, stdout=subprocess.PIPE, shell=True, text=True
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=True,
+            text=True,
         )
         Thread(target=self._setup_io_stream, args=(result.stdout,), daemon=True).start()
 
@@ -128,7 +144,7 @@ class StdinLineStream(LineStream):
                                 lines, leftover = self.parse_streaming_line(buffer)
                                 self.handle_input(lines)
                                 buffer = leftover
-                        except Exception:
+                        except (OSError, IOError, ValueError, TypeError):
                             break
             else:
                 lines = stdin.readlines()
@@ -137,7 +153,7 @@ class StdinLineStream(LineStream):
                 else:
                     time.sleep(1)
 
-    def parse_streaming_line(self, line: str) -> Tuple[list[str], str]:
+    def parse_streaming_line(self, line: str) -> tuple[list[str], str]:
         lines = line.split("\n")
         if line.endswith("\n"):
             return lines[:-1], ""

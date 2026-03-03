@@ -11,6 +11,7 @@ class MetadataColumn(Enum):
 class Filter:
     column: str | None  # None means any column
     pattern: re.Pattern[str]
+    exclude: bool = False
 
 
 @dataclass
@@ -19,6 +20,7 @@ class CliArgs:
     filters: list[Filter]
     unique_keys: set[str]
     sort_by: str | None
+    filename: str | None = None
 
 
 @dataclass

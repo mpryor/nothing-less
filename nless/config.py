@@ -13,7 +13,7 @@ def _load_config_json_file(file_name: str, defaults):
     with open(os.path.expanduser(file_name), "r") as f:
         try:
             config = json.load(f)
-        except:  # noqa: E722
+        except (json.JSONDecodeError, ValueError):
             config = defaults
     return config
 

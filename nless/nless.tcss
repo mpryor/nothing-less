@@ -36,10 +36,6 @@ SelectScreen {
     align: center middle;
 }
 
-.content_middle {
-    content-align: center middle;
-}
-
 Markdown {
     width: 60;
     align: center middle;

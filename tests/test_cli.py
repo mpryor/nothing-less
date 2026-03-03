@@ -1,0 +1,107 @@
+import pytest
+
+from nless.cli import main, parse_args
+
+
+class TestParseArgs:
+    def test_delimiter_flag(self):
+        cli_args = parse_args(["--delimiter", ","])
+        assert cli_args.delimiter == ","
+
+    def test_delimiter_short_flag(self):
+        cli_args = parse_args(["-d", "\t"])
+        assert cli_args.delimiter == "\t"
+
+    def test_filter_valid(self):
+        cli_args = parse_args(["-f", "name=Alice"])
+        assert len(cli_args.filters) == 1
+        assert cli_args.filters[0].column == "name"
+        assert cli_args.filters[0].pattern.pattern == "Alice"
+
+    def test_filter_any_column(self):
+        cli_args = parse_args(["-f", "any=error"])
+        assert len(cli_args.filters) == 1
+        assert cli_args.filters[0].column is None
+        assert cli_args.filters[0].pattern.pattern == "error"
+
+    def test_filter_invalid_format_exits(self):
+        with pytest.raises(SystemExit):
+            parse_args(["-f", "bad-filter-no-equals"])
+
+    def test_multiple_filters(self):
+        cli_args = parse_args(["-f", "name=Alice", "-f", "city=NYC"])
+        assert len(cli_args.filters) == 2
+
+    def test_sort_by_valid(self):
+        cli_args = parse_args(["--sort-by", "name=asc"])
+        assert cli_args.sort_by == "name=asc"
+
+    def test_sort_by_invalid_format_exits(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--sort-by", "bad_format"])
+
+    def test_unique_keys(self):
+        cli_args = parse_args(["-u", "name", "-u", "city"])
+        assert cli_args.unique_keys == {"name", "city"}
+
+    def test_filename_arg(self):
+        cli_args = parse_args(["myfile.csv"])
+        assert cli_args.filename == "myfile.csv"
+
+    def test_defaults(self):
+        cli_args = parse_args([])
+        assert cli_args.delimiter is None
+        assert cli_args.filters == []
+        assert cli_args.unique_keys == set()
+        assert cli_args.sort_by is None
+        assert cli_args.filename is None
+
+
+class TestExcludeFilterArgs:
+    def test_exclude_filter_valid(self):
+        cli_args = parse_args(["-x", "city=NYC"])
+        assert len(cli_args.filters) == 1
+        assert cli_args.filters[0].column == "city"
+        assert cli_args.filters[0].pattern.pattern == "NYC"
+        assert cli_args.filters[0].exclude is True
+
+    def test_exclude_filter_any_column(self):
+        cli_args = parse_args(["-x", "any=error"])
+        assert len(cli_args.filters) == 1
+        assert cli_args.filters[0].column is None
+        assert cli_args.filters[0].exclude is True
+
+    def test_exclude_filter_invalid_format_exits(self):
+        with pytest.raises(SystemExit):
+            parse_args(["-x", "bad-filter-no-equals"])
+
+    def test_include_and_exclude_combined(self):
+        cli_args = parse_args(["-f", "name=Alice", "-x", "city=NYC"])
+        assert len(cli_args.filters) == 2
+        assert cli_args.filters[0].exclude is False
+        assert cli_args.filters[1].exclude is True
+
+
+class TestMainFileErrors:
+    def _mock_stdin(self, monkeypatch):
+        """Mock sys.stdin to have a valid fileno in test environment."""
+        import io
+        import os
+
+        r, w = os.pipe()
+        os.close(w)
+        monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.FileIO(r)))
+
+    def test_nonexistent_file(self, monkeypatch):
+        self._mock_stdin(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["nless", "nonexistent_file_12345.txt"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_directory_as_file(self, monkeypatch, tmp_path):
+        self._mock_stdin(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["nless", str(tmp_path)])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
