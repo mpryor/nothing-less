@@ -1,4 +1,10 @@
 # Changelog
+## 0.7.0 (2026-03-03)
+
+### Feat
+
+- major performance enhancements, details in description (#22)
+
 ## 0.6.0 (2025-10-08)
 
 ### Feat
