@@ -141,7 +141,7 @@ class StdinLineStream(LineStream):
                                 lines, leftover = self.parse_streaming_line(buffer)
                                 self.handle_input(lines)
                                 buffer = leftover
-                        except (OSError, IOError, ValueError):
+                        except (OSError, IOError, ValueError, TypeError):
                             break
             else:
                 lines = stdin.readlines()

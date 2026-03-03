@@ -2,6 +2,7 @@ import bisect
 import csv
 import json
 import re
+import threading
 import time
 from collections import defaultdict
 from copy import deepcopy
@@ -203,13 +204,12 @@ class NlessBuffer(Static):
     ):
         super().__init__()
         self.line_stream = line_stream
+        self._lock = threading.RLock()
         self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
         if line_stream:
-            line_stream.subscribe(
-                self, self.add_logs, lambda: not self.locked and self.mounted
-            )
+            line_stream.subscribe(self, self.add_logs, lambda: self.mounted)
         self.first_row_parsed = False
         self.raw_rows = []
         self.displayed_rows = []
@@ -250,6 +250,11 @@ class NlessBuffer(Static):
         self._dedup_key_to_row_idx: dict[str, int] = {}
         # Incremental sort keys for _find_sorted_insert_index
         self._sort_keys: list = []
+        # Tracks how far into raw_rows has been rendered
+        self._last_flushed_idx = 0
+        self._is_loading = False
+        self._has_nested_delimiters = False
+        self._update_generation = 0
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -289,33 +294,34 @@ class NlessBuffer(Static):
         return matching
 
     def copy(self, pane_id) -> "NlessBuffer":
-        new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
-        new_buffer.mounted = self.mounted
-        new_buffer.first_row_parsed = self.first_row_parsed
-        new_buffer.raw_rows = self._filter_lines(self.raw_rows)
-        new_buffer.displayed_rows = []
-        new_buffer.first_log_line = self.first_log_line
-        new_buffer.current_columns = deepcopy(self.current_columns)
-        new_buffer.current_filters = deepcopy(self.current_filters)
-        new_buffer.search_term = self.search_term
-        new_buffer.sort_column = self.sort_column
-        new_buffer.sort_reverse = self.sort_reverse
-        new_buffer.search_matches = deepcopy(self.search_matches)
-        new_buffer.current_match_index = self.current_match_index
-        new_buffer.delimiter = self.delimiter
-        new_buffer.delimiter_inferred = self.delimiter_inferred
-        new_buffer.is_tailing = self.is_tailing
-        new_buffer.unique_column_names = deepcopy(self.unique_column_names)
-        new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
-        new_buffer.line_stream = self.line_stream
-        if self.line_stream:
-            self.line_stream.subscribe_future_only(
-                new_buffer,
-                new_buffer.add_logs,
-                lambda: not new_buffer.locked and new_buffer.mounted,
-            )
-        new_buffer._rebuild_column_caches()
-        return new_buffer
+        with self._lock:
+            new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
+            new_buffer.mounted = self.mounted
+            new_buffer.first_row_parsed = self.first_row_parsed
+            new_buffer.raw_rows = self._filter_lines(self.raw_rows)
+            new_buffer.displayed_rows = []
+            new_buffer.first_log_line = self.first_log_line
+            new_buffer.current_columns = deepcopy(self.current_columns)
+            new_buffer.current_filters = deepcopy(self.current_filters)
+            new_buffer.search_term = self.search_term
+            new_buffer.sort_column = self.sort_column
+            new_buffer.sort_reverse = self.sort_reverse
+            new_buffer.search_matches = deepcopy(self.search_matches)
+            new_buffer.current_match_index = self.current_match_index
+            new_buffer.delimiter = self.delimiter
+            new_buffer.delimiter_inferred = self.delimiter_inferred
+            new_buffer.is_tailing = self.is_tailing
+            new_buffer.unique_column_names = deepcopy(self.unique_column_names)
+            new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
+            new_buffer.line_stream = self.line_stream
+            if self.line_stream:
+                self.line_stream.subscribe_future_only(
+                    new_buffer,
+                    new_buffer.add_logs,
+                    lambda: new_buffer.mounted,
+                )
+            new_buffer._rebuild_column_caches()
+            return new_buffer
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
@@ -376,42 +382,48 @@ class NlessBuffer(Static):
         data_table.move_cursor(column=col_index)
 
     def action_move_column(self, direction: int) -> None:
-        data_table = self.query_one(NlessDataTable)
-        current_cursor_column = data_table.cursor_column
-        selected_column = self._get_column_at_position(current_cursor_column)
-        if not selected_column:
-            self.notify("No column selected to move", severity="error")
+        if not self._with_lock("move column"):
             return
-        if selected_column.name in [m.value for m in MetadataColumn]:
-            return  # can't move metadata columns
-        if (
-            direction == 1
-            and selected_column.render_position == len(self.current_columns) - 1
-        ) or (direction == -1 and selected_column.render_position == 0):
-            return  # can't move further in that direction
+        try:
+            data_table = self.query_one(NlessDataTable)
+            current_cursor_column = data_table.cursor_column
+            selected_column = self._get_column_at_position(current_cursor_column)
+            if not selected_column:
+                self.notify("No column selected to move", severity="error")
+                return
+            if selected_column.name in [m.value for m in MetadataColumn]:
+                return  # can't move metadata columns
+            if (
+                direction == 1
+                and selected_column.render_position == len(self.current_columns) - 1
+            ) or (direction == -1 and selected_column.render_position == 0):
+                return  # can't move further in that direction
 
-        adjacent_column = self._get_column_at_position(
-            selected_column.render_position + direction
-        )
-        if not adjacent_column or adjacent_column.name in [
-            m.value for m in MetadataColumn
-        ]:  # can't move past metadata columns
-            return
+            adjacent_column = self._get_column_at_position(
+                selected_column.render_position + direction
+            )
+            if not adjacent_column or adjacent_column.name in [
+                m.value for m in MetadataColumn
+            ]:  # can't move past metadata columns
+                return
 
-        if (
-            adjacent_column.pinned
-            and not selected_column.pinned
-            or (selected_column.pinned and not adjacent_column.pinned)
-        ):
-            return  # can't move a pinned column past a non-pinned column or vice versa
+            if (
+                adjacent_column.pinned
+                and not selected_column.pinned
+                or (selected_column.pinned and not adjacent_column.pinned)
+            ):
+                return  # can't move a pinned column past a non-pinned column or vice versa
 
-        selected_column.render_position, adjacent_column.render_position = (
-            adjacent_column.render_position,
-            selected_column.render_position,
-        )
-        self._update_table()
-        self.call_after_refresh(
-            lambda: data_table.move_cursor(column=selected_column.render_position)
+            selected_column.render_position, adjacent_column.render_position = (
+                adjacent_column.render_position,
+                selected_column.render_position,
+            )
+            new_position = selected_column.render_position
+        finally:
+            self._lock.release()
+
+        self._deferred_update_table(
+            callback=lambda: data_table.move_cursor(column=new_position)
         )
 
     def action_move_column_left(self) -> None:
@@ -446,54 +458,69 @@ class NlessBuffer(Static):
 
     def _perform_search(self, search_term: str | None) -> None:
         """Performs a search on the data and updates the table."""
-        try:
-            if search_term:
-                self.search_term = re.compile(search_term, re.IGNORECASE)
-            else:
-                self.search_term = None
-        except re.error:
-            self.notify("Invalid regex pattern", severity="error")
+        if not self._with_lock("search"):
             return
-        self._update_table(restore_position=False)
-        if self.search_matches:
-            self._navigate_search(1)  # Jump to first match
+        try:
+            try:
+                if search_term:
+                    self.search_term = re.compile(search_term, re.IGNORECASE)
+                else:
+                    self.search_term = None
+            except re.error:
+                self.notify("Invalid regex pattern", severity="error")
+                return
+        finally:
+            self._lock.release()
+
+        def _after_search():
+            if self.search_matches:
+                self._navigate_search(1)  # Jump to first match
+
+        self._deferred_update_table(restore_position=False, callback=_after_search)
 
     def action_sort(self) -> None:
-        data_table = self.query_one(NlessDataTable)
-        current_cursor_column = data_table.cursor_column
-        selected_column = self._get_column_at_position(current_cursor_column)
-        if not selected_column:
-            self.notify("No column selected for sorting", severity="error")
+        if not self._with_lock("sort"):
             return
+        try:
+            data_table = self.query_one(NlessDataTable)
+            current_cursor_column = data_table.cursor_column
+            selected_column = self._get_column_at_position(current_cursor_column)
+            if not selected_column:
+                self.notify("No column selected for sorting", severity="error")
+                return
 
-        new_sort_column_name = self._get_cell_value_without_markup(selected_column.name)
+            new_sort_column_name = self._get_cell_value_without_markup(
+                selected_column.name
+            )
 
-        if self.sort_column == new_sort_column_name and self.sort_reverse:
-            self.sort_column = None
-        elif self.sort_column == new_sort_column_name and not self.sort_reverse:
-            self.sort_reverse = True
-        else:
-            self.sort_column = new_sort_column_name
-            self.sort_reverse = False
+            if self.sort_column == new_sort_column_name and self.sort_reverse:
+                self.sort_column = None
+            elif self.sort_column == new_sort_column_name and not self.sort_reverse:
+                self.sort_reverse = True
+            else:
+                self.sort_column = new_sort_column_name
+                self.sort_reverse = False
 
-        # Update sort indicators
-        if self.sort_column is None:
-            selected_column.labels.discard("▲")
-            selected_column.labels.discard("▼")
-        elif self.sort_reverse:
-            selected_column.labels.discard("▲")
-            selected_column.labels.add("▼")
-        else:
-            selected_column.labels.discard("▼")
-            selected_column.labels.add("▲")
+            # Update sort indicators
+            if self.sort_column is None:
+                selected_column.labels.discard("▲")
+                selected_column.labels.discard("▼")
+            elif self.sort_reverse:
+                selected_column.labels.discard("▲")
+                selected_column.labels.add("▼")
+            else:
+                selected_column.labels.discard("▼")
+                selected_column.labels.add("▲")
 
-        # Remove sort indicators from other columns
-        for col in self.current_columns:
-            if col.name != selected_column.name:
-                col.labels.discard("▲")
-                col.labels.discard("▼")
+            # Remove sort indicators from other columns
+            for col in self.current_columns:
+                if col.name != selected_column.name:
+                    col.labels.discard("▲")
+                    col.labels.discard("▼")
+        finally:
+            self._lock.release()
 
-        self._update_table()
+        self._deferred_update_table()
 
     def _get_visible_column_labels(self) -> list[str]:
         labels = []
@@ -579,7 +606,7 @@ class NlessBuffer(Static):
     ) -> list[list[str]]:
         """Apply search highlighting to rows and populate search_matches."""
         if not self.search_term:
-            return [list(cells) for cells in rows]
+            return rows
         result = []
         for i, cells in enumerate(rows):
             highlighted_cells = []
@@ -601,9 +628,27 @@ class NlessBuffer(Static):
             result.append(highlighted_cells)
         return result
 
+    def _deferred_update_table(self, restore_position=True, callback=None):
+        """Yield one frame so the loading indicator renders, then run _update_table."""
+        self._update_generation += 1
+        gen = self._update_generation
+        self._is_loading = True
+        self._update_status_bar()
+
+        def _run():
+            if gen != self._update_generation:
+                return  # Superseded by newer request
+            with self._lock:
+                self._update_table(restore_position=restore_position)
+            self._is_loading = False
+            self._update_status_bar()
+            if callback:
+                callback()
+
+        self.set_timer(0.01, _run)
+
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
-        self.locked = True
         data_table = self.query_one(NlessDataTable)
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
@@ -647,7 +692,7 @@ class NlessBuffer(Static):
 
         self.displayed_rows = styled_rows
         data_table.add_rows(styled_rows)
-        self.locked = False
+        self._last_flushed_idx = len(self.raw_rows)
 
         if restore_position:
             self._restore_position(data_table, cursor_x, cursor_y, scroll_x, scroll_y)
@@ -725,9 +770,18 @@ class NlessBuffer(Static):
             column_names = ",".join(self.unique_column_names)
             column_text = f"| unique cols: ({column_names}) "
 
+        if self._is_loading:
+            loading_text = (
+                "| "
+                + self._rich_bold(f"[#ffaa00]Loading ({total_rows:,} rows)[/#ffaa00]")
+                + " "
+            )
+        else:
+            loading_text = ""
+
         status_bar = self.app.query_one("#status_bar", Static)
         status_bar.update(
-            f"{sort_text} | {filter_text} | {search_text} | {position_text} {column_text}{tailing_text}"
+            f"{sort_text} | {filter_text} | {search_text} | {position_text} {column_text}{tailing_text}{loading_text}"
         )
 
     def _navigate_search(self, direction: int) -> None:
@@ -812,8 +866,27 @@ class NlessBuffer(Static):
         else:
             return split_line(first_log_line, self.delimiter, self.current_columns)
 
+    def _with_lock(self, action: str) -> bool:
+        """Try to acquire the lock non-blocking. Returns True if acquired."""
+        acquired = self._lock.acquire(blocking=False)
+        if not acquired:
+            self.notify("Data loading, please wait…", severity="warning")
+        return acquired
+
     def add_logs(self, log_lines: list[str]) -> None:
-        self.locked = True
+        with self._lock:
+            self.locked = True
+            try:
+                self._add_logs_inner(log_lines)
+            finally:
+                self._is_loading = False
+                try:
+                    self._update_status_bar()
+                except Exception:
+                    pass
+                self.locked = False
+
+    def _add_logs_inner(self, log_lines: list[str]) -> None:
         data_table = self.query_one(NlessDataTable)
 
         # Infer delimiter from first few lines if not already set
@@ -847,28 +920,123 @@ class NlessBuffer(Static):
         filtered = self._filter_lines(log_lines)
         self.raw_rows.extend(filtered)
 
-        mismatch_count = 0
+        is_large_batch = len(filtered) > 50000
 
-        if len(filtered) > 1000:
+        if self.sort_column is not None or self.unique_column_names:
+            if is_large_batch:
+                self._is_loading = True
+                self._update_status_bar()
             self._update_table()
         else:
-            for line in filtered:
-                try:
-                    self._add_log_line(line)
-                except RowLengthMismatchError:
-                    mismatch_count += 1
-                    continue
-                except (json.JSONDecodeError, csv.Error, ValueError, IndexError):
-                    pass
+            # Process in chunks for progressive display on large inputs
+            CHUNK = 50000
+            if is_large_batch:
+                self._is_loading = True
+            try:
+                for i in range(0, len(filtered), CHUNK):
+                    self._add_rows_incremental(filtered[i : i + CHUNK])
+                    if is_large_batch:
+                        self._update_status_bar()
+            except Exception:
+                # Fall back to full rebuild if incremental path fails
+                self._update_table()
 
-        if mismatch_count > 0:
-            self.notify(
-                f"{mismatch_count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
-                severity="warning",
+    def _add_rows_incremental(self, new_lines: list[str]) -> None:
+        """Parse and add new lines to the table without a full rebuild.
+
+        Fuses parsing, column alignment, and column width tracking into a
+        single pass, then bypasses the normal add_rows width computation.
+        """
+        data_table = self.query_one(NlessDataTable)
+        col_positions = [col.data_position for col in self._sorted_visible_columns]
+        metadata = [mc.value for mc in MetadataColumn]
+        expected = len(self.current_columns) - len(
+            [c for c in self.current_columns if c.name in metadata]
+        )
+        column_widths = data_table.column_widths
+        delimiter = self.delimiter
+        has_nested = self._has_nested_delimiters
+        columns = self.current_columns
+
+        # Choose parse strategy once outside the hot loop
+        if not has_nested and delimiter == ",":
+            needs_cleanup = True
+
+            def parse(line):
+                s = line.strip()
+                return next(csv.reader([s])) if '"' in s else s.split(",")
+
+        elif not has_nested and delimiter == "\t":
+            needs_cleanup = True
+
+            def parse(line):
+                return line.split("\t")
+
+        elif (
+            not has_nested
+            and isinstance(delimiter, str)
+            and delimiter not in ("raw", "json", " ", "  ")
+        ):
+            needs_cleanup = True
+
+            def parse(line):
+                return line.split(delimiter)
+
+        else:
+            needs_cleanup = False  # split_line already cleans cells
+
+            def parse(line):
+                return split_line(line, delimiter, columns)
+
+        # Column widths stabilize quickly; only track for a sample
+        WIDTH_SAMPLE = 10000
+        already_displayed = len(self.displayed_rows)
+        track_widths = already_displayed < WIDTH_SAMPLE
+        _strip = str.strip
+        _len = len
+
+        new_rows = []
+        for line in new_lines:
+            try:
+                cells = parse(line)
+            except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
+                continue
+            if _len(cells) != expected:
+                continue
+            # Align to visible columns; strip only for fast-path delimiters
+            if needs_cleanup:
+                row = [_strip(cells[p]) for p in col_positions]
+            else:
+                row = [cells[p] for p in col_positions]
+            new_rows.append(row)
+
+        # Track column widths from a sample to avoid O(n*cols) len() calls
+        if track_widths and new_rows:
+            sample = new_rows[:WIDTH_SAMPLE]
+            for row in sample:
+                for i, cell in enumerate(row):
+                    cl = _len(cell)
+                    if cl > column_widths[i]:
+                        column_widths[i] = cl
+
+        self._last_flushed_idx = len(self.raw_rows)
+        if not new_rows:
+            return
+
+        if self.search_term:
+            styled = self._highlight_search_matches(
+                new_rows,
+                data_table.fixed_columns,
+                row_offset=len(self.displayed_rows),
             )
+        else:
+            styled = new_rows
 
-        self._update_status_bar()
-        self.locked = False
+        self.displayed_rows.extend(styled)
+        data_table.add_rows_precomputed(styled)
+
+        if self.is_tailing:
+            data_table.action_scroll_bottom()
 
     def str_to_int(self, value: Any) -> int | float | str:
         if isinstance(value, int):
@@ -903,6 +1071,9 @@ class NlessBuffer(Static):
         self._sorted_visible_columns = sorted(
             [c for c in self.current_columns if not c.hidden],
             key=lambda c: c.render_position,
+        )
+        self._has_nested_delimiters = any(
+            c.delimiter or c.json_ref or c.col_ref for c in self.current_columns
         )
 
     def _get_col_idx_by_name(

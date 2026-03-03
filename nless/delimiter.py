@@ -63,6 +63,9 @@ def split_line(
         txt.replace("\t", "  ").strip() for txt in cells
     ]  # Rich rendering breaks on tabs
 
+    if not columns or not any(c.delimiter or c.json_ref or c.col_ref for c in columns):
+        return cells
+
     sorted_columns = sorted(columns, key=lambda col: col.data_position)
     metadata_columns = [mc.value for mc in MetadataColumn]
     count_metadata_columns = len(
@@ -129,6 +132,9 @@ def split_line(
     return cells
 
 
+_MULTI_SPACE_RE = re.compile(r" {2,}")
+
+
 def split_aligned_row_preserve_single_spaces(line: str) -> list[str]:
     """Split a space-aligned row into fields by collapsing multiple spaces, but preserving single spaces within fields.
 
@@ -138,8 +144,7 @@ def split_aligned_row_preserve_single_spaces(line: str) -> list[str]:
     Returns:
         List of fields from the line
     """
-    # Use regex to split on two or more spaces
-    return [field for field in re.split(r" {2,}", line) if field]
+    return [field for field in _MULTI_SPACE_RE.split(line) if field]
 
 
 def split_aligned_row(line: str) -> list[str]:
@@ -164,14 +169,15 @@ def split_csv_row(line: str) -> list[str]:
     Returns:
         List of fields from the line
     """
+    stripped = line.strip()
+    if '"' not in stripped:
+        return stripped.split(",")
     try:
-        # Use csv module to properly parse the line
-        reader = csv.reader(StringIO(line.strip()))
+        reader = csv.reader(StringIO(stripped))
         row = next(reader)
         return row
     except (csv.Error, StopIteration):
-        # Fallback to simple split if CSV parsing fails
-        return line.split(",")
+        return stripped.split(",")
 
 
 def infer_delimiter(sample_lines: list[str]) -> str | None:

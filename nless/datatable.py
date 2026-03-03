@@ -230,6 +230,13 @@ class Datatable(ScrollView):
         self.row_count += len(rows_data)
         self.refresh()
 
+    def add_rows_precomputed(self, rows_data: list[list[str]]) -> None:
+        """Add rows when column widths have already been updated by the caller."""
+        self.rows.extend(rows_data)
+        self.virtual_size = Size(self._calc_max_width(), len(self.rows) + 1)
+        self.row_count += len(rows_data)
+        self.refresh()
+
     def add_row_at(self, index: int, row_data: list[str]) -> None:
         for i, cell in enumerate(row_data):
             if len(cell) > self.column_widths[i]:

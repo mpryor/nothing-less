@@ -111,42 +111,50 @@ class NlessApp(App):
         event.control.remove()
         if event.control.id == "json_header_select":
             curr_buffer = self._get_current_buffer()
-            cursor_column = curr_buffer.query_one(NlessDataTable).cursor_column
-            curr_column = curr_buffer._get_column_at_position(cursor_column)
-            if not curr_column:
-                curr_buffer.notify(
-                    "No column selected to add JSON key to", severity="error"
-                )
+            if not curr_buffer._with_lock("json header"):
                 return
-            curr_column_name = curr_buffer._get_cell_value_without_markup(
-                curr_column.name
-            )
+            try:
+                data_table = curr_buffer.query_one(NlessDataTable)
+                cursor_column = data_table.cursor_column
+                curr_column = curr_buffer._get_column_at_position(cursor_column)
+                if not curr_column:
+                    curr_buffer.notify(
+                        "No column selected to add JSON key to", severity="error"
+                    )
+                    return
+                curr_column_name = curr_buffer._get_cell_value_without_markup(
+                    curr_column.name
+                )
 
-            col_ref = str(event.value)
-            if not col_ref.startswith("."):
-                col_ref = f".{col_ref}"
+                col_ref = str(event.value)
+                if not col_ref.startswith("."):
+                    col_ref = f".{col_ref}"
 
-            new_column_name = f"{curr_column_name}{col_ref}"
+                new_column_name = f"{curr_column_name}{col_ref}"
 
-            new_cursor_x = len(curr_buffer.current_columns)
+                new_cursor_x = len(curr_buffer.current_columns)
 
-            new_col = Column(
-                name=new_column_name,
-                labels=set(),
-                computed=True,
-                render_position=new_cursor_x,
-                data_position=new_cursor_x,
-                hidden=False,
-                json_ref=f"{curr_column_name}{col_ref}",
-                delimiter="json",
-            )
+                new_col = Column(
+                    name=new_column_name,
+                    labels=set(),
+                    computed=True,
+                    render_position=new_cursor_x,
+                    data_position=new_cursor_x,
+                    hidden=False,
+                    json_ref=f"{curr_column_name}{col_ref}",
+                    delimiter="json",
+                )
 
-            curr_buffer.current_columns.append(new_col)
-            data_table = curr_buffer.query_one(NlessDataTable)
-            old_row = data_table.cursor_row
-            curr_buffer._update_table(restore_position=False)
-            self.call_after_refresh(
-                lambda: data_table.move_cursor(column=new_cursor_x, row=old_row)
+                curr_buffer.current_columns.append(new_col)
+                old_row = data_table.cursor_row
+            finally:
+                curr_buffer._lock.release()
+
+            curr_buffer._deferred_update_table(
+                restore_position=False,
+                callback=lambda: data_table.move_cursor(
+                    column=new_cursor_x, row=old_row
+                ),
             )
 
     def action_json_header(self) -> None:
@@ -213,61 +221,99 @@ class NlessApp(App):
     def _get_new_pane_id(self) -> int:
         return max(b.pane_id for b in self.buffers) + 1 if self.buffers else 1
 
+    def _copy_buffer_async(
+        self, setup_fn, buffer_name, after_add_fn=None, add_prev_index=True
+    ):
+        """Run copy() + setup on a background thread, then add_buffer on main thread."""
+        curr_buffer = self._get_current_buffer()
+        new_pane_id = self._get_new_pane_id()
+        curr_buffer._is_loading = True
+        curr_buffer._update_status_bar()
+
+        def _run():
+            try:
+                new_buffer = curr_buffer.copy(pane_id=new_pane_id)
+                setup_fn(new_buffer)
+            except Exception as e:
+                msg = str(e)
+
+                def _on_error():
+                    curr_buffer._is_loading = False
+                    curr_buffer._update_status_bar()
+                    self.notify(f"Error: {msg}", severity="error")
+
+                self.call_from_thread(_on_error)
+                return
+
+            def _finish():
+                curr_buffer._is_loading = False
+                curr_buffer._update_status_bar()
+                self.add_buffer(
+                    new_buffer,
+                    name=buffer_name,
+                    add_prev_index=add_prev_index,
+                )
+                if after_add_fn:
+                    after_add_fn(new_buffer)
+
+            self.call_from_thread(_finish)
+
+        Thread(target=_run, daemon=True).start()
+
     def action_mark_unique(self) -> None:
         curr_buffer = self._get_current_buffer()
         data_table = curr_buffer.query_one(NlessDataTable)
-        new_buffer = curr_buffer.copy(pane_id=self._get_new_pane_id())
         current_cursor_column = data_table.cursor_column
 
-        new_unique_column = new_buffer._get_column_at_position(current_cursor_column)
-
-        if not new_unique_column:
+        selected_column = curr_buffer._get_column_at_position(current_cursor_column)
+        if not selected_column:
             self.notify("No column selected to mark as unique")
             return
 
         if data_table.columns[current_cursor_column] == "count":
             self.notify("Cannot mark 'count' column as unique", severity="error")
             return
-        new_unique_column_name = new_buffer._get_cell_value_without_markup(
-            new_unique_column.name
+
+        unique_column_name = curr_buffer._get_cell_value_without_markup(
+            selected_column.name
         )
 
-        handle_mark_unique(new_buffer, new_unique_column_name)
+        def setup(new_buffer):
+            handle_mark_unique(new_buffer, unique_column_name)
+            # When adding a unique key, sort by count descending by default
+            if unique_column_name in new_buffer.unique_column_names:
+                new_buffer.sort_column = MetadataColumn.COUNT.value
+                new_buffer.sort_reverse = True
+                for col in new_buffer.current_columns:
+                    if col.name == MetadataColumn.COUNT.value:
+                        col.labels.add("▼")
+                        break
 
-        # When adding a unique key, sort by count descending by default
-        if new_unique_column_name in new_buffer.unique_column_names:
-            new_buffer.sort_column = MetadataColumn.COUNT.value
-            new_buffer.sort_reverse = True
-            for col in new_buffer.current_columns:
-                if col.name == MetadataColumn.COUNT.value:
-                    col.labels.add("▼")
-                    break
-
+        # Determine buffer name after setup runs — use a mutable container
+        # to capture the name from setup context
+        will_be_unique = unique_column_name not in curr_buffer.unique_column_names
         buffer_name = (
-            f"+u:{new_unique_column_name}"
-            if new_unique_column_name in new_buffer.unique_column_names
-            else f"-u:{new_unique_column_name}"
+            f"+u:{unique_column_name}" if will_be_unique else f"-u:{unique_column_name}"
         )
-        self.add_buffer(new_buffer, name=buffer_name)
 
-        # update the cursor position's index to match the new position of the column
-        new_cursor_position = 0
-        for i, col in enumerate(
-            sorted(new_buffer.current_columns, key=lambda c: c.render_position)
-        ):
-            if (
-                new_buffer._get_cell_value_without_markup(col.name)
-                == new_unique_column_name
+        def after_add(new_buffer):
+            new_cursor_position = 0
+            for i, col in enumerate(
+                sorted(new_buffer.current_columns, key=lambda c: c.render_position)
             ):
-                new_cursor_position = i
-                break
+                if (
+                    new_buffer._get_cell_value_without_markup(col.name)
+                    == unique_column_name
+                ):
+                    new_cursor_position = i
+                    break
+            pos = new_cursor_position
+            self.set_timer(
+                0.3,
+                lambda: new_buffer.query_one(NlessDataTable).move_cursor(column=pos),
+            )
 
-        self.set_timer(
-            0.3,
-            lambda: new_buffer.query_one(NlessDataTable).move_cursor(
-                column=new_cursor_position
-            ),
-        )
+        self._copy_buffer_async(setup, buffer_name, after_add_fn=after_add)
 
     def action_delimiter(self) -> None:
         """Change the delimiter used for parsing."""
@@ -284,14 +330,16 @@ class NlessApp(App):
                 "No active search to convert to filter", severity="warning"
             )
             return
-        else:
-            new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
+
+        search_pattern = current_buffer.search_term
+        buffer_name = f"+f:any={search_pattern.pattern}"
+
+        def setup(new_buffer):
             new_buffer.current_filters.append(
-                Filter(column=None, pattern=current_buffer.search_term)
+                Filter(column=None, pattern=search_pattern)
             )
-            self.add_buffer(
-                new_buffer, name=f"+f:any={current_buffer.search_term.pattern}"
-            )
+
+        self._copy_buffer_async(setup, buffer_name)
 
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
@@ -323,9 +371,10 @@ class NlessApp(App):
                 selected_column.name
             )
             if selected_column_name in current_buffer.unique_column_names:
-                new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
+                # Pre-read cell values on main thread (widget access)
                 filters = []
-                for column in current_buffer.unique_column_names:
+                unique_columns = list(current_buffer.unique_column_names)
+                for column in unique_columns:
                     col_idx = current_buffer._get_col_idx_by_name(
                         column, render_position=True
                     )
@@ -343,12 +392,14 @@ class NlessApp(App):
                             pattern=re.compile(re.escape(cell_value), re.IGNORECASE),
                         )
                     )
-                    handle_mark_unique(new_buffer, column)
-                new_buffer.current_filters.extend(filters)
-                self.add_buffer(
-                    new_buffer,
-                    name=f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}",
-                )
+                buffer_name = f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}"
+
+                def setup(new_buffer):
+                    for column in unique_columns:
+                        handle_mark_unique(new_buffer, column)
+                    new_buffer.current_filters.extend(filters)
+
+                self._copy_buffer_async(setup, buffer_name)
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
@@ -386,119 +437,137 @@ class NlessApp(App):
         new_col_delimiter = event.value
 
         current_buffer = self._get_current_buffer()
-        data_table = current_buffer.query_one(NlessDataTable)
-        cursor_coordinate = data_table.cursor_coordinate
-        cell = data_table.get_cell_at(cursor_coordinate)
-        selected_column = current_buffer._get_column_at_position(
-            cursor_coordinate.column
-        )
-        if not selected_column:
-            current_buffer.notify("No column selected for delimiting", severity="error")
+        if not current_buffer._with_lock("column delimiter"):
             return
-
-        if new_col_delimiter == "json":
-            try:
-                cell_json = json.loads(
-                    current_buffer._get_cell_value_without_markup(cell)
+        should_update = False
+        try:
+            data_table = current_buffer.query_one(NlessDataTable)
+            cursor_coordinate = data_table.cursor_coordinate
+            cell = data_table.get_cell_at(cursor_coordinate)
+            selected_column = current_buffer._get_column_at_position(
+                cursor_coordinate.column
+            )
+            if not selected_column:
+                current_buffer.notify(
+                    "No column selected for delimiting", severity="error"
                 )
-                if not isinstance(cell_json, (dict, list)):
+                return
+
+            if new_col_delimiter == "json":
+                try:
+                    cell_json = json.loads(
+                        current_buffer._get_cell_value_without_markup(cell)
+                    )
+                    if not isinstance(cell_json, (dict, list)):
+                        current_buffer.notify(
+                            "Selected cell does not contain a JSON object or array",
+                            severity="error",
+                        )
+                        return
+                    cell_json_keys = (
+                        list(cell_json.keys())
+                        if isinstance(cell_json, dict)
+                        else list(range(len(cell_json)))
+                    )
+                    self._add_computed_columns(
+                        current_buffer,
+                        [f"{selected_column.name}.{key}" for key in cell_json_keys],
+                        lambda i, name, pos: Column(
+                            name=name,
+                            labels=set(),
+                            render_position=pos,
+                            data_position=pos,
+                            hidden=False,
+                            computed=True,
+                            json_ref=name,
+                            delimiter=new_col_delimiter,
+                        ),
+                    )
+                    should_update = True
+                except json.JSONDecodeError:
                     current_buffer.notify(
                         "Selected cell does not contain a JSON object or array",
                         severity="error",
                     )
                     return
-                cell_json_keys = (
-                    list(cell_json.keys())
-                    if isinstance(cell_json, dict)
-                    else list(range(len(cell_json)))
-                )
-                self._add_computed_columns(
-                    current_buffer,
-                    [f"{selected_column.name}.{key}" for key in cell_json_keys],
-                    lambda i, name, pos: Column(
-                        name=name,
-                        labels=set(),
-                        render_position=pos,
-                        data_position=pos,
-                        hidden=False,
-                        computed=True,
-                        json_ref=name,
-                        delimiter=new_col_delimiter,
-                    ),
-                )
-                current_buffer._update_table()
-            except json.JSONDecodeError:
-                current_buffer.notify(
-                    "Selected cell does not contain a JSON object or array",
-                    severity="error",
-                )
-                return
-        else:
-            if new_col_delimiter == "\\t":
-                new_col_delimiter = "\t"
+            else:
+                if new_col_delimiter == "\\t":
+                    new_col_delimiter = "\t"
 
-            try:
-                pattern = re.compile(new_col_delimiter)
-                if pattern.groups == 0:
-                    raise re.error("no named groups")
-                group_names = list(pattern.groupindex.keys())
-                self._add_computed_columns(
-                    current_buffer,
-                    group_names,
-                    lambda i, name, pos, _pat=pattern, _sel=selected_column: Column(
-                        name=name,
-                        labels=set(),
-                        render_position=pos,
-                        data_position=pos,
-                        hidden=False,
-                        computed=True,
-                        col_ref=f"{_sel.name}",
-                        col_ref_index=i,
-                        delimiter=_pat,
-                    ),
-                )
-                current_buffer._update_table()
-                return
-            except (re.error, ValueError):
-                pass
-
-            try:
-                cell_parts = split_line(
-                    current_buffer._get_cell_value_without_markup(cell),
-                    new_col_delimiter,
-                    [],
-                )
-                if len(cell_parts) < 2:
-                    current_buffer.notify(
-                        "Delimiter did not split cell into multiple parts",
-                        severity="error",
+                try:
+                    pattern = re.compile(new_col_delimiter)
+                    if pattern.groups == 0:
+                        raise re.error("no named groups")
+                    group_names = list(pattern.groupindex.keys())
+                    self._add_computed_columns(
+                        current_buffer,
+                        group_names,
+                        lambda i, name, pos, _pat=pattern, _sel=selected_column: Column(
+                            name=name,
+                            labels=set(),
+                            render_position=pos,
+                            data_position=pos,
+                            hidden=False,
+                            computed=True,
+                            col_ref=f"{_sel.name}",
+                            col_ref_index=i,
+                            delimiter=_pat,
+                        ),
                     )
-                    return
-                self._add_computed_columns(
-                    current_buffer,
-                    [f"{selected_column.name}-{i + 1}" for i in range(len(cell_parts))],
-                    lambda i,
-                    name,
-                    pos,
-                    _delim=new_col_delimiter,
-                    _sel=selected_column: Column(
-                        name=name,
-                        labels=set(),
-                        render_position=pos,
-                        data_position=pos,
-                        hidden=False,
-                        computed=True,
-                        col_ref_index=i,
-                        col_ref=f"{_sel.name}",
-                        delimiter=_delim,
-                    ),
-                )
-                current_buffer._update_table()
-            except (json.JSONDecodeError, csv.Error, ValueError, IndexError) as e:
-                current_buffer.notify(
-                    f"Error splitting cell: {str(e)}", severity="error"
-                )
-                return
+                    should_update = True
+                except (re.error, ValueError):
+                    pass
+
+                if not should_update:
+                    try:
+                        cell_parts = split_line(
+                            current_buffer._get_cell_value_without_markup(cell),
+                            new_col_delimiter,
+                            [],
+                        )
+                        if len(cell_parts) < 2:
+                            current_buffer.notify(
+                                "Delimiter did not split cell into multiple parts",
+                                severity="error",
+                            )
+                            return
+                        self._add_computed_columns(
+                            current_buffer,
+                            [
+                                f"{selected_column.name}-{i + 1}"
+                                for i in range(len(cell_parts))
+                            ],
+                            lambda i,
+                            name,
+                            pos,
+                            _delim=new_col_delimiter,
+                            _sel=selected_column: Column(
+                                name=name,
+                                labels=set(),
+                                render_position=pos,
+                                data_position=pos,
+                                hidden=False,
+                                computed=True,
+                                col_ref_index=i,
+                                col_ref=f"{_sel.name}",
+                                delimiter=_delim,
+                            ),
+                        )
+                        should_update = True
+                    except (
+                        json.JSONDecodeError,
+                        csv.Error,
+                        ValueError,
+                        IndexError,
+                    ) as e:
+                        current_buffer.notify(
+                            f"Error splitting cell: {str(e)}", severity="error"
+                        )
+        finally:
+            current_buffer._lock.release()
+
+        if should_update:
+            current_buffer._deferred_update_table()
 
     def handle_write_to_file_submitted(self, event: Input.Submitted) -> None:
         output_path = event.value
@@ -594,37 +663,53 @@ class NlessApp(App):
 
         When column_name is None, filters across all columns.
         """
-        new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
+        curr_buffer = self._get_current_buffer()
+
+        # Validate regex eagerly on main thread
+        compiled_pattern = None
+        if filter_value:
+            try:
+                compiled_pattern = re.compile(filter_value, re.IGNORECASE)
+            except re.error:
+                self.notify("Invalid regex pattern", severity="error")
+                return
+
+        # Determine buffer name from current state (before copy)
         if not filter_value:
             new_buf_name = (
-                new_buffer.current_filters
-                and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}"
+                curr_buffer.current_filters
+                and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in curr_buffer.current_filters])}"
                 or "-f"
             )
-            new_buffer.current_filters = []
+        elif column_name is None:
+            new_buf_name = f"+f:any={filter_value}"
         else:
-            if column_name and column_name in new_buffer.unique_column_names:
-                handle_mark_unique(new_buffer, column_name)
+            new_buf_name = f"+f:{column_name}={filter_value}"
+
+        notify_removed_unique = (
+            filter_value
+            and column_name
+            and column_name in curr_buffer.unique_column_names
+        )
+
+        def setup(new_buffer):
+            if not filter_value:
+                new_buffer.current_filters = []
+            else:
+                if column_name and column_name in new_buffer.unique_column_names:
+                    handle_mark_unique(new_buffer, column_name)
+                new_buffer.current_filters.append(
+                    Filter(column=column_name, pattern=compiled_pattern)
+                )
+
+        def after_add(new_buffer):
+            if notify_removed_unique:
                 self.notify(
                     f"Removed unique column: {column_name}, to allow filtering.",
                     severity="info",
                 )
-            try:
-                new_buffer.current_filters.append(
-                    Filter(
-                        column=column_name,
-                        pattern=re.compile(filter_value, re.IGNORECASE),
-                    )
-                )
-            except re.error:
-                new_buffer.notify("Invalid regex pattern", severity="error")
-                return
-            if column_name is None:
-                new_buf_name = f"+f:any={filter_value}"
-            else:
-                new_buf_name = f"+f:{column_name}={filter_value}"
 
-        self.add_buffer(new_buffer, name=new_buf_name)
+        self._copy_buffer_async(setup, new_buf_name, after_add_fn=after_add)
 
     @staticmethod
     def _should_reinsert_header_as_data(
@@ -731,96 +816,115 @@ class NlessApp(App):
 
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
-        curr_buffer.current_filters = []
-        curr_buffer.search_term = None
-        curr_buffer.sort_column = None
-        curr_buffer.unique_column_names = set()
-        prev_delimiter = curr_buffer.delimiter
-
         event.input.remove()
-        curr_buffer.delimiter_inferred = False
-        delimiter = self._parse_delimiter_input(event.value)
-
-        # If it's a regex with named groups, apply directly
-        if isinstance(delimiter, re.Pattern):
-            curr_buffer.delimiter = delimiter
-            curr_buffer.current_columns = NlessBuffer._make_columns(
-                list(delimiter.groupindex.keys())
-            )
-            if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
-                curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
-            curr_buffer._update_table()
+        if not curr_buffer._with_lock("delimiter"):
             return
+        should_update = False
+        try:
+            curr_buffer.current_filters = []
+            curr_buffer.search_term = None
+            curr_buffer.sort_column = None
+            curr_buffer.unique_column_names = set()
+            prev_delimiter = curr_buffer.delimiter
 
-        curr_buffer.delimiter = delimiter
+            curr_buffer.delimiter_inferred = False
+            delimiter = self._parse_delimiter_input(event.value)
 
-        result = self._resolve_new_header(delimiter, prev_delimiter, curr_buffer)
-        if result is None:
-            return
-        new_header, parsed_full_json_file = result
+            # If it's a regex with named groups, apply directly
+            if isinstance(delimiter, re.Pattern):
+                curr_buffer.delimiter = delimiter
+                curr_buffer.current_columns = NlessBuffer._make_columns(
+                    list(delimiter.groupindex.keys())
+                )
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+                should_update = True
+            else:
+                curr_buffer.delimiter = delimiter
 
-        if self._should_reinsert_header_as_data(
-            prev_delimiter, delimiter, parsed_full_json_file
-        ):
-            curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+                result = self._resolve_new_header(
+                    delimiter, prev_delimiter, curr_buffer
+                )
+                if result is not None:
+                    new_header, parsed_full_json_file = result
 
-        curr_buffer.current_columns = NlessBuffer._make_columns(list(new_header))
-        curr_buffer._update_table()
+                    if self._should_reinsert_header_as_data(
+                        prev_delimiter, delimiter, parsed_full_json_file
+                    ):
+                        curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+
+                    curr_buffer.current_columns = NlessBuffer._make_columns(
+                        list(new_header)
+                    )
+                    should_update = True
+        finally:
+            curr_buffer._lock.release()
+
+        if should_update:
+            curr_buffer._deferred_update_table()
 
     def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
         input_value = event.value
         event.input.remove()
-        if input_value.lower() == "all":
-            for col in curr_buffer.current_columns:
-                col.hidden = False
-        else:
-            column_name_filters = [name.strip() for name in input_value.split("|")]
-            column_name_filter_regexes = [
-                re.compile(rf"{name}", re.IGNORECASE) for name in column_name_filters
-            ]
-            visible_pinned_columns = [
-                col
-                for col in curr_buffer.current_columns
-                if col.pinned and not col.hidden
-            ]
-            for col in curr_buffer.current_columns:
-                matched = False
-                plain_name = curr_buffer._get_cell_value_without_markup(col.name)
-                for i, column_name_filter in enumerate(column_name_filter_regexes):
-                    if column_name_filter.search(plain_name) and not col.pinned:
-                        col.hidden = False
-                        col.render_position = i + len(
-                            visible_pinned_columns
-                        )  # keep metadata columns at the start
-                        matched = True
-                        break
-
-                if matched:
-                    continue
-
-                if (
-                    col.name not in [mc.value for mc in MetadataColumn]
-                    and not col.pinned
-                ):
-                    col.hidden = True
-                    col.render_position = 99999
-
-            # Ensure at least one column is visible
-            if all(col.hidden for col in curr_buffer.current_columns):
-                curr_buffer.notify(
-                    "At least one column must be visible.", severity="warning"
-                )
+        if not curr_buffer._with_lock("column filter"):
+            return
+        try:
+            if input_value.lower() == "all":
                 for col in curr_buffer.current_columns:
                     col.hidden = False
+            else:
+                column_name_filters = [name.strip() for name in input_value.split("|")]
+                column_name_filter_regexes = [
+                    re.compile(rf"{name}", re.IGNORECASE)
+                    for name in column_name_filters
+                ]
+                visible_pinned_columns = [
+                    col
+                    for col in curr_buffer.current_columns
+                    if col.pinned and not col.hidden
+                ]
+                for col in curr_buffer.current_columns:
+                    matched = False
+                    plain_name = curr_buffer._get_cell_value_without_markup(col.name)
+                    for i, column_name_filter in enumerate(column_name_filter_regexes):
+                        if column_name_filter.search(plain_name) and not col.pinned:
+                            col.hidden = False
+                            col.render_position = i + len(
+                                visible_pinned_columns
+                            )  # keep metadata columns at the start
+                            matched = True
+                            break
 
-        sorted_columns = sorted(
-            curr_buffer.current_columns, key=lambda c: c.render_position
-        )
-        for i, col in enumerate(sorted_columns):
-            col.render_position = i
+                    if matched:
+                        continue
 
-        curr_buffer._update_table()
+                    if (
+                        col.name not in [mc.value for mc in MetadataColumn]
+                        and not col.pinned
+                    ):
+                        col.hidden = True
+                        col.render_position = 99999
+
+                # Ensure at least one column is visible
+                if all(col.hidden for col in curr_buffer.current_columns):
+                    curr_buffer.notify(
+                        "At least one column must be visible.", severity="warning"
+                    )
+                    for col in curr_buffer.current_columns:
+                        col.hidden = False
+
+            sorted_columns = sorted(
+                curr_buffer.current_columns, key=lambda c: c.render_position
+            )
+            for i, col in enumerate(sorted_columns):
+                col.render_position = i
+        finally:
+            curr_buffer._lock.release()
+
+        curr_buffer._deferred_update_table()
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
@@ -848,17 +952,22 @@ class NlessApp(App):
         cursor_coordinate: Coordinate,
         offset: Offset,
     ) -> None:
-        new_buffer._update_table()
         tabbed_content = self.query_one(TabbedContent)
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
         data_table = new_buffer.query_one(NlessDataTable)
         data_table.focus()
-        new_buffer._restore_position(
-            data_table,
-            cursor_coordinate.column,
-            cursor_coordinate.row,
-            offset.x,
-            offset.y,
+
+        def _restore_position():
+            new_buffer._restore_position(
+                data_table,
+                cursor_coordinate.column,
+                cursor_coordinate.row,
+                offset.x,
+                offset.y,
+            )
+
+        new_buffer._deferred_update_table(
+            restore_position=False, callback=_restore_position
         )
 
     def add_buffer(

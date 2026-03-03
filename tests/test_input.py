@@ -1,4 +1,7 @@
+import os
 import time
+from threading import Thread
+from unittest.mock import patch
 
 from nless.input import LineStream, ShellCommandLineStream, StdinLineStream
 from nless.types import CliArgs
@@ -98,6 +101,78 @@ class TestStdinLineStreamParsing:
         stream.handle_input(["{", '"a": 1', "}"])
         assert len(received) == 1
         assert '"a"' in received[0]
+
+
+class TestStdinLineStreamPipe:
+    """Test StdinLineStream with a real pipe to verify streaming I/O."""
+
+    def _make_pipe_stream(self, delimiter=None):
+        r_fd, w_fd = os.pipe()
+        cli_args = CliArgs(
+            delimiter=delimiter, filters=[], unique_keys=set(), sort_by=None
+        )
+        stream = StdinLineStream(cli_args, None, r_fd)
+        return stream, w_fd
+
+    def test_streaming_lines_arrive(self):
+        """Lines written to a pipe are delivered to subscribers."""
+        stream, w_fd = self._make_pipe_stream()
+        received = []
+        stream.subscribe(self, lambda lines: received.extend(lines), lambda: True)
+
+        t = Thread(target=stream.run, daemon=True)
+        t.start()
+
+        os.write(w_fd, b"line1\n")
+        time.sleep(0.6)
+        os.write(w_fd, b"line2\n")
+        time.sleep(0.6)
+        os.close(w_fd)
+
+        assert any("line1" in line for line in received)
+        assert any("line2" in line for line in received)
+
+    def test_read_survives_type_error(self):
+        """I/O thread keeps reading after TypeError from non-blocking read.
+
+        Non-blocking stdin.read() can return None when no data is available,
+        causing the codec layer to raise TypeError. The read loop must catch
+        this and continue instead of crashing the I/O thread.
+        """
+        stream, w_fd = self._make_pipe_stream()
+        received = []
+        stream.subscribe(self, lambda lines: received.extend(lines), lambda: True)
+
+        real_fdopen = os.fdopen
+        read_call_count = 0
+
+        def fdopen_with_flaky_read(fd, *args, **kwargs):
+            f = real_fdopen(fd, *args, **kwargs)
+            original_read = f.read
+
+            def flaky_read(*a, **kw):
+                nonlocal read_call_count
+                read_call_count += 1
+                # Simulate the codec TypeError on the 3rd read call
+                if read_call_count == 3:
+                    raise TypeError("can't concat NoneType to bytes")
+                return original_read(*a, **kw)
+
+            f.read = flaky_read
+            return f
+
+        with patch("nless.input.os.fdopen", side_effect=fdopen_with_flaky_read):
+            t = Thread(target=stream.run, daemon=True)
+            t.start()
+
+            os.write(w_fd, b"before_error\n")
+            time.sleep(0.6)
+            os.write(w_fd, b"after_error\n")
+            time.sleep(0.6)
+            os.close(w_fd)
+
+        assert any("before_error" in line for line in received)
+        assert any("after_error" in line for line in received)
 
 
 class TestShellCommandLineStream:
