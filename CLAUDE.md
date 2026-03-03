@@ -25,9 +25,15 @@ poetry run pre-commit install
 
 # Run tests
 poetry run pytest
+
+# Run tests excluding slow perf tests
+poetry run pytest -m "not perf"
+
+# Run only perf tests
+poetry run pytest -m perf
 ```
 
-Test files cover CLI arg parsing, buffer operations, delimiter inference/splitting, and input stream handling.
+Test files cover CLI arg parsing, buffer operations, delimiter inference/splitting, input stream handling, and performance regression detection (`test_perf.py`).
 
 ## Architecture
 

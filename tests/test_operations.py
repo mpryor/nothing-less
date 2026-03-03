@@ -9,7 +9,17 @@ from nless.datatable import Datatable
 from nless.types import CliArgs, MetadataColumn
 
 
-PAUSE = 0.3
+async def _wait(pilot, app):
+    """Pump the event loop until all buffers finish loading."""
+    settled = 0
+    for _ in range(300):  # 3s max
+        await pilot.pause(delay=0.01)
+        if all(not b._is_loading for b in app.buffers):
+            settled += 1
+            if settled >= 5:
+                return
+        else:
+            settled = 0
 
 
 @pytest.fixture
@@ -36,7 +46,7 @@ class TestSort:
             _load(buf, ["name,age,city", "Charlie,35,LA", "Alice,30,NYC", "Bob,25,SF"])
 
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.sort_column == "name"
             assert buf.sort_reverse is False
@@ -50,9 +60,9 @@ class TestSort:
             _load(buf, ["name,age,city", "Alice,30,NYC", "Charlie,35,LA", "Bob,25,SF"])
 
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.sort_reverse is True
             assert [r[0] for r in buf.displayed_rows] == ["Charlie", "Bob", "Alice"]
@@ -66,11 +76,11 @@ class TestSort:
             original = [r[0] for r in buf.displayed_rows]
 
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.sort_column is None
             assert [r[0] for r in buf.displayed_rows] == original
@@ -86,10 +96,10 @@ class TestSort:
 
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=1)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.sort_column == "age"
             assert [r[1] for r in buf.displayed_rows] == ["5", "30", "100"]
@@ -102,7 +112,7 @@ class TestSort:
             _load(buf, ["name,age", "B,2", "A,1"])
 
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert not buf._is_loading
 
@@ -124,7 +134,7 @@ class TestFilter:
             )
 
             app._perform_filter("NYC", "city")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
@@ -139,7 +149,7 @@ class TestFilter:
             _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
 
             app._perform_filter("Alice")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             assert len(app.buffers[1].displayed_rows) == 1
@@ -160,7 +170,7 @@ class TestFilter:
             )
 
             app._perform_filter("^A", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             new_buf = app.buffers[1]
             assert len(new_buf.displayed_rows) == 2
@@ -175,7 +185,7 @@ class TestFilter:
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
 
             app._perform_filter("ZZZZZ", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             assert len(app.buffers[1].displayed_rows) == 0
@@ -189,13 +199,13 @@ class TestFilter:
 
             # Apply a filter
             app._perform_filter("Alice", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert len(app.buffers[1].displayed_rows) == 1
 
             # Clear filters on the filtered buffer
             app.curr_buffer_idx = 1
             app._perform_filter(None)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 3
             # Cleared buffer should have all rows that survived the first copy
@@ -209,7 +219,7 @@ class TestFilter:
             _load(buf, ["name,age", "Alice,30", "Bob,25", "Charlie,35"])
 
             app._perform_filter("Alice", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Original buffer should be untouched
             assert len(buf.displayed_rows) == 3
@@ -223,7 +233,7 @@ class TestFilter:
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
 
             app._perform_filter("Alice", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert not buf._is_loading
 
@@ -242,7 +252,7 @@ class TestSearch:
             _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Anna,28,NYC"])
 
             buf._perform_search("NYC")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.search_term is not None
             assert (
@@ -257,7 +267,7 @@ class TestSearch:
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
 
             buf._perform_search("Alice")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.current_match_index >= 0
 
@@ -269,11 +279,11 @@ class TestSearch:
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
 
             buf._perform_search("Alice")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert buf.search_term is not None
 
             buf._perform_search(None)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert buf.search_term is None
             assert len(buf.search_matches) == 0
 
@@ -285,10 +295,10 @@ class TestSearch:
             _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Charlie,35,NYC"])
 
             buf._perform_search("NYC")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             app.action_search_to_filter()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
@@ -303,7 +313,7 @@ class TestSearch:
             _load(buf, ["name,age", "Alice,30"])
 
             app.action_search_to_filter()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Should not create a new buffer
             assert len(app.buffers) == 1
@@ -332,7 +342,7 @@ class TestMarkUnique:
             )
 
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
@@ -349,7 +359,7 @@ class TestMarkUnique:
             )
 
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             new_buf = app.buffers[1]
             col_names = [c.name for c in new_buf.current_columns]
@@ -366,7 +376,7 @@ class TestMarkUnique:
             )
 
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             new_buf = app.buffers[1]
             # 3 rows with column "city" marked unique -> 2 unique cities
@@ -383,7 +393,7 @@ class TestMarkUnique:
             )
 
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             new_buf = app.buffers[1]
             assert new_buf.sort_column == MetadataColumn.COUNT.value
@@ -397,7 +407,7 @@ class TestMarkUnique:
             _load(buf, ["name,age", "A,1", "B,2", "A,3"])
 
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert not buf._is_loading
 
@@ -409,28 +419,24 @@ class TestMarkUnique:
         stream = LineStream()
         app = NlessApp(cli_args=cli_args, starting_stream=stream)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Initial data via stream
             stream.notify(["city,pop", "NYC,100", "SF,50", "NYC,200"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             buf = app.buffers[0]
             assert len(buf.displayed_rows) == 3
 
             # Create composite key on "city"
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             new_buf = app.buffers[1]
             assert "city" in new_buf.unique_column_names
 
             # Wait for initial deferred update to complete
-            for _ in range(10):
-                await pilot.pause(delay=PAUSE)
-                if not new_buf._is_loading:
-                    break
-            assert not new_buf._is_loading, "Initial deferred update never completed"
+            await _wait(pilot, app)
             assert len(new_buf.displayed_rows) == 2  # NYC and SF
 
             # Get initial count for NYC (should be 2)
@@ -444,10 +450,7 @@ class TestMarkUnique:
 
             # Stream one duplicate at a time to isolate failures
             stream.notify(["NYC,300"])
-            for _ in range(10):
-                await pilot.pause(delay=PAUSE)
-                if not new_buf._is_loading:
-                    break
+            await _wait(pilot, app)
             rows_after_1 = {
                 new_buf._get_cell_value_without_markup(
                     r[1]
@@ -459,10 +462,7 @@ class TestMarkUnique:
             )
 
             stream.notify(["NYC,400"])
-            for _ in range(10):
-                await pilot.pause(delay=PAUSE)
-                if not new_buf._is_loading:
-                    break
+            await _wait(pilot, app)
             rows_after_2 = {
                 new_buf._get_cell_value_without_markup(
                     r[1]
@@ -474,10 +474,7 @@ class TestMarkUnique:
             )
 
             stream.notify(["SF,60"])
-            for _ in range(10):
-                await pilot.pause(delay=PAUSE)
-                if not new_buf._is_loading:
-                    break
+            await _wait(pilot, app)
             rows_after_3 = {
                 new_buf._get_cell_value_without_markup(
                     r[1]
@@ -505,7 +502,7 @@ class TestMoveColumn:
             assert positions_before == {"a": 0, "b": 1, "c": 2}
 
             buf.action_move_column_right()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             positions_after = {c.name: c.render_position for c in buf.current_columns}
             assert positions_after["a"] == 1
@@ -522,10 +519,10 @@ class TestMoveColumn:
 
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=2)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             buf.action_move_column_left()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             positions = {c.name: c.render_position for c in buf.current_columns}
             assert positions["c"] == 1
@@ -540,7 +537,7 @@ class TestMoveColumn:
 
             # Cursor on col 0, move left should be a no-op
             buf.action_move_column_left()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             positions = {c.name: c.render_position for c in buf.current_columns}
             assert positions == {"a": 0, "b": 1, "c": 2}
@@ -564,7 +561,7 @@ class TestDeferredGeneration:
             buf.action_sort()
             buf.action_sort()
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Three presses: asc → desc → clear
             assert buf.sort_column is None
@@ -579,11 +576,11 @@ class TestDeferredGeneration:
 async def _submit_prompt(app, pilot, action_name, input_id, value):
     """Mount a prompt via action, set value, and submit via Enter."""
     getattr(app, action_name)()
-    await pilot.pause(delay=PAUSE)
+    await _wait(pilot, app)
     inp = app.query_one(f"#{input_id}")
     inp.value = value
     await pilot.press("enter")
-    await pilot.pause(delay=PAUSE)
+    await _wait(pilot, app)
 
 
 class TestDelimiterChange:
@@ -593,7 +590,7 @@ class TestDelimiterChange:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["a\tb\tc", "1\t2\t3", "4\t5\t6"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Inferred as tab — change to comma
             assert buf.delimiter == "\t"
@@ -601,7 +598,7 @@ class TestDelimiterChange:
             assert len(initial_col_names) == 3
 
             await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Now delimiter is comma, header re-parsed as single column "a\tb\tc"
             assert buf.delimiter == ","
@@ -620,15 +617,15 @@ class TestDelimiterChange:
 
             # Apply sort, search, and filter state
             buf.action_sort()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             buf._perform_search("Alice")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert buf.sort_column is not None
             assert buf.search_term is not None
 
             # Change delimiter — should clear state
             await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.sort_column is None
             assert buf.search_term is None
@@ -641,14 +638,14 @@ class TestDelimiterChange:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.current_columns) == 2
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "raw"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.delimiter == "raw"
             col_names = [c.name for c in buf.current_columns]
@@ -667,13 +664,13 @@ class TestDelimiterChange:
                     '{"name":"Bob","age":25}',
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert buf.delimiter == "raw"
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "json"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.delimiter == "json"
             col_names = [c.name for c in buf.current_columns]
@@ -693,12 +690,12 @@ class TestColumnFilter:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["name,age,city,zip", "Alice,30,NYC,10001"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             await _submit_prompt(
                 app, pilot, "action_filter_columns", "column_filter_input", "age"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             visible = [c for c in buf.current_columns if not c.hidden]
             assert len(visible) == 1
@@ -710,20 +707,20 @@ class TestColumnFilter:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["name,age,city", "Alice,30,NYC"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Hide some columns
             await _submit_prompt(
                 app, pilot, "action_filter_columns", "column_filter_input", "age"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert sum(1 for c in buf.current_columns if c.hidden) > 0
 
             # Restore all
             await _submit_prompt(
                 app, pilot, "action_filter_columns", "column_filter_input", "all"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert all(not c.hidden for c in buf.current_columns)
 
@@ -739,7 +736,7 @@ class TestColumnFilter:
 
             # Create composite key to get count column
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             new_buf = app.buffers[1]
             app.curr_buffer_idx = 1
 
@@ -747,7 +744,7 @@ class TestColumnFilter:
             await _submit_prompt(
                 app, pilot, "action_filter_columns", "column_filter_input", "city"
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             visible_names = [c.name for c in new_buf.current_columns if not c.hidden]
             assert MetadataColumn.COUNT.value in visible_names
@@ -759,7 +756,7 @@ class TestColumnFilter:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["name,age,city,zip", "Alice,30,NYC,10001"])
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             await _submit_prompt(
                 app,
@@ -768,7 +765,7 @@ class TestColumnFilter:
                 "column_filter_input",
                 "name|city",
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             visible = [c for c in buf.current_columns if not c.hidden]
             visible_names = {c.name for c in visible}
@@ -797,12 +794,12 @@ class TestColumnDelimiter:
                     'Bob\t{"key1":"val3","key2":"val4"}',
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Move cursor to the JSON column (column 1)
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=1)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             initial_col_count = len(buf.current_columns)
 
@@ -813,7 +810,7 @@ class TestColumnDelimiter:
                 "column_delimiter_input",
                 "json",
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.current_columns) > initial_col_count
             new_col_names = [c.name for c in buf.current_columns]
@@ -838,12 +835,12 @@ class TestColumnDelimiter:
                     "2\td-e-f",
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Move cursor to the "path" column
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=1)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             initial_col_count = len(buf.current_columns)
 
@@ -854,7 +851,7 @@ class TestColumnDelimiter:
                 "column_delimiter_input",
                 "-",
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.current_columns) > initial_col_count
             new_col_names = [c.name for c in buf.current_columns]
@@ -883,22 +880,22 @@ class TestJsonHeader:
                     '2\t{"color":"blue","size":20}',
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Move cursor to JSON column
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=1)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             initial_col_count = len(buf.current_columns)
 
             # action_json_header mounts NlessSelect with JSON keys
             app.action_json_header()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Press Enter to select the first key ("color")
             await pilot.press("enter")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.current_columns) == initial_col_count + 1
             new_col = buf.current_columns[-1]
@@ -919,18 +916,18 @@ class TestJsonHeader:
                     '2\t{"color":"blue","size":20}',
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             dt = buf.query_one(Datatable)
             dt.move_cursor(column=1)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             app.action_json_header()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Select first key
             await pilot.press("enter")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # After deferred update, the new column should have extracted values
             new_col = buf.current_columns[-1]
@@ -958,11 +955,11 @@ class TestFilterCursorWord:
                 buf,
                 ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Charlie,35,NYC"],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Cursor at (0, 0) → cell "Alice"
             app.action_filter_cursor_word()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
@@ -979,11 +976,11 @@ class TestFilterCursorWord:
                 buf,
                 ["name,val", "foo.bar,1", "baz,2"],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Cursor at (0, 0) → cell "foo.bar" — dot should be escaped
             app.action_filter_cursor_word()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
@@ -1012,11 +1009,11 @@ class TestFilterCompositeKey:
                     "LA,75",
                 ],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Mark unique on "city"
             app.action_mark_unique()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             unique_buf = app.buffers[1]
@@ -1026,11 +1023,11 @@ class TestFilterCompositeKey:
             dt = unique_buf.query_one(Datatable)
             city_col_idx = unique_buf._get_col_idx_by_name("city", render_position=True)
             dt.move_cursor(column=city_col_idx, row=0)
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Press Enter to trigger _filter_composite_key
             await pilot.press("enter")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 3
             filtered_buf = app.buffers[2]
@@ -1055,12 +1052,12 @@ class TestCloseBuffer:
 
             # Create a second buffer via filter
             app._perform_filter("Alice", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert len(app.buffers) == 2
 
             # Close the active buffer (buffer 1)
             app.action_close_active_buffer()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 1
 
@@ -1073,9 +1070,9 @@ class TestCloseBuffer:
 
             # Create two additional buffers
             app._perform_filter("Alice", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             app._perform_filter("Bob", "name")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
             assert len(app.buffers) == 3
 
             # Active is the last buffer (index 2)
@@ -1083,7 +1080,7 @@ class TestCloseBuffer:
 
             # Close last buffer
             app.action_close_active_buffer()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(app.buffers) == 2
             assert app.curr_buffer_idx <= len(app.buffers) - 1
@@ -1106,13 +1103,13 @@ class TestSearchNavigation:
             )
 
             buf._perform_search("NYC")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.search_matches) == 2
             first_index = buf.current_match_index
 
             buf.action_next_search()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.current_match_index == (first_index + 1) % len(
                 buf.search_matches
@@ -1129,7 +1126,7 @@ class TestSearchNavigation:
             )
 
             buf._perform_search("NYC")
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert len(buf.search_matches) == 2
 
@@ -1150,12 +1147,120 @@ class TestSearchNavigation:
                 buf,
                 ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Charlie,35,NYC"],
             )
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             # Cursor at (0, 0) → "Alice"
             buf.action_search_cursor_word()
-            await pilot.pause(delay=PAUSE)
+            await _wait(pilot, app)
 
             assert buf.search_term is not None
             assert buf.search_term.pattern == re.escape("Alice")
             assert len(buf.search_matches) == 1
+
+
+class TestExcludeFilter:
+    @pytest.mark.asyncio
+    async def test_exclude_filter_by_column(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Charlie,35,NYC"],
+            )
+
+            app._perform_filter("NYC", "city", exclude=True)
+            await _wait(pilot, app)
+
+            assert len(app.buffers) == 2
+            new_buf = app.buffers[1]
+            assert len(new_buf.displayed_rows) == 1
+            assert new_buf.displayed_rows[0][2] == "SF"
+
+    @pytest.mark.asyncio
+    async def test_exclude_filter_any_column(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+
+            app._perform_filter("Alice", exclude=True)
+            await _wait(pilot, app)
+
+            assert len(app.buffers) == 2
+            assert len(app.buffers[1].displayed_rows) == 1
+            assert app.buffers[1].displayed_rows[0][0] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_exclude_filter_regex(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Anna,28,LA"],
+            )
+
+            app._perform_filter("^A", "name", exclude=True)
+            await _wait(pilot, app)
+
+            new_buf = app.buffers[1]
+            assert len(new_buf.displayed_rows) == 1
+            assert new_buf.displayed_rows[0][0] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_exclude_filter_no_match_keeps_all(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30", "Bob,25"])
+
+            app._perform_filter("ZZZZZ", "name", exclude=True)
+            await _wait(pilot, app)
+
+            assert len(app.buffers) == 2
+            assert len(app.buffers[1].displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_exclude_and_include_combined(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "name,age,city",
+                    "Alice,30,NYC",
+                    "Bob,25,SF",
+                    "Charlie,35,NYC",
+                    "Diana,28,LA",
+                ],
+            )
+
+            # Include filter: city=NYC
+            app._perform_filter("NYC", "city")
+            await _wait(pilot, app)
+
+            assert len(app.buffers[1].displayed_rows) == 2
+
+            # Exclude filter on top: name=Alice
+            app.curr_buffer_idx = 1
+            app._perform_filter("Alice", "name", exclude=True)
+            await _wait(pilot, app)
+
+            assert len(app.buffers) == 3
+            new_buf = app.buffers[2]
+            assert len(new_buf.displayed_rows) == 1
+            assert new_buf.displayed_rows[0][0] == "Charlie"
+
+    @pytest.mark.asyncio
+    async def test_exclude_filter_preserves_original(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30", "Bob,25", "Charlie,35"])
+
+            app._perform_filter("Alice", "name", exclude=True)
+            await _wait(pilot, app)
+
+            assert len(buf.displayed_rows) == 3

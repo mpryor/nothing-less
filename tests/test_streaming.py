@@ -7,6 +7,19 @@ from nless.input import LineStream
 from nless.types import CliArgs
 
 
+async def _wait(pilot, app):
+    """Pump the event loop until all buffers finish loading."""
+    settled = 0
+    for _ in range(300):  # 3s max
+        await pilot.pause(delay=0.01)
+        if all(not b._is_loading for b in app.buffers):
+            settled += 1
+            if settled >= 5:
+                return
+        else:
+            settled = 0
+
+
 @pytest.fixture
 def cli_args():
     return CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
@@ -210,10 +223,10 @@ class TestLineStreamIntegration:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             # Wait for buffer to be mounted and ready
-            await pilot.pause(delay=0.3)
+            await _wait(pilot, app)
 
             stream.notify(["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
-            await pilot.pause(delay=0.3)
+            await _wait(pilot, app)
 
             assert buf.first_row_parsed
             assert len(buf.displayed_rows) == 2
@@ -223,13 +236,13 @@ class TestLineStreamIntegration:
         stream = LineStream()
         app = NlessApp(cli_args=cli_args, starting_stream=stream)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(delay=0.3)
+            await _wait(pilot, app)
 
             stream.notify(["name,age,city", "Alice,30,NYC"])
-            await pilot.pause(delay=0.3)
+            await _wait(pilot, app)
 
             stream.notify(["Bob,25,SF"])
-            await pilot.pause(delay=0.3)
+            await _wait(pilot, app)
 
             buf = app.buffers[0]
             assert len(buf.displayed_rows) == 2

@@ -256,6 +256,7 @@ class NlessBuffer(Static):
         self._is_loading = False
         self._has_nested_delimiters = False
         self._update_generation = 0
+        self._needs_deferred_update = False
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -299,7 +300,6 @@ class NlessBuffer(Static):
         with self._lock:
             raw_rows_snapshot = list(self.raw_rows)
             new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
-            new_buffer.mounted = self.mounted
             new_buffer.first_row_parsed = self.first_row_parsed
             new_buffer.displayed_rows = []
             new_buffer.first_log_line = self.first_log_line
@@ -578,8 +578,9 @@ class NlessBuffer(Static):
             dedup_map[key] = cells
             self.count_by_column_key[key] += 1
         deduped_rows = []
-        for k, cells in dedup_map.items():
+        for idx, (k, cells) in enumerate(dedup_map.items()):
             cells.insert(0, str(self.count_by_column_key[k]))
+            self._dedup_key_to_row_idx[k] = idx
             deduped_rows.append(cells)
         return deduped_rows
 
@@ -676,6 +677,28 @@ class NlessBuffer(Static):
                 deduped_rows = self._dedup_rows(filtered_rows)
                 self._sort_rows(deduped_rows)
 
+                # Rebuild dedup indices after sorting (sort reorders rows)
+                if self.unique_column_names:
+                    self._dedup_key_to_row_idx = {}
+                    for idx, row in enumerate(deduped_rows):
+                        key = self._build_composite_key(row)
+                        self._dedup_key_to_row_idx[key] = idx
+
+                # Populate _sort_keys for incremental inserts
+                if self.sort_column is not None:
+                    sort_col_idx = self._get_col_idx_by_name(
+                        self.sort_column, render_position=False
+                    )
+                    if sort_col_idx is not None:
+                        self._sort_keys = sorted(
+                            self._coerce_sort_key(
+                                self._get_cell_value_without_markup(
+                                    str(r[sort_col_idx])
+                                )
+                            )
+                            for r in deduped_rows
+                        )
+
                 aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
                 styled_rows = self._highlight_search_matches(
                     aligned_rows, fixed_columns
@@ -720,14 +743,20 @@ class NlessBuffer(Static):
                     severity="warning",
                 )
 
-            self._is_loading = False
-            self._update_status_bar()
-            if restore_position:
-                self._restore_position(
-                    data_table, cursor_x, cursor_y, scroll_x, scroll_y
+            # Check if more data arrived while we were processing
+            if len(self.raw_rows) > self._last_flushed_idx:
+                self._deferred_update_table(
+                    restore_position=restore_position, callback=callback
                 )
-            if callback:
-                callback()
+            else:
+                self._is_loading = False
+                self._update_status_bar()
+                if restore_position:
+                    self._restore_position(
+                        data_table, cursor_x, cursor_y, scroll_x, scroll_y
+                    )
+                if callback:
+                    callback()
 
         def _bg_work():
             result = _process_data()
@@ -826,10 +855,13 @@ class NlessBuffer(Static):
         else:
             filter_descriptions = []
             for f in self.current_filters:
+                prefix = "!" if f.exclude else ""
                 if f.column is None:
-                    filter_descriptions.append(f"any='{f.pattern.pattern}'")
+                    filter_descriptions.append(f"{prefix}any='{f.pattern.pattern}'")
                 else:
-                    filter_descriptions.append(f"{f.column}='{f.pattern.pattern}'")
+                    filter_descriptions.append(
+                        f"{prefix}{f.column}='{f.pattern.pattern}'"
+                    )
             filter_text = f"{filter_prefix}: " + ", ".join(filter_descriptions)
 
         if self.search_term is not None:
@@ -893,25 +925,26 @@ class NlessBuffer(Static):
         """Check if a row matches all current filters."""
         if not self.current_filters:
             return True
-        filter_matches = 0
         for f in self.current_filters:
             if f.column is None:
-                if any(
+                matched = any(
                     f.pattern.search(self._get_cell_value_without_markup(cell))
                     for cell in cells
-                ):
-                    filter_matches += 1
+                )
             else:
                 col_idx = self._get_col_idx_by_name(f.column)
                 if col_idx is None:
-                    break
+                    return False
                 if adjust_for_count and len(self.unique_column_names) > 0:
                     col_idx -= 1
-                if f.pattern.search(
-                    self._get_cell_value_without_markup(cells[col_idx])
-                ):
-                    filter_matches += 1
-        return filter_matches == len(self.current_filters)
+                matched = bool(
+                    f.pattern.search(
+                        self._get_cell_value_without_markup(cells[col_idx])
+                    )
+                )
+            if matched == f.exclude:
+                return False
+        return True
 
     _MARKUP_TAG_RE = re.compile(r"\[/?[^\]]*\]")
 
@@ -962,17 +995,24 @@ class NlessBuffer(Static):
         return acquired
 
     def add_logs(self, log_lines: list[str]) -> None:
+        needs_deferred = False
         with self._lock:
             self.locked = True
             try:
+                self._needs_deferred_update = False
                 self._add_logs_inner(log_lines)
+                needs_deferred = self._needs_deferred_update
             finally:
-                self._is_loading = False
-                try:
-                    self._update_status_bar()
-                except Exception:
-                    pass
+                if not needs_deferred:
+                    self._is_loading = False
+                    try:
+                        self._update_status_bar()
+                    except Exception:
+                        pass
                 self.locked = False
+
+        if needs_deferred:
+            self.app.call_from_thread(self._deferred_update_table)
 
     def _add_logs_inner(self, log_lines: list[str]) -> None:
         data_table = self.query_one(NlessDataTable)
@@ -1011,10 +1051,27 @@ class NlessBuffer(Static):
         is_large_batch = len(filtered) > 50000
 
         if self.sort_column is not None or self.unique_column_names:
-            if is_large_batch:
+            if self._is_loading:
+                # A deferred update is in flight — just extend raw_rows (done above).
+                # The in-flight update will chain another when it finishes.
+                pass
+            elif len(filtered) > 1000:
                 self._is_loading = True
                 self._update_status_bar()
-            self._update_table()
+                self._needs_deferred_update = True
+            else:
+                for line in filtered:
+                    try:
+                        self._add_log_line(line)
+                    except (
+                        RowLengthMismatchError,
+                        json.JSONDecodeError,
+                        csv.Error,
+                        ValueError,
+                        IndexError,
+                        TypeError,
+                    ):
+                        continue
         else:
             # Process in chunks for progressive display on large inputs
             CHUNK = 50000
@@ -1027,7 +1084,7 @@ class NlessBuffer(Static):
                         self._update_status_bar()
             except Exception:
                 # Fall back to full rebuild if incremental path fails
-                self._update_table()
+                self._needs_deferred_update = True
 
     def _add_rows_incremental(self, new_lines: list[str]) -> None:
         """Parse and add new lines to the table without a full rebuild.
@@ -1120,6 +1177,10 @@ class NlessBuffer(Static):
         else:
             styled = new_rows
 
+        # Highlight new streaming rows green (skip initial load)
+        if self.displayed_rows:
+            styled = [[f"[#00ff00]{c}[/#00ff00]" for c in row] for row in styled]
+
         self.displayed_rows.extend(styled)
         data_table.add_rows_precomputed(styled)
 
@@ -1205,6 +1266,9 @@ class NlessBuffer(Static):
 
         if new_key in self._dedup_key_to_row_idx:
             row_idx = self._dedup_key_to_row_idx[new_key]
+            if row_idx >= len(self.displayed_rows):
+                # Stale index — table is being rebuilt concurrently
+                return cells, None, None
             new_cells = []
             for col_idx, cell in enumerate(cells):
                 if col_idx == 0:
@@ -1253,25 +1317,43 @@ class NlessBuffer(Static):
         self._dedup_key_to_row_idx[dedup_key] = new_index
 
     def _update_sort_keys_for_line(
-        self, log_line: str, new_index: int, old_index: int | None
+        self,
+        data_cells: list[str],
+        old_row: list[str] | None,
     ) -> None:
-        """Update the incremental sort keys list after insertion/removal."""
+        """Update the incremental sort keys list after insertion/removal.
+
+        Args:
+            data_cells: The new row cells in data-position order (includes count column).
+            old_row: The old display row (render-position order) being replaced, or None.
+        """
         if self.sort_column is None:
             return
-        if old_index is not None and old_index < len(self._sort_keys):
-            self._sort_keys.pop(old_index)
         data_sort_col_idx = self._get_col_idx_by_name(
             self.sort_column, render_position=False
         )
-        if data_sort_col_idx is not None:
-            raw_key = self._get_cell_value_without_markup(
-                str(
-                    split_line(log_line, self.delimiter, self.current_columns)[
-                        data_sort_col_idx
-                    ]
-                )
+        if data_sort_col_idx is None:
+            return
+
+        # Remove old sort key by value lookup
+        if old_row is not None:
+            render_sort_col_idx = self._get_col_idx_by_name(
+                self.sort_column, render_position=True
             )
-            bisect.insort_left(self._sort_keys, self._coerce_sort_key(raw_key))
+            if render_sort_col_idx is not None and render_sort_col_idx < len(old_row):
+                old_raw = self._get_cell_value_without_markup(
+                    str(old_row[render_sort_col_idx])
+                )
+                old_key = self._coerce_sort_key(old_raw)
+                ki = bisect.bisect_left(self._sort_keys, old_key)
+                if ki < len(self._sort_keys) and self._sort_keys[ki] == old_key:
+                    self._sort_keys.pop(ki)
+
+        # Insert new sort key from data-position cells
+        new_raw = self._get_cell_value_without_markup(
+            str(data_cells[data_sort_col_idx])
+        )
+        bisect.insort_left(self._sort_keys, self._coerce_sort_key(new_raw))
 
     def _add_log_line(self, log_line: str):
         """Adds a single log line, applying filters, dedup, sort, and search highlighting."""
@@ -1292,12 +1374,18 @@ class NlessBuffer(Static):
             return
 
         cells, old_index, old_row = self._handle_dedup_for_line(cells)
+        is_dedup_update = old_index is not None
+        data_cells = list(cells)  # snapshot before alignment (data-position order)
         new_index = self._find_sorted_insert_index(cells)
 
         cells = self._align_cells_to_visible_columns([cells])[0]
         cells = self._highlight_search_matches(
             [cells], data_table.fixed_columns, row_offset=new_index
         )[0]
+
+        # Highlight new/updated rows green (dedup updates already have green from _handle_dedup_for_line)
+        if not is_dedup_update and self.displayed_rows:
+            cells = [f"[#00ff00]{c}[/#00ff00]" for c in cells]
 
         if old_index is not None:
             self._update_dedup_indices_after_removal(old_index)
@@ -1307,7 +1395,7 @@ class NlessBuffer(Static):
         data_table.add_row_at(index=new_index, row_data=cells)
         self.displayed_rows.insert(new_index, cells)
 
-        self._update_sort_keys_for_line(log_line, new_index, old_index)
+        self._update_sort_keys_for_line(data_cells, old_row)
 
         if self.unique_column_names:
             dedup_key = self._build_composite_key(cells, render_position=True)

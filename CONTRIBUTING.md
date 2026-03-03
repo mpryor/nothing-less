@@ -35,4 +35,20 @@ poetry run pre-commit run --all-files
 ```
 
 ## Tests
-🚧 UNDER CONSTRUCTION 🚧 
+Run the full test suite:
+```bash
+poetry run pytest
+```
+
+### Performance tests
+The suite includes performance regression tests (`tests/test_perf.py`) marked with `@pytest.mark.perf`. These load 50K rows and assert that key operations complete within a threshold derived from measured baselines.
+
+```bash
+# Run only perf tests
+poetry run pytest -m perf
+
+# Skip perf tests for a faster feedback loop
+poetry run pytest -m "not perf"
+```
+
+If you make changes that affect data processing performance, run the perf tests to verify there are no regressions. If a legitimate change makes an operation slower, update the corresponding baseline in `_BASELINES` inside `tests/test_perf.py` with a new measured value.

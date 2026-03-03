@@ -60,7 +60,10 @@ class LineStream:
         for subscriber, is_ready, callback in self.subscribers:
             while not is_ready():
                 time.sleep(0.1)
-            callback(lines)
+            try:
+                callback(lines)
+            except Exception:
+                pass
 
 
 class ShellCommandLineStream(LineStream):

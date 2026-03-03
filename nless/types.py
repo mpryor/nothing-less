@@ -11,6 +11,7 @@ class MetadataColumn(Enum):
 class Filter:
     column: str | None  # None means any column
     pattern: re.Pattern[str]
+    exclude: bool = False
 
 
 @dataclass

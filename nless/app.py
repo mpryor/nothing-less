@@ -6,6 +6,7 @@ import subprocess
 from threading import Thread
 
 from textual import events
+from textual.css.query import NoMatches
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.events import Key
@@ -70,6 +71,12 @@ class NlessApp(App):
         ("|", "filter_any", "Filter any column (by prompt)"),
         ("f", "filter", "Filter selected column (by prompt)"),
         ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
+        ("e", "exclude_filter", "Exclude from selected column (by prompt)"),
+        (
+            "E",
+            "exclude_filter_cursor_word",
+            "Exclude selected column by word under cursor",
+        ),
         ("D", "delimiter", "Change Delimiter"),
         ("d", "column_delimiter", "Change Column Delimiter"),
         ("W", "write_to_file", "Write current view to file"),
@@ -601,7 +608,12 @@ class NlessApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
             self.handle_search_submitted(event)
-        elif event.input.id == "filter_input" or event.input.id == "filter_input_any":
+        elif event.input.id in (
+            "filter_input",
+            "filter_input_any",
+            "exclude_filter_input",
+            "exclude_filter_input_any",
+        ):
             self.handle_filter_submitted(event)
         elif event.input.id == "delimiter_input":
             self.handle_delimiter_submitted(event)
@@ -644,9 +656,10 @@ class NlessApp(App):
         event.input.remove()
         curr_buffer = self._get_current_buffer()
         data_table = curr_buffer.query_one(NlessDataTable)
+        exclude = event.input.id in ("exclude_filter_input", "exclude_filter_input_any")
 
-        if event.input.id == "filter_input_any":
-            self._perform_filter(filter_value)
+        if event.input.id in ("filter_input_any", "exclude_filter_input_any"):
+            self._perform_filter(filter_value, exclude=exclude)
         else:
             column_index = data_table.cursor_column
             column = curr_buffer._get_column_at_position(column_index)
@@ -654,10 +667,13 @@ class NlessApp(App):
                 self.notify("No column selected for filtering")
                 return
             column_label = curr_buffer._get_cell_value_without_markup(column.name)
-            self._perform_filter(filter_value, column_label)
+            self._perform_filter(filter_value, column_label, exclude=exclude)
 
     def _perform_filter(
-        self, filter_value: str | None, column_name: str | None = None
+        self,
+        filter_value: str | None,
+        column_name: str | None = None,
+        exclude: bool = False,
     ) -> None:
         """Performs a filter on the data and updates the table.
 
@@ -675,16 +691,17 @@ class NlessApp(App):
                 return
 
         # Determine buffer name from current state (before copy)
+        filter_prefix = "!f" if exclude else "+f"
         if not filter_value:
             new_buf_name = (
                 curr_buffer.current_filters
-                and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in curr_buffer.current_filters])}"
+                and f"-f:{','.join([f'{"!" if f.exclude else ""}{f.column if f.column else "any"}={f.pattern.pattern}' for f in curr_buffer.current_filters])}"
                 or "-f"
             )
         elif column_name is None:
-            new_buf_name = f"+f:any={filter_value}"
+            new_buf_name = f"{filter_prefix}:any={filter_value}"
         else:
-            new_buf_name = f"+f:{column_name}={filter_value}"
+            new_buf_name = f"{filter_prefix}:{column_name}={filter_value}"
 
         notify_removed_unique = (
             filter_value
@@ -699,7 +716,11 @@ class NlessApp(App):
                 if column_name and column_name in new_buffer.unique_column_names:
                     handle_mark_unique(new_buffer, column_name)
                 new_buffer.current_filters.append(
-                    Filter(column=column_name, pattern=compiled_pattern)
+                    Filter(
+                        column=column_name,
+                        pattern=compiled_pattern,
+                        exclude=exclude,
+                    )
                 )
 
         def after_add(new_buffer):
@@ -946,6 +967,37 @@ class NlessApp(App):
         except (IndexError, TypeError):
             self.notify("Cannot get cell value.", severity="error")
 
+    def action_exclude_filter(self) -> None:
+        """Exclude rows from selected column based on user input."""
+        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        column_index = data_table.cursor_column
+        column_label = data_table.columns[column_index]
+        self._create_prompt(
+            f"Type exclude filter text for column: {column_label} and press enter",
+            "exclude_filter_input",
+        )
+
+    def action_exclude_filter_cursor_word(self) -> None:
+        """Exclude rows matching the word under the cursor."""
+        curr_buffer = self._get_current_buffer()
+        data_table = curr_buffer.query_one(NlessDataTable)
+        coordinate = data_table.cursor_coordinate
+        try:
+            cell_value = data_table.get_cell_at(coordinate)
+            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            cell_value = re.escape(cell_value)
+            selected_column = curr_buffer._get_column_at_position(coordinate.column)
+            if not selected_column:
+                self.notify("No column selected for filtering")
+                return
+            self._perform_filter(
+                f"^{cell_value}$",
+                curr_buffer._get_cell_value_without_markup(selected_column.name),
+                exclude=True,
+            )
+        except (IndexError, TypeError):
+            self.notify("Cannot get cell value.", severity="error")
+
     def refresh_buffer_and_focus(
         self,
         new_buffer: NlessBuffer,
@@ -954,7 +1006,16 @@ class NlessApp(App):
     ) -> None:
         tabbed_content = self.query_one(TabbedContent)
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
-        data_table = new_buffer.query_one(NlessDataTable)
+        try:
+            data_table = new_buffer.query_one(NlessDataTable)
+        except NoMatches:
+            # Buffer not yet composed; retry after next refresh
+            self.call_after_refresh(
+                lambda: self.refresh_buffer_and_focus(
+                    new_buffer, cursor_coordinate, offset
+                )
+            )
+            return
         data_table.focus()
 
         def _restore_position():

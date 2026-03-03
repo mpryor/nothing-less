@@ -35,6 +35,13 @@ def parse_args(argv=None) -> CliArgs:
         "--filters", "-f", action="append", help="Initial filter(s)", default=[]
     )
     parser.add_argument(
+        "--exclude-filters",
+        "-x",
+        action="append",
+        help="Initial exclude filter(s) (same format as -f, excludes matching rows)",
+        default=[],
+    )
+    parser.add_argument(
         "--unique", "-u", action="append", help="Initial unique key(s)", default=[]
     )
     parser.add_argument(
@@ -66,6 +73,23 @@ def parse_args(argv=None) -> CliArgs:
                 )
             )
 
+    if len(args.exclude_filters) > 0:
+        for arg_filter in args.exclude_filters:
+            try:
+                column, value = arg_filter.split("=")
+            except ValueError:
+                print(
+                    f"Invalid exclude filter format: {arg_filter}. Expected format is column=value or any=value"
+                )
+                sys.exit(1)
+            filters.append(
+                Filter(
+                    column=column if column != "any" else None,
+                    pattern=re.compile(value, re.IGNORECASE),
+                    exclude=True,
+                )
+            )
+
     unique_keys = set()
     if len(args.unique) > 0:
         for unique_key in args.unique:
@@ -94,11 +118,15 @@ def main():
 
     stdin_contains_data = not sys.stdin.isatty()
     if stdin_contains_data or filename:
-        stdin_line_stream = StdinLineStream(
-            cli_args,
-            filename,
-            new_fd,
-        )
+        try:
+            stdin_line_stream = StdinLineStream(
+                cli_args,
+                filename,
+                new_fd,
+            )
+        except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+            print(f"nless: {e}", file=sys.stderr)
+            sys.exit(1)
         app = NlessApp(cli_args=cli_args, starting_stream=stdin_line_stream)
         t = Thread(target=stdin_line_stream.run, daemon=True)
         t.start()
