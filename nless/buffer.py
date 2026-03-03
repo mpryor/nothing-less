@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 import pyperclip
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
@@ -294,11 +295,12 @@ class NlessBuffer(Static):
         return matching
 
     def copy(self, pane_id) -> "NlessBuffer":
+        # Snapshot state under lock, then release so the UI stays responsive.
         with self._lock:
+            raw_rows_snapshot = list(self.raw_rows)
             new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
             new_buffer.mounted = self.mounted
             new_buffer.first_row_parsed = self.first_row_parsed
-            new_buffer.raw_rows = self._filter_lines(self.raw_rows)
             new_buffer.displayed_rows = []
             new_buffer.first_log_line = self.first_log_line
             new_buffer.current_columns = deepcopy(self.current_columns)
@@ -321,7 +323,10 @@ class NlessBuffer(Static):
                     lambda: new_buffer.mounted,
                 )
             new_buffer._rebuild_column_caches()
-            return new_buffer
+
+        # Expensive filtering runs outside the lock on the snapshot.
+        new_buffer.raw_rows = new_buffer._filter_lines(raw_rows_snapshot)
+        return new_buffer
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
@@ -629,23 +634,106 @@ class NlessBuffer(Static):
         return result
 
     def _deferred_update_table(self, restore_position=True, callback=None):
-        """Yield one frame so the loading indicator renders, then run _update_table."""
+        """Run data processing on a bg thread, then apply to widgets on main thread."""
         self._update_generation += 1
         gen = self._update_generation
         self._is_loading = True
         self._update_status_bar()
 
-        def _run():
+        # Snapshot cursor/scroll from widgets before going off-thread.
+        data_table = self.query_one(NlessDataTable)
+        cursor_x = data_table.cursor_column
+        cursor_y = data_table.cursor_row
+        scroll_x = data_table.scroll_x
+        scroll_y = data_table.scroll_y
+
+        def _process_data():
+            """Pure-data work — no widget access."""
             if gen != self._update_generation:
-                return  # Superseded by newer request
+                return None
             with self._lock:
-                self._update_table(restore_position=restore_position)
+                curr_metadata_columns = {
+                    c.name
+                    for c in self.current_columns
+                    if c.name in [m.value for m in MetadataColumn]
+                }
+                expected_cell_count = len(self.current_columns) - len(
+                    curr_metadata_columns
+                )
+                self._rebuild_column_caches()
+                column_labels = self._get_visible_column_labels()
+                fixed_columns = len(curr_metadata_columns)
+
+                self.search_matches = []
+                self.current_match_index = -1
+                self.count_by_column_key = defaultdict(lambda: 0)
+                self._dedup_key_to_row_idx = {}
+                self._sort_keys = []
+
+                filtered_rows, rows_with_inconsistent_length = self._filter_rows(
+                    expected_cell_count
+                )
+                deduped_rows = self._dedup_rows(filtered_rows)
+                self._sort_rows(deduped_rows)
+
+                aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
+                styled_rows = self._highlight_search_matches(
+                    aligned_rows, fixed_columns
+                )
+                self._last_flushed_idx = len(self.raw_rows)
+
+            # Precompute column widths on the bg thread so the main thread
+            # can use add_rows_precomputed (just extends + refresh).
+            col_widths = [len(c) for c in column_labels]
+            for row in styled_rows:
+                for i, cell_str in enumerate(row):
+                    if "[" in cell_str:
+                        str_len = Text.from_markup(cell_str).cell_len
+                    else:
+                        str_len = len(cell_str)
+                    if str_len > col_widths[i]:
+                        col_widths[i] = str_len
+
+            return {
+                "styled_rows": styled_rows,
+                "column_labels": column_labels,
+                "column_widths": col_widths,
+                "fixed_columns": fixed_columns,
+                "inconsistent_count": len(rows_with_inconsistent_length),
+            }
+
+        def _apply_to_widgets(result):
+            """Main-thread: push processed data into widgets."""
+            if result is None or gen != self._update_generation:
+                return
+            data_table.clear(columns=True)
+            data_table.fixed_columns = result["fixed_columns"]
+            data_table.add_columns(result["column_labels"])
+            data_table.column_widths = result["column_widths"]
+
+            self.displayed_rows = result["styled_rows"]
+            data_table.add_rows_precomputed(result["styled_rows"])
+
+            if result["inconsistent_count"] > 0:
+                self.notify(
+                    f"{result['inconsistent_count']} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
+                    severity="warning",
+                )
+
             self._is_loading = False
             self._update_status_bar()
+            if restore_position:
+                self._restore_position(
+                    data_table, cursor_x, cursor_y, scroll_x, scroll_y
+                )
             if callback:
                 callback()
 
-        self.set_timer(0.01, _run)
+        def _bg_work():
+            result = _process_data()
+            self.app.call_from_thread(lambda: _apply_to_widgets(result))
+
+        threading.Thread(target=_bg_work, daemon=True).start()
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
