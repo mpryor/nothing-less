@@ -27,7 +27,7 @@ jobs:
 
       - name: Install tools
         run: |
-          pip install poetry twine commitizen
+          pip install poetry commitizen
 
       - name: Try version bump with commitizen
         id: cz
@@ -68,7 +68,9 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.cz.outputs.no_bump == 'false'
-        run: twine upload dist/*
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: GitHub Release
         if: steps.cz.outputs.no_bump == 'false'
