@@ -2,14 +2,7 @@ import argparse
 import re
 import sys
 from threading import Thread
-from typing import List
 
-from textual.app import ComposeResult
-from textual.screen import Screen
-from textual.widgets import (
-    RichLog,
-    Static,
-)
 
 from nless.app import NlessApp
 from nless.version import get_version
@@ -18,7 +11,18 @@ from .input import StdinLineStream
 from .types import CliArgs, Filter
 
 
-def main():
+def parse_args(argv=None) -> CliArgs:
+    """Parse CLI arguments and return a CliArgs object.
+
+    Args:
+        argv: Argument list to parse. Defaults to sys.argv[1:].
+
+    Returns:
+        Parsed CliArgs.
+
+    Raises:
+        SystemExit: On invalid arguments.
+    """
     parser = argparse.ArgumentParser(description="nless - A terminal log viewer")
     parser.add_argument(
         "filename", nargs="?", help="File to read input from (defaults to stdin)"
@@ -37,7 +41,7 @@ def main():
         "--sort-by", "-s", help="Column to sort by initially", default=None
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.sort_by and len(args.sort_by.split("=")) != 2:
         print(
@@ -73,11 +77,17 @@ def main():
         unique_keys=unique_keys,
         sort_by=args.sort_by,
     )
+    cli_args.filename = args.filename
+    return cli_args
+
+
+def main():
+    cli_args = parse_args()
 
     new_fd = sys.stdin.fileno()
 
-    if args.filename:
-        filename = args.filename
+    if cli_args.filename:
+        filename = cli_args.filename
         new_fd = None
     else:
         filename = None

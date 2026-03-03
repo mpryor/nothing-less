@@ -2,7 +2,8 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Static
 
-from .nlesstable import NlessDataTable
+from .buffer import NlessBuffer
+from .datatable import Datatable as NlessDataTable
 
 
 class HelpScreen(Screen):
@@ -11,10 +12,16 @@ class HelpScreen(Screen):
     BINDINGS = [("q", "app.pop_screen", "Close Help")]
 
     def compose(self) -> ComposeResult:
-        bindings = self.app.BINDINGS + NlessDataTable.BINDINGS
+        seen_keys = set()
+        all_bindings = (
+            self.app.BINDINGS + NlessDataTable.BINDINGS + NlessBuffer.BINDINGS
+        )
         help_text = "[bold]Keybindings[/bold]:\n\n"
-        for binding in bindings:
+        for binding in all_bindings:
             keys, _, description = binding
+            if keys in seen_keys:
+                continue
+            seen_keys.add(keys)
             help_text += f"{keys:<12} - {description}\n"
         yield Static(help_text)
         yield Static("[bold]Press 'q' to close this help.[/bold]", id="help-footer")

@@ -7,7 +7,7 @@ import stat
 import subprocess
 from threading import Thread
 import time
-from typing import IO, Any, Callable, Tuple
+from typing import IO, Any, Callable
 
 from nless.types import CliArgs
 
@@ -54,11 +54,15 @@ class LineStream:
             callback(lines)
 
 
-class ShellCommmandLineStream(LineStream):
+class ShellCommandLineStream(LineStream):
     def __init__(self, command: str):
         super().__init__()
         result = subprocess.Popen(
-            command, stdout=subprocess.PIPE, shell=True, text=True
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=True,
+            text=True,
         )
         Thread(target=self._setup_io_stream, args=(result.stdout,), daemon=True).start()
 
@@ -137,7 +141,7 @@ class StdinLineStream(LineStream):
                 else:
                     time.sleep(1)
 
-    def parse_streaming_line(self, line: str) -> Tuple[list[str], str]:
+    def parse_streaming_line(self, line: str) -> tuple[list[str], str]:
         lines = line.split("\n")
         if line.endswith("\n"):
             return lines[:-1], ""

@@ -19,6 +19,7 @@ class CliArgs:
     filters: list[Filter]
     unique_keys: set[str]
     sort_by: str | None
+    filename: str | None = None
 
 
 @dataclass

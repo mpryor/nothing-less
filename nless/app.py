@@ -2,7 +2,6 @@ import json
 import os
 import re
 from threading import Thread
-from typing import Optional
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -26,7 +25,7 @@ from nless.gettingstarted import GettingStartedScreen
 from .config import NlessConfig, load_config, load_input_history
 from .delimiter import split_line
 from .help import HelpScreen
-from .input import LineStream, ShellCommmandLineStream
+from .input import LineStream, ShellCommandLineStream
 from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
 from .types import CliArgs, Column, Filter, MetadataColumn
@@ -44,7 +43,6 @@ class NlessApp(App):
         self.cli_args = cli_args
         self.input_history = []
         self.config = NlessConfig()
-        self.logs = []
         self.show_help = show_help
         self.mounted = False
         self.buffers = [
@@ -71,7 +69,6 @@ class NlessApp(App):
         ("d", "column_delimiter", "Change Column Delimiter"),
         ("W", "write_to_file", "Write current view to file"),
         ("J", "json_header", "Select new header from JSON in cell"),
-        ("W", "write_to_file", "Write current view to file"),
         ("!", "run_command", "Run Shell Command (by prompt)"),
         (
             "U",
@@ -95,7 +92,7 @@ class NlessApp(App):
         event.control.remove()
         command = event.value.strip()
         try:
-            line_stream = ShellCommmandLineStream(command)
+            line_stream = ShellCommandLineStream(command)
             new_buffer = NlessBuffer(
                 pane_id=self._get_new_pane_id(),
                 cli_args=self.cli_args,
@@ -110,17 +107,12 @@ class NlessApp(App):
         if event.control.id == "json_header_select":
             curr_buffer = self._get_current_buffer()
             cursor_column = curr_buffer.query_one(NlessDataTable).cursor_column
-            curr_column = [
-                c
-                for c in curr_buffer.current_columns
-                if c.render_position == cursor_column
-            ]
+            curr_column = curr_buffer._get_column_at_position(cursor_column)
             if not curr_column:
                 curr_buffer.notify(
                     "No column selected to add JSON key to", severity="error"
                 )
                 return
-            curr_column = curr_column[0]
             curr_column_name = curr_buffer._get_cell_value_without_markup(
                 curr_column.name
             )
@@ -222,11 +214,7 @@ class NlessApp(App):
         new_buffer = curr_buffer.copy(pane_id=self._get_new_pane_id())
         current_cursor_column = data_table.cursor_column
 
-        new_unique_column = [
-            c
-            for c in new_buffer.current_columns
-            if c.render_position == current_cursor_column
-        ]
+        new_unique_column = new_buffer._get_column_at_position(current_cursor_column)
 
         if not new_unique_column:
             self.notify("No column selected to mark as unique")
@@ -235,8 +223,6 @@ class NlessApp(App):
         if data_table.columns[current_cursor_column] == "count":
             self.notify("Cannot mark 'count' column as unique", severity="error")
             return
-
-        new_unique_column = new_unique_column[0]
         new_unique_column_name = new_buffer._get_cell_value_without_markup(
             new_unique_column.name
         )
@@ -303,7 +289,7 @@ class NlessApp(App):
             classes="bottom-input",
             history=[h["val"] for h in self.input_history if h["id"] == id],
             on_add=lambda val: self.input_history.append({"id": id, "val": val}),
-            on_remove=lambda val: self.input_history.remove({"id": id, "val": val})
+            on_remove=lambda val: self.input_history.remove({"id": id, "val": val}),
         )
         tab_content = self.query_one(TabbedContent)
         active_tab = tab_content.active
@@ -316,14 +302,10 @@ class NlessApp(App):
     def _filter_composite_key(self, current_buffer: NlessBuffer) -> None:
         data_table = current_buffer.query_one(NlessDataTable)
         cursor_column = data_table.cursor_column
-        selected_column = [
-            c
-            for c in current_buffer.current_columns
-            if c.render_position == cursor_column
-        ]
+        selected_column = current_buffer._get_column_at_position(cursor_column)
         if selected_column:
             selected_column_name = current_buffer._get_cell_value_without_markup(
-                selected_column[0].name
+                selected_column.name
             )
             if selected_column_name in current_buffer.unique_column_names:
                 new_buffer = current_buffer.copy(pane_id=self._get_new_pane_id())
@@ -377,15 +359,12 @@ class NlessApp(App):
         data_table = current_buffer.query_one(NlessDataTable)
         cursor_coordinate = data_table.cursor_coordinate
         cell = data_table.get_cell_at(cursor_coordinate)
-        selected_column = [
-            c
-            for c in current_buffer.current_columns
-            if c.render_position == cursor_coordinate.column
-        ]
+        selected_column = current_buffer._get_column_at_position(
+            cursor_coordinate.column
+        )
         if not selected_column:
             current_buffer.notify("No column selected for delimiting", severity="error")
             return
-        selected_column = selected_column[0]
 
         if new_col_delimiter == "json":
             try:
@@ -507,17 +486,30 @@ class NlessApp(App):
         output_path = event.value
         event.input.remove()
         current_buffer = self._get_current_buffer()
-        try:
-            t = Thread(target=write_buffer, args=(current_buffer, output_path))
-            if output_path != "-":
-                t.start()
-                t.join()
-                current_buffer.notify(f"Wrote current view to {output_path}")
-            else:
-                t.start()
-                self.exit()
-        except Exception as e:
-            current_buffer.notify(f"Failed to write to file: {e}")
+
+        def _write_and_notify():
+            try:
+                write_buffer(current_buffer, output_path)
+                if output_path != "-":
+                    self.call_from_thread(
+                        lambda: current_buffer.notify(
+                            f"Wrote current view to {output_path}"
+                        )
+                    )
+            except Exception as exc:
+                msg = str(exc)
+                self.call_from_thread(
+                    lambda: current_buffer.notify(
+                        f"Failed to write to file: {msg}", severity="error"
+                    )
+                )
+
+        t = Thread(target=_write_and_notify)
+        t.start()
+        if output_path == "-":
+            self.exit()
+        else:
+            t.join()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_input":
@@ -570,20 +562,14 @@ class NlessApp(App):
             self._perform_filter_any(filter_value)
         else:
             column_index = data_table.cursor_column
-            column_label = [
-                c
-                for c in curr_buffer.current_columns
-                if c.render_position == column_index
-            ]
-            if not column_label:
+            column = curr_buffer._get_column_at_position(column_index)
+            if not column:
                 self.notify("No column selected for filtering")
                 return
-            column_label = curr_buffer._get_cell_value_without_markup(
-                column_label[0].name
-            )
+            column_label = curr_buffer._get_cell_value_without_markup(column.name)
             self._perform_filter(filter_value, column_label)
 
-    def _perform_filter_any(self, filter_value: Optional[str]) -> None:
+    def _perform_filter_any(self, filter_value: str | None) -> None:
         new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
         """Performs a filter across all columns and updates the table."""
         if not filter_value:
@@ -606,7 +592,7 @@ class NlessApp(App):
         self.add_buffer(new_buffer, name=new_buf_name)
 
     def _perform_filter(
-        self, filter_value: Optional[str], column_name: Optional[str]
+        self, filter_value: str | None, column_name: str | None
     ) -> None:
         """Performs a filter on the data and updates the table."""
         new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
@@ -648,7 +634,6 @@ class NlessApp(App):
         prev_delimiter = curr_buffer.delimiter
 
         event.input.remove()
-        data_table = curr_buffer.query_one(NlessDataTable)
         curr_buffer.delimiter_inferred = False
         delimiter = event.value
         if delimiter not in [
@@ -660,23 +645,16 @@ class NlessApp(App):
                 if pattern.groups == 0:
                     raise Exception()
                 curr_buffer.delimiter = pattern
-                curr_buffer.current_columns = [
-                    Column(
-                        name=h,
-                        labels=set(),
-                        render_position=i,
-                        data_position=i,
-                        hidden=False,
-                    )
-                    for i, h in enumerate(pattern.groupindex.keys())
-                ]
+                curr_buffer.current_columns = NlessBuffer._make_columns(
+                    list(pattern.groupindex.keys())
+                )
                 if prev_delimiter != "raw" and not isinstance(
                     prev_delimiter, re.Pattern
                 ):
                     curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
                 curr_buffer._update_table()
                 return
-            except:
+            except Exception:
                 pass
 
         if delimiter == "\\t":
@@ -755,12 +733,7 @@ class NlessApp(App):
         ):
             curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
 
-        curr_buffer.current_columns = [
-            Column(
-                name=h, labels=set(), render_position=i, data_position=i, hidden=False
-            )
-            for i, h in enumerate(new_header)
-        ]
+        curr_buffer.current_columns = NlessBuffer._make_columns(list(new_header))
         curr_buffer._update_table()
 
     def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
@@ -775,7 +748,6 @@ class NlessApp(App):
             column_name_filter_regexes = [
                 re.compile(rf"{name}", re.IGNORECASE) for name in column_name_filters
             ]
-            metadata_columns = [mc.value for mc in MetadataColumn]
             visible_pinned_columns = [
                 col
                 for col in curr_buffer.current_columns
@@ -828,25 +800,26 @@ class NlessApp(App):
             cell_value = data_table.get_cell_at(coordinate)
             cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
-            selected_column = [
-                c
-                for c in curr_buffer.current_columns
-                if c.render_position == coordinate.column
-            ]
+            selected_column = curr_buffer._get_column_at_position(coordinate.column)
             if not selected_column:
                 self.notify("No column selected for filtering")
                 return
             self._perform_filter(
                 f"^{cell_value}$",
-                curr_buffer._get_cell_value_without_markup(selected_column[0].name),
+                curr_buffer._get_cell_value_without_markup(selected_column.name),
             )
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
     def refresh_buffer_and_focus(
-        self, new_buffer: NlessBuffer, cursor_coordinate: Coordinate, offset: Offset
+        self,
+        new_buffer: NlessBuffer,
+        cursor_coordinate: Coordinate,
+        offset: Offset,
     ) -> None:
         new_buffer._update_table()
+        tabbed_content = self.query_one(TabbedContent)
+        tabbed_content.active = f"buffer{new_buffer.pane_id}"
         data_table = new_buffer.query_one(NlessDataTable)
         data_table.focus()
         new_buffer._restore_position(
@@ -874,7 +847,6 @@ class NlessApp(App):
         tab_pane.mount(scroll_view)
         scroll_view.mount(new_buffer)
         self.curr_buffer_idx = len(self.buffers) - 1
-        tabbed_content.active = f"buffer{new_buffer.pane_id}"
         self.call_after_refresh(
             lambda: self.refresh_buffer_and_focus(
                 new_buffer,
@@ -931,37 +903,26 @@ class NlessApp(App):
                 )
                 pane.update(curr_title)
 
-    def action_show_tab_next(self) -> None:
-        tabbed_content = self.query_one(TabbedContent)
-        self.curr_buffer_idx = (self.curr_buffer_idx + 1) % len(self.buffers)
-        active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
-        tabbed_content.active = active_buffer_id
-        tabbed_content.query_one(f"#{active_buffer_id}").query_one(
-            NlessDataTable
-        ).focus()
-        self._get_current_buffer()._update_status_bar()
-
-    def action_show_tab_previous(self) -> None:
-        tabbed_content = self.query_one(TabbedContent)
-        self.curr_buffer_idx = (self.curr_buffer_idx - 1) % len(self.buffers)
-        active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
-        tabbed_content.active = active_buffer_id
-        tabbed_content.query_one(f"#{active_buffer_id}").query_one(
-            NlessDataTable
-        ).focus()
-        self._get_current_buffer()._update_status_bar()
-
-    def show_tab_by_index(self, index: int) -> None:
+    def _switch_to_buffer(self, index: int) -> None:
         if index < 0 or index >= len(self.buffers):
             return
-        tabbed_content = self.query_one(TabbedContent)
         self.curr_buffer_idx = index
+        tabbed_content = self.query_one(TabbedContent)
         active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
         tabbed_content.active = active_buffer_id
         tabbed_content.query_one(f"#{active_buffer_id}").query_one(
             NlessDataTable
         ).focus()
         self._get_current_buffer()._update_status_bar()
+
+    def action_show_tab_next(self) -> None:
+        self._switch_to_buffer((self.curr_buffer_idx + 1) % len(self.buffers))
+
+    def action_show_tab_previous(self) -> None:
+        self._switch_to_buffer((self.curr_buffer_idx - 1) % len(self.buffers))
+
+    def show_tab_by_index(self, index: int) -> None:
+        self._switch_to_buffer(index)
 
     def on_mount(self) -> None:
         self.mounted = True

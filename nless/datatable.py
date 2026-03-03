@@ -1,7 +1,5 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import time
-import traceback
 
 from rich.text import Text
 from textual.geometry import Region, Size
@@ -37,6 +35,45 @@ class Datatable(ScrollView):
         ("0", "scroll_to_beginning", "Start of Line"),
     ]
 
+    STYLE_CURSOR = Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
+    STYLE_HEADER = Style(bold=True, bgcolor="#005f5f", color="#d7ffff")
+    STYLE_FIXED_COLUMN = Style(bgcolor="#111177")
+    STYLE_ZEBRA_ODD_ROW = Style(bgcolor="#222222")
+    STYLE_ZEBRA_EVEN_ROW = Style(bgcolor="#333333")
+    STYLE_ZEBRA_ODD_COL = Style(color="#bbbbbb")
+    STYLE_ZEBRA_EVEN_COL = Style(color="#dddddd")
+
+    # Pre-computed style combinations for render_line():
+    # Key: (is_cursor_cell, is_zebra_row, is_zebra_column)
+    _CELL_STYLES: dict[tuple[bool, bool, bool], Style] = {}
+    # Separator styles: Key: (is_cursor_cell, is_zebra_row)
+    _SEP_STYLES: dict[tuple[bool, bool], Style] = {}
+
+    @classmethod
+    def _build_style_cache(cls) -> None:
+        for is_cursor in (True, False):
+            for is_odd_row in (True, False):
+                cursor_style = cls.STYLE_CURSOR if is_cursor else Style()
+                zebra_style = (
+                    cls.STYLE_CURSOR
+                    if is_cursor
+                    else cls.STYLE_ZEBRA_ODD_ROW
+                    if is_odd_row
+                    else cls.STYLE_ZEBRA_EVEN_ROW
+                )
+                cls._SEP_STYLES[(is_cursor, is_odd_row)] = Style.combine(
+                    [zebra_style, cursor_style]
+                )
+                for is_odd_col in (True, False):
+                    column_style = (
+                        cls.STYLE_ZEBRA_ODD_COL
+                        if is_odd_col and not is_cursor
+                        else cls.STYLE_ZEBRA_EVEN_COL
+                    )
+                    cls._CELL_STYLES[(is_cursor, is_odd_row, is_odd_col)] = (
+                        Style.combine([cursor_style, column_style, zebra_style])
+                    )
+
     cursor_coordinate = var(Coordinate(0, 0))
     col_separator: str = "   "
     col_separator_width: int = len(col_separator)
@@ -66,6 +103,9 @@ class Datatable(ScrollView):
         self.cursor_column: int = 0
         self.row_count: int = 0
 
+        if not Datatable._CELL_STYLES:
+            Datatable._build_style_cache()
+
     def remove_row(self, index: int) -> None:
         self.rows.pop(index)
         self.virtual_size = Size(0, len(self.rows) + 1)
@@ -78,8 +118,7 @@ class Datatable(ScrollView):
     def get_cell_at(self, coordinate: Coordinate) -> str | None:
         try:
             return self.rows[coordinate.row][coordinate.column]
-        except Exception:
-            traceback.print_exc()
+        except (IndexError, TypeError):
             return None
 
     def move_cursor(
@@ -176,7 +215,6 @@ class Datatable(ScrollView):
         self.column_widths = [len(col) for col in self.columns]  # default width
 
     def add_rows(self, rows_data: list[list[str]]) -> None:
-        add_rows_start_time = time.time_ns()
         for row in rows_data:
             for i, cell_str in enumerate(row):
                 # Only parse markup if it contains markup characters
@@ -191,10 +229,6 @@ class Datatable(ScrollView):
         self.virtual_size = Size(self._calc_max_width(), len(self.rows) + 1)
         self.row_count += len(rows_data)
         self.refresh()
-        add_rows_end_time = time.time_ns()
-        print(
-            f"Added {len(rows_data)} rows in {(add_rows_end_time - add_rows_start_time) / 1_000_000} ms"
-        )
 
     def add_row_at(self, index: int, row_data: list[str]) -> None:
         for i, cell in enumerate(row_data):
@@ -233,7 +267,7 @@ class Datatable(ScrollView):
             [
                 Segment(
                     fixed_columns_str + segment_str[x : x + self.size.width],
-                    Style(bold=True, bgcolor="#005f5f", color="#d7ffff"),
+                    self.STYLE_HEADER,
                 )
             ]
         )
@@ -251,6 +285,8 @@ class Datatable(ScrollView):
             segments = []
             accumulated_x = 0  # track how far we've rendered horizontally
             is_zebra_row = (y - 1) % 2 != 0
+            is_cursor_row = (y - 1) == self.cursor_row
+            console = self.app.console
 
             for i, cell in enumerate(row):
                 curr_column_width = self.column_widths[i] + self.col_separator_width
@@ -262,17 +298,14 @@ class Datatable(ScrollView):
                     accumulated_x += curr_column_width
                     continue
                 elif i < self.fixed_columns:
-                    is_cursor_cell = (
-                        i == self.cursor_column and (y - 1) == self.cursor_row
-                    )
-                    cursor_style = Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
+                    is_cursor_cell = i == self.cursor_column and is_cursor_row
                     fixed_column_style = (
-                        Style(bgcolor="#111177") if not is_cursor_cell else cursor_style
+                        self.STYLE_FIXED_COLUMN
+                        if not is_cursor_cell
+                        else self.STYLE_CURSOR
                     )
-                    cell_text = Text.from_markup(str(cell))  # validate markup
-                    for parsed_text, parsed_style, _ in cell_text.render(
-                        self.app.console
-                    ):
+                    cell_text = Text.from_markup(str(cell))
+                    for parsed_text, parsed_style, _ in cell_text.render(console):
                         segments.append(
                             Segment(
                                 parsed_text
@@ -283,59 +316,29 @@ class Datatable(ScrollView):
                             )
                         )
                 else:
-                    is_cursor_cell = (
-                        i == self.cursor_column and (y - 1) == self.cursor_row
-                    )
-                    is_zebra_column = i % 2 != 0
+                    is_cursor_cell = i == self.cursor_column and is_cursor_row
 
-                    cursor_style = (
-                        Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
-                        if is_cursor_cell
-                        else Style()
-                    )
-
-                    column_style = (
-                        Style(color="#bbbbbb")
-                        if is_zebra_column and not is_cursor_cell
-                        else Style(color="#dddddd")
-                    )
-
-                    zebra_style = (
-                        Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
-                        if is_cursor_cell
-                        else Style(bgcolor="#222222")
-                        if is_zebra_row
-                        else Style(bgcolor="#333333")
-                    )
-
-                    fixed_column_style = (
-                        Style(bgcolor="blue") if i < self.fixed_columns else Style()
-                    )
-
-                    segment_style = Style.combine(
-                        [cursor_style, column_style, zebra_style, fixed_column_style]
-                    )
+                    segment_style = self._CELL_STYLES[
+                        (is_cursor_cell, is_zebra_row, i % 2 != 0)
+                    ]
+                    separator_style = self._SEP_STYLES[(is_cursor_cell, is_zebra_row)]
 
                     trim_len = 0
 
                     if accumulated_x < x:
-                        trim_len = (
-                            x - accumulated_x
-                        )  # amount to trim from start of cell, because we have scrolled to the middle of a cell
+                        trim_len = x - accumulated_x
 
                     cell_render_len = 0
                     if "[" in cell:
-                        parsed_markup_text = Text.from_markup(
-                            cell
-                        )  # allow cells to use rich markup, e.g. [bold]text[/bold]
-                        for parsed_text, parsed_style, _ in parsed_markup_text.render(
-                            self.app.console
-                        ):
+                        parsed_markup_text = Text.from_markup(cell)
+                        for (
+                            parsed_text,
+                            parsed_style,
+                            _,
+                        ) in parsed_markup_text.render(console):
                             if trim_len > 0:  # need to trim from start of cell
                                 if len(parsed_text) <= trim_len:
-                                    trim_len -= len(
-                                        parsed_text
-                                    )  # fully trimmed this segment, move to next - as it will need trimmed as well
+                                    trim_len -= len(parsed_text)
                                     continue
                                 else:
                                     parsed_text = parsed_text[trim_len:]
@@ -349,19 +352,15 @@ class Datatable(ScrollView):
                         cell_render_len = len(cell)
                         segments.append(Segment(cell, segment_style))
 
-                    separator_trim_amt = 0  # amount to trim from separator if we had to trim cell content
+                    separator_trim_amt = 0
                     rjust_amt = curr_column_width - trim_len - cell_render_len
-                    if (
-                        rjust_amt < self.col_separator_width
-                    ):  # the total space we want the separator to take up is less than the full separator width, we need to trim it
+                    if rjust_amt < self.col_separator_width:
                         separator_trim_amt = self.col_separator_width - rjust_amt
 
                     segments.append(
                         Segment(
                             self.col_separator[separator_trim_amt:].rjust(rjust_amt),
-                            Style.combine(
-                                [zebra_style, cursor_style, fixed_column_style]
-                            ),
+                            separator_style,
                         )
                     )
                     accumulated_x += (

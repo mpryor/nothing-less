@@ -5,11 +5,9 @@ import re
 import time
 from collections import defaultdict
 from copy import deepcopy
-from typing import Any, List, Optional
+from typing import Any
 
 import pyperclip
-from rich.markup import _parse
-from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
@@ -30,7 +28,7 @@ from .types import CliArgs, Column, Filter, MetadataColumn
 class UnparsedLogsScreen(Screen):
     BINDINGS = [("q", "app.pop_screen", "Close")]
 
-    def __init__(self, unparsed_rows: List[str], delimiter: str):
+    def __init__(self, unparsed_rows: list[str], delimiter: str):
         super().__init__()
         self.unparsed_rows = unparsed_rows
         self.delimiter = delimiter
@@ -217,7 +215,7 @@ class NlessBuffer(Static):
         self.displayed_rows = []
         self.first_log_line = ""  # used to determine columns when delimiter is set
         self.current_columns: list[Column] = []
-        self.current_filters: List[Filter] = cli_args.filters if cli_args else []
+        self.current_filters: list[Filter] = cli_args.filters if cli_args else []
         self.search_term = None
         if cli_args and cli_args.sort_by:
             sort_column, direction = cli_args.sort_by.split("=")
@@ -226,7 +224,7 @@ class NlessBuffer(Static):
         else:
             self.sort_column = None
             self.sort_reverse = False
-        self.search_matches: List[Coordinate] = []
+        self.search_matches: list[Coordinate] = []
         self.current_match_index: int = -1
 
         if cli_args and cli_args.delimiter:
@@ -244,6 +242,15 @@ class NlessBuffer(Static):
         self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
 
+        # Caches rebuilt when columns change
+        self._col_data_idx: dict[str, int] = {}  # plain_name → data_position
+        self._col_render_idx: dict[str, int] = {}  # plain_name → render_position
+        self._sorted_visible_columns: list[Column] = []
+        # Dedup: composite_key → row index in displayed_rows
+        self._dedup_key_to_row_idx: dict[str, int] = {}
+        # Incremental sort keys for _find_sorted_insert_index
+        self._sort_keys: list = []
+
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
         data_table = self.query_one(NlessDataTable)
@@ -251,10 +258,17 @@ class NlessBuffer(Static):
         try:
             cell_value = data_table.get_cell_at(coordinate)
             cell_value = self._get_cell_value_without_markup(cell_value)
+        except (IndexError, TypeError):
+            self.notify("Cannot get cell value.", severity="error")
+            return
+        try:
             pyperclip.copy(cell_value)
             self.notify("Cell contents copied to clipboard.", severity="info")
-        except Exception:
-            self.notify("Cannot get cell value.", severity="error")
+        except pyperclip.PyperclipException:
+            self.notify(
+                "Clipboard not available — is xclip/xsel installed?",
+                severity="error",
+            )
 
     def copy(self, pane_id) -> "NlessBuffer":
         new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
@@ -282,6 +296,7 @@ class NlessBuffer(Static):
                 new_buffer.add_logs,
                 lambda: not new_buffer.locked and new_buffer.mounted,
             )
+        new_buffer._rebuild_column_caches()
         return new_buffer
 
     def compose(self) -> ComposeResult:
@@ -345,15 +360,10 @@ class NlessBuffer(Static):
     def action_move_column(self, direction: int) -> None:
         data_table = self.query_one(NlessDataTable)
         current_cursor_column = data_table.cursor_column
-        selected_column = [
-            c
-            for c in self.current_columns
-            if c.render_position == current_cursor_column
-        ]
+        selected_column = self._get_column_at_position(current_cursor_column)
         if not selected_column:
             self.notify("No column selected to move", severity="error")
             return
-        selected_column = selected_column[0]
         if selected_column.name in [m.value for m in MetadataColumn]:
             return  # can't move metadata columns
         if (
@@ -362,16 +372,13 @@ class NlessBuffer(Static):
         ) or (direction == -1 and selected_column.render_position == 0):
             return  # can't move further in that direction
 
-        adjacent_column = [
-            c
-            for c in self.current_columns
-            if c.render_position == selected_column.render_position + direction
-        ]
-        if not adjacent_column or adjacent_column[0].name in [
+        adjacent_column = self._get_column_at_position(
+            selected_column.render_position + direction
+        )
+        if not adjacent_column or adjacent_column.name in [
             m.value for m in MetadataColumn
         ]:  # can't move past metadata columns
             return
-        adjacent_column = adjacent_column[0]
 
         if (
             adjacent_column.pinned
@@ -419,7 +426,7 @@ class NlessBuffer(Static):
         except Exception:
             self.notify("Cannot get cell value.", severity="error")
 
-    def _perform_search(self, search_term: Optional[str]) -> None:
+    def _perform_search(self, search_term: str | None) -> None:
         """Performs a search on the data and updates the table."""
         try:
             if search_term:
@@ -436,16 +443,10 @@ class NlessBuffer(Static):
     def action_sort(self) -> None:
         data_table = self.query_one(NlessDataTable)
         current_cursor_column = data_table.cursor_column
-        selected_column = [
-            c
-            for c in self.current_columns
-            if c.render_position == current_cursor_column
-        ]
+        selected_column = self._get_column_at_position(current_cursor_column)
         if not selected_column:
             self.notify("No column selected for sorting", severity="error")
             return
-        else:
-            selected_column = selected_column[0]
 
         new_sort_column_name = self._get_cell_value_without_markup(selected_column.name)
 
@@ -476,18 +477,104 @@ class NlessBuffer(Static):
 
         self._update_table()
 
-    def _get_label(self, label: Text | str) -> str:
-        if isinstance(label, Text):
-            return label.plain
-        else:
-            return label
-
-    def _get_visible_column_labels(self) -> List[str]:
+    def _get_visible_column_labels(self) -> list[str]:
         labels = []
         for col in sorted(self.current_columns, key=lambda c: c.render_position):
             if not col.hidden:
                 labels.append(f"{col.name} {' '.join(col.labels)}".strip())
         return labels
+
+    def _filter_rows(
+        self, expected_cell_count: int
+    ) -> tuple[list[list[str]], list[str]]:
+        """Parse raw rows, filter by current filters, return (matching, mismatched)."""
+        filtered_rows = []
+        rows_with_inconsistent_length = []
+        for row_str in self.raw_rows:
+            try:
+                cells = split_line(row_str, self.delimiter, self.current_columns)
+            except Exception:
+                continue
+            if len(cells) != expected_cell_count:
+                rows_with_inconsistent_length.append(row_str)
+                continue
+            if self._matches_all_filters(cells, adjust_for_count=True):
+                filtered_rows.append(cells)
+        return filtered_rows, rows_with_inconsistent_length
+
+    def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
+        """Deduplicate rows by composite unique column key, prepending count."""
+        if not self.unique_column_names:
+            return filtered_rows
+        dedup_map = {}
+        for cells in filtered_rows:
+            composite_key = []
+            for col_name in self.unique_column_names:
+                col_idx = self._get_col_idx_by_name(col_name)
+                if col_idx is None:
+                    continue
+                col_idx -= 1  # account for count column
+                composite_key.append(
+                    self._get_cell_value_without_markup(cells[col_idx])
+                )
+            key = ",".join(composite_key)
+            dedup_map[key] = cells
+            self.count_by_column_key[key] += 1
+        deduped_rows = []
+        for k, cells in dedup_map.items():
+            cells.insert(0, str(self.count_by_column_key[k]))
+            deduped_rows.append(cells)
+        return deduped_rows
+
+    def _sort_rows(self, rows: list[list[str]]) -> None:
+        """Sort rows in-place by the current sort column."""
+        if self.sort_column is None:
+            return
+        sort_column_idx = self._get_col_idx_by_name(self.sort_column)
+        if sort_column_idx is None:
+            return
+        try:
+            rows.sort(
+                key=lambda r: self.str_to_int(r[sort_column_idx]),
+                reverse=self.sort_reverse,
+            )
+        except (ValueError, IndexError):
+            pass
+        except Exception:
+            try:
+                rows.sort(
+                    key=lambda r: r[sort_column_idx],
+                    reverse=self.sort_reverse,
+                )
+            except Exception:
+                pass
+
+    def _highlight_search_matches(
+        self, rows: list[list[str]], fixed_columns: int, row_offset: int = 0
+    ) -> list[list[str]]:
+        """Apply search highlighting to rows and populate search_matches."""
+        if not self.search_term:
+            return [list(cells) for cells in rows]
+        result = []
+        for i, cells in enumerate(rows):
+            highlighted_cells = []
+            for col_idx, cell in enumerate(cells):
+                if (
+                    isinstance(self.search_term, re.Pattern)
+                    and self.search_term.search(str(cell))
+                    and col_idx > fixed_columns - 1
+                ):
+                    cell = re.sub(
+                        self.search_term,
+                        lambda m: f"[reverse]{m.group(0)}[/reverse]",
+                        cell,
+                    )
+                    highlighted_cells.append(cell)
+                    self.search_matches.append(Coordinate(row_offset + i, col_idx))
+                else:
+                    highlighted_cells.append(cell)
+            result.append(highlighted_cells)
+        return result
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
@@ -504,140 +591,28 @@ class NlessBuffer(Static):
             if c.name in [m.value for m in MetadataColumn]
         }
         expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
-        data_table.clear(
-            columns=True
-        )  # might be needed to trigger column resizing with longer cell content
+        data_table.clear(columns=True)
 
         data_table.fixed_columns = len(curr_metadata_columns)
+        self._rebuild_column_caches()
         data_table.add_columns(self._get_visible_column_labels())
 
         self.search_matches = []
         self.current_match_index = -1
         self.count_by_column_key = defaultdict(lambda: 0)
+        self._dedup_key_to_row_idx = {}
+        self._sort_keys = []
 
-        # 1. Filter rows
-        filtered_rows = []
-        rows_with_inconsistent_length = []
-        if len(self.current_filters) > 0:
-            for row_str in self.raw_rows:
-                cells = split_line(row_str, self.delimiter, self.current_columns)
-                if len(cells) != expected_cell_count:
-                    rows_with_inconsistent_length.append(cells)
-                    continue
-
-                filter_matches = []
-
-                for filter in self.current_filters:
-                    if (
-                        filter.column is None
-                    ):  # If we have a current_filter, but filter_column is None, we are searching all columns
-                        if any(
-                            filter.pattern.search(
-                                self._get_cell_value_without_markup(cell)
-                            )
-                            for cell in cells
-                        ):
-                            filter_matches.append(True)
-                    else:
-                        col_idx = self._get_col_idx_by_name(filter.column)
-                        if col_idx is None:
-                            break
-                        if (
-                            len(self.unique_column_names) > 0
-                        ):  # account for count column
-                            col_idx -= 1
-                        if filter.pattern.search(
-                            self._get_cell_value_without_markup(cells[col_idx])
-                        ):
-                            filter_matches.append(True)
-                if len(filter_matches) == len(self.current_filters):
-                    filtered_rows.append(cells)
-        else:
-            for i, row in enumerate(self.raw_rows):
-                try:
-                    cells = split_line(row, self.delimiter, self.current_columns)
-                    if len(cells) == expected_cell_count:
-                        filtered_rows.append(cells)
-                    else:
-                        rows_with_inconsistent_length.append(row)
-                except Exception as e:
-                    print(f"Error parsing row: {e}")
-
-        # 2. Dedup by composite column key
-        if len(self.unique_column_names) > 0:
-            dedup_map = {}
-            deduped_rows = []
-            for cells in filtered_rows:
-                composite_key = []
-                for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name)
-                    if col_idx is None:
-                        continue
-                    if len(self.unique_column_names) > 0:  # account for count column
-                        col_idx -= 1
-                    composite_key.append(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    )
-                composite_key = ",".join(composite_key)
-                dedup_map[composite_key] = cells  # always overwrite to keep latest
-                self.count_by_column_key[composite_key] += 1
-            for k, cells in dedup_map.items():
-                count = self.count_by_column_key[k]
-                cells.insert(0, str(count))
-                deduped_rows.append(cells)
-        else:
-            deduped_rows = filtered_rows
-
-        # 3. Sort rows
-        if self.sort_column is not None:
-            sort_column_idx = self._get_col_idx_by_name(self.sort_column)
-            if sort_column_idx is not None:
-                try:
-                    deduped_rows.sort(
-                        key=lambda r: self.str_to_int(r[sort_column_idx]),
-                        reverse=self.sort_reverse,
-                    )
-                except (ValueError, IndexError):
-                    # Fallback if column not found or row is malformed
-                    pass
-                except:
-                    try:
-                        deduped_rows.sort(
-                            key=lambda r: r[sort_column_idx],
-                            reverse=self.sort_reverse,
-                        )
-                    except:
-                        pass
+        filtered_rows, rows_with_inconsistent_length = self._filter_rows(
+            expected_cell_count
+        )
+        deduped_rows = self._dedup_rows(filtered_rows)
+        self._sort_rows(deduped_rows)
 
         aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
-        unstyled_rows = []
-
-        # 4. Add to table and find search matches
-        if self.search_term:
-            for displayed_row_idx, cells in enumerate(aligned_rows):
-                highlighted_cells = []
-                for col_idx, cell in enumerate(cells):
-                    if (
-                        isinstance(self.search_term, re.Pattern)
-                        and self.search_term.search(str(cell))
-                        and col_idx > data_table.fixed_columns - 1
-                    ):
-                        cell = re.sub(
-                            self.search_term,
-                            lambda m: f"[reverse]{m.group(0)}[/reverse]",
-                            cell,
-                        )
-                        highlighted_cells.append(cell)
-                        self.search_matches.append(
-                            Coordinate(displayed_row_idx, col_idx)
-                        )
-                    else:
-                        highlighted_cells.append(cell)
-
-                unstyled_rows.append(highlighted_cells)
-        else:
-            for cells in aligned_rows:
-                unstyled_rows.append(cells)
+        styled_rows = self._highlight_search_matches(
+            aligned_rows, data_table.fixed_columns
+        )
 
         if len(rows_with_inconsistent_length) > 0:
             self.notify(
@@ -645,21 +620,18 @@ class NlessBuffer(Static):
                 severity="warning",
             )
 
-        self.displayed_rows = unstyled_rows
-        data_table.add_rows(unstyled_rows)
+        self.displayed_rows = styled_rows
+        data_table.add_rows(styled_rows)
         self.locked = False
 
         if restore_position:
             self._restore_position(data_table, cursor_x, cursor_y, scroll_x, scroll_y)
 
     def _align_cells_to_visible_columns(self, rows: list[list[str]]) -> list[list[str]]:
+        visible_cols = self._sorted_visible_columns
         new_rows = []
         for row in rows:
-            cells = []
-            for col in sorted(self.current_columns, key=lambda c: c.render_position):
-                if not col.hidden:
-                    cells.append(row[col.data_position])
-            new_rows.append(cells)
+            new_rows.append([row[col.data_position] for col in visible_cols])
         return new_rows
 
     def _restore_position(
@@ -748,15 +720,74 @@ class NlessBuffer(Static):
         data_table.cursor_coordinate = target_coord
         self._update_status_bar()
 
+    def _matches_all_filters(
+        self, cells: list[str], adjust_for_count: bool = False
+    ) -> bool:
+        """Check if a row matches all current filters."""
+        if not self.current_filters:
+            return True
+        filter_matches = 0
+        for f in self.current_filters:
+            if f.column is None:
+                if any(
+                    f.pattern.search(self._get_cell_value_without_markup(cell))
+                    for cell in cells
+                ):
+                    filter_matches += 1
+            else:
+                col_idx = self._get_col_idx_by_name(f.column)
+                if col_idx is None:
+                    break
+                if adjust_for_count and len(self.unique_column_names) > 0:
+                    col_idx -= 1
+                if f.pattern.search(
+                    self._get_cell_value_without_markup(cells[col_idx])
+                ):
+                    filter_matches += 1
+        return filter_matches == len(self.current_filters)
+
+    _MARKUP_TAG_RE = re.compile(r"\[/?[^\]]*\]")
+
     def _get_cell_value_without_markup(self, cell_value) -> str:
         """Extract plain text from a cell value, removing any markup."""
-        parsed_value = [*_parse(cell_value)]
-        if len(parsed_value) > 1:
-            return "".join([res[1] for res in parsed_value if res[1]])
-        return cell_value
+        if "[" not in cell_value:
+            return cell_value
+        return self._MARKUP_TAG_RE.sub("", cell_value)
+
+    @staticmethod
+    def _make_columns(names: list) -> list[Column]:
+        """Create a list of Column objects from a list of names."""
+        return [
+            Column(
+                name=str(n),
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, n in enumerate(names)
+        ]
+
+    def _parse_first_line_columns(self, first_log_line: str) -> list:
+        """Determine column names from the first line based on the delimiter."""
+        if self.delimiter == "raw":
+            return ["log"]
+        elif isinstance(self.delimiter, re.Pattern):
+            return list(self.delimiter.groupindex.keys())
+        elif self.delimiter == "json":
+            try:
+                json_data = json.loads(first_log_line)
+                if isinstance(json_data, dict):
+                    return list(json_data.keys())
+                elif isinstance(json_data, list) and len(json_data) > 0:
+                    return list(range(len(json_data)))
+            except json.JSONDecodeError:
+                pass
+            return ["value"]
+        else:
+            return split_line(first_log_line, self.delimiter, self.current_columns)
 
     def add_logs(self, log_lines: list[str]) -> None:
-        # print stack trace for debugging
         self.locked = True
         data_table = self.query_one(NlessDataTable)
 
@@ -766,77 +797,26 @@ class NlessBuffer(Static):
             self.delimiter_inferred = True
 
         if not self.first_row_parsed:
-            first_log_line = log_lines[0]
-            self.first_log_line = first_log_line
-            if self.delimiter == "raw":
-                # Delimiter is raw, treat entire line as single column
-                data_table.add_columns(["log"])
-                self.current_columns = [
-                    Column(
-                        name="log",
-                        labels=set(),
-                        render_position=0,
-                        data_position=0,
-                        hidden=False,
-                    )
-                ]
-            elif isinstance(self.delimiter, re.Pattern):
-                pattern = self.delimiter
-                parts = list(pattern.groupindex.keys())
-                data_table.add_columns(parts)
-                self.current_columns = [
-                    Column(
-                        name=p,
-                        labels=set(),
-                        render_position=i,
-                        data_position=i,
-                        hidden=False,
-                    )
-                    for i, p in enumerate(parts)
-                ]
-            elif self.delimiter == "json":
-                try:
-                    json_data = json.loads(first_log_line)
-                    if isinstance(json_data, dict):
-                        parts = list(json_data.keys())
-                    elif isinstance(json_data, list) and len(json_data) > 0:
-                        parts = [i for i in range(len(json_data))]
-                    else:
-                        parts = ["value"]
-                except json.JSONDecodeError:
-                    parts = ["value"]
-                data_table.add_columns(parts)
-                self.current_columns = [
-                    Column(
-                        name=p,
-                        labels=set(),
-                        render_position=i,
-                        data_position=i,
-                        hidden=False,
-                    )
-                    for i, p in enumerate(parts)
-                ]
-            else:
-                parts = split_line(first_log_line, self.delimiter, self.current_columns)
-                data_table.add_columns(parts)
-                self.current_columns = [
-                    Column(
-                        name=p,
-                        labels=set(),
-                        render_position=i,
-                        data_position=i,
-                        hidden=False,
-                    )
-                    for i, p in enumerate(parts)
-                ]
-                log_lines = log_lines[1:]  # Exclude header line
+            self.first_log_line = log_lines[0]
+            parts = self._parse_first_line_columns(self.first_log_line)
+            self.current_columns = self._make_columns(parts)
+            data_table.add_columns([str(p) for p in parts])
 
-            if len(self.unique_column_names) > 0:
+            # For non-special delimiters, first line is the header
+            if (
+                self.delimiter != "raw"
+                and not isinstance(self.delimiter, re.Pattern)
+                and self.delimiter != "json"
+            ):
+                log_lines = log_lines[1:]
+
+            if self.unique_column_names:
                 for unique_col_name in self.unique_column_names:
                     handle_mark_unique(self, unique_col_name)
                 data_table.clear(columns=True)
                 data_table.add_columns(self._get_visible_column_labels())
 
+            self._rebuild_column_caches()
             self.first_row_parsed = True
 
         self.raw_rows.extend(log_lines)
@@ -869,173 +849,173 @@ class NlessBuffer(Static):
             return value
         try:
             return float(value)
-        except:
+        except (ValueError, TypeError):
             pass
         return value
 
-    def _bisect_left(self, r_list: list[str], value: str, reverse: bool):
-        tmp_list = list(r_list)
-        if value.isnumeric():
-            value = int(value)
-            tmp_list = [int(v) for v in tmp_list]
-        tmp_list.sort()
-        if reverse:
-            idx_in_temp = bisect.bisect_left(tmp_list, value)
-            return len(tmp_list) - idx_in_temp
-        else:
-            return bisect.bisect_left(tmp_list, value)
+    @staticmethod
+    def _coerce_sort_key(value: str) -> int | float | str:
+        """Coerce a string to numeric if possible, for sort comparison."""
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            pass
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            pass
+        return value
 
-    def _strip_column_indicators(self, col_name: str) -> str:
-        return col_name.replace(" U", "").replace(" ▲", "").replace(" ▼", "")
+    def _rebuild_column_caches(self) -> None:
+        """Rebuild all column-derived caches. Call when columns change."""
+        self._col_data_idx = {}
+        self._col_render_idx = {}
+        for col in self.current_columns:
+            plain = self._get_cell_value_without_markup(col.name)
+            self._col_data_idx[plain] = col.data_position
+            self._col_render_idx[plain] = col.render_position
+        self._sorted_visible_columns = sorted(
+            [c for c in self.current_columns if not c.hidden],
+            key=lambda c: c.render_position,
+        )
 
     def _get_col_idx_by_name(
         self, col_name: str, render_position: bool = False
-    ) -> Optional[int]:
+    ) -> int | None:
+        cache = self._col_render_idx if render_position else self._col_data_idx
+        return cache.get(col_name)
+
+    def _get_column_at_position(self, position: int) -> Column | None:
+        """Get the column at a given render position, or None."""
         for col in self.current_columns:
-            if self._get_cell_value_without_markup(col.name) == col_name:
-                if render_position:
-                    return col.render_position
-                else:
-                    return col.data_position
+            if col.render_position == position:
+                return col
         return None
 
+    def _build_composite_key(
+        self, cells: list[str], render_position: bool = False
+    ) -> str:
+        """Build a composite key from the unique column values in a row."""
+        parts = []
+        for col_name in self.unique_column_names:
+            col_idx = self._get_col_idx_by_name(
+                col_name, render_position=render_position
+            )
+            if col_idx is None:
+                continue
+            parts.append(self._get_cell_value_without_markup(cells[col_idx]))
+        return ",".join(parts)
+
+    def _handle_dedup_for_line(
+        self, cells: list[str]
+    ) -> tuple[list[str], int | None, list[str] | None]:
+        """Handle deduplication for a single incoming line.
+
+        Returns (possibly-updated cells, old_index if replacing, old_row if replacing).
+        """
+        if not self.unique_column_names:
+            return cells, None, None
+
+        new_key = self._build_composite_key(cells)
+
+        if new_key in self._dedup_key_to_row_idx:
+            row_idx = self._dedup_key_to_row_idx[new_key]
+            new_cells = []
+            for col_idx, cell in enumerate(cells):
+                if col_idx == 0:
+                    self.count_by_column_key[new_key] += 1
+                    cell = self.count_by_column_key[new_key]
+                else:
+                    cell = self._get_cell_value_without_markup(cell)
+                new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
+            return new_cells, row_idx, self.displayed_rows[row_idx]
+
+        self.count_by_column_key[new_key] = 1
+        return cells, None, None
+
+    def _find_sorted_insert_index(self, cells: list[str]) -> int:
+        """Find the insertion index for a row based on the current sort."""
+        if self.sort_column is None:
+            return len(self.displayed_rows)
+
+        data_sort_col_idx = self._get_col_idx_by_name(
+            self.sort_column, render_position=False
+        )
+
+        raw_key = self._get_cell_value_without_markup(str(cells[data_sort_col_idx]))
+        sort_key = self._coerce_sort_key(raw_key)
+
+        # _sort_keys is maintained in ascending order; for reverse sort,
+        # we need to find the insertion point from the end
+        idx = bisect.bisect_left(self._sort_keys, sort_key)
+        if self.sort_reverse:
+            return len(self._sort_keys) - idx
+        return idx
+
     def _add_log_line(self, log_line: str):
-        """
-        Adds a single log line by determining:
-        1. if it should be displayed (based on filters)
-        2. if it should be highlighted (based on current search term)
-        3. where it should go, based off current sort
-        """
+        """Adds a single log line, applying filters, dedup, sort, and search highlighting."""
         data_table = self.query_one(NlessDataTable)
         cells = split_line(log_line, self.delimiter, self.current_columns)
-        if len(self.unique_column_names) > 0:
+        if self.unique_column_names:
             cells.insert(0, "1")
 
-        expected_cell_count = len([c for c in self.current_columns])
-        if len(cells) != expected_cell_count:
+        if len(cells) != len(self.current_columns):
             raise RowLengthMismatchError()
 
         try:
-            aligned_cells = self._align_cells_to_visible_columns([cells])[0]
-        except:
+            self._align_cells_to_visible_columns([cells])[0]
+        except (IndexError, KeyError):
             raise RowLengthMismatchError()
 
-        if len(self.current_filters) > 0:
-            filter_matches = []
-            for filter in self.current_filters:
-                if filter.column is None:
-                    # We're filtering any column
-                    if any(
-                        filter.pattern.search(self._get_cell_value_without_markup(cell))
-                        for cell in cells
-                    ):
-                        filter_matches.append(True)
-                else:
-                    col_idx = self._get_col_idx_by_name(filter.column)
-                    if col_idx is None:
-                        return
-                    if filter.pattern.search(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    ):
-                        filter_matches.append(True)
+        if not self._matches_all_filters(cells):
+            return
 
-            if len(filter_matches) != len(self.current_filters):
-                return
-
-        old_index = None
-        old_row = None
-        if len(self.unique_column_names) > 0:
-            new_row_composite_key = []
-            for col_name in self.unique_column_names:
-                col_idx = self._get_col_idx_by_name(col_name)
-                if col_idx is None:
-                    continue
-                new_row_composite_key.append(
-                    self._get_cell_value_without_markup(cells[col_idx])
-                )
-            new_row_composite_key = ",".join(new_row_composite_key)
-
-            for row_idx, row in enumerate(self.displayed_rows):
-                composite_key = []
-                for col_name in self.unique_column_names:
-                    col_idx = self._get_col_idx_by_name(col_name, render_position=True)
-                    if col_idx is None:
-                        continue
-                    composite_key.append(
-                        self._get_cell_value_without_markup(row[col_idx])
-                    )
-                composite_key = ",".join(composite_key)
-
-                if composite_key == new_row_composite_key:
-                    new_cells = []
-                    for col_idx, cell in enumerate(cells):
-                        if col_idx == 0:
-                            self.count_by_column_key[composite_key] += 1
-                            cell = self.count_by_column_key[composite_key]
-                        else:
-                            cell = self._get_cell_value_without_markup(cell)
-                        new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
-                    old_index = row_idx
-                    cells = new_cells
-                    old_row = self.displayed_rows[old_index]
-                    break
-
-            if old_index is None:
-                self.count_by_column_key[new_row_composite_key] = 1
-
-        if self.sort_column is not None:
-            displayed_sort_column_idx = self._get_col_idx_by_name(
-                self.sort_column, render_position=True
-            )
-            data_sort_column_idx = self._get_col_idx_by_name(
-                self.sort_column, render_position=False
-            )
-
-            sort_key = self._get_cell_value_without_markup(
-                str(cells[data_sort_column_idx])
-            )
-            displayed_row_keys = [
-                self._get_cell_value_without_markup(str(r[displayed_sort_column_idx]))
-                for r in self.displayed_rows
-            ]
-            if self.sort_reverse:
-                new_index = self._bisect_left(
-                    displayed_row_keys, sort_key, reverse=True
-                )
-            else:
-                new_index = self._bisect_left(
-                    displayed_row_keys, sort_key, reverse=False
-                )
-        else:
-            new_index = len(self.displayed_rows)
+        cells, old_index, old_row = self._handle_dedup_for_line(cells)
+        new_index = self._find_sorted_insert_index(cells)
 
         cells = self._align_cells_to_visible_columns([cells])[0]
-
-        if self.search_term:
-            highlighted_cells = []
-            for col_idx, cell in enumerate(cells):
-                if (
-                    isinstance(self.search_term, re.Pattern)
-                    and self.search_term.search(cell)
-                    and col_idx > data_table.fixed_columns - 1
-                ):
-                    cell = re.sub(
-                        self.search_term,
-                        lambda m: f"[reverse]{m.group(0)}[/reverse]",
-                        cell,
-                    )
-                    highlighted_cells.append(cell)
-                    self.search_matches.append(Coordinate(new_index, col_idx))
-                else:
-                    highlighted_cells.append(cell)
-            cells = highlighted_cells
+        highlighted = self._highlight_search_matches(
+            [cells], data_table.fixed_columns, row_offset=new_index
+        )
+        cells = highlighted[0]
 
         if old_index is not None:
+            # Remove old row's sort key and dedup index entries
+            if self.sort_column is not None and old_index < len(self._sort_keys):
+                self._sort_keys.pop(old_index)
+            # Update dedup indices for rows shifted by removal
+            for k, idx in self._dedup_key_to_row_idx.items():
+                if idx > old_index:
+                    self._dedup_key_to_row_idx[k] = idx - 1
             self.displayed_rows.remove(old_row)
             data_table.remove_row(old_index)
 
         data_table.add_row_at(index=new_index, row_data=cells)
         self.displayed_rows.insert(new_index, cells)
+
+        # Maintain sort keys
+        if self.sort_column is not None:
+            data_sort_col_idx = self._get_col_idx_by_name(
+                self.sort_column, render_position=False
+            )
+            if data_sort_col_idx is not None:
+                raw_key = self._get_cell_value_without_markup(
+                    str(
+                        split_line(log_line, self.delimiter, self.current_columns)[
+                            data_sort_col_idx
+                        ]
+                    )
+                )
+                bisect.insort_left(self._sort_keys, self._coerce_sort_key(raw_key))
+
+        # Maintain dedup index
+        if self.unique_column_names:
+            dedup_key = self._build_composite_key(cells, render_position=True)
+            # Update indices for rows shifted by insertion
+            for k, idx in self._dedup_key_to_row_idx.items():
+                if idx >= new_index:
+                    self._dedup_key_to_row_idx[k] = idx + 1
+            self._dedup_key_to_row_idx[dedup_key] = new_index
 
         if self.is_tailing:
             data_table.action_scroll_bottom()
