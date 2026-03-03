@@ -423,7 +423,7 @@ class NlessBuffer(Static):
             cell_value = self._get_cell_value_without_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
             self._perform_search(cell_value)
-        except Exception:
+        except (IndexError, TypeError):
             self.notify("Cannot get cell value.", severity="error")
 
     def _perform_search(self, search_term: str | None) -> None:
@@ -493,7 +493,7 @@ class NlessBuffer(Static):
         for row_str in self.raw_rows:
             try:
                 cells = split_line(row_str, self.delimiter, self.current_columns)
-            except Exception:
+            except (json.JSONDecodeError, csv.Error, ValueError):
                 continue
             if len(cells) != expected_cell_count:
                 rows_with_inconsistent_length.append(row_str)
@@ -540,13 +540,13 @@ class NlessBuffer(Static):
             )
         except (ValueError, IndexError):
             pass
-        except Exception:
+        except TypeError:
             try:
                 rows.sort(
                     key=lambda r: r[sort_column_idx],
                     reverse=self.sort_reverse,
                 )
-            except Exception:
+            except (TypeError, IndexError):
                 pass
 
     def _highlight_search_matches(
@@ -832,7 +832,7 @@ class NlessBuffer(Static):
                 except RowLengthMismatchError:
                     mismatch_count += 1
                     continue
-                except Exception:
+                except (json.JSONDecodeError, csv.Error, ValueError, IndexError):
                     pass
 
         if mismatch_count > 0:
@@ -952,6 +952,42 @@ class NlessBuffer(Static):
             return len(self._sort_keys) - idx
         return idx
 
+    def _update_dedup_indices_after_removal(self, old_index: int) -> None:
+        """Shift dedup index entries down after a row removal."""
+        for k, idx in self._dedup_key_to_row_idx.items():
+            if idx > old_index:
+                self._dedup_key_to_row_idx[k] = idx - 1
+
+    def _update_dedup_indices_after_insertion(
+        self, dedup_key: str, new_index: int
+    ) -> None:
+        """Shift dedup index entries up after a row insertion, then record the new key."""
+        for k, idx in self._dedup_key_to_row_idx.items():
+            if idx >= new_index:
+                self._dedup_key_to_row_idx[k] = idx + 1
+        self._dedup_key_to_row_idx[dedup_key] = new_index
+
+    def _update_sort_keys_for_line(
+        self, log_line: str, new_index: int, old_index: int | None
+    ) -> None:
+        """Update the incremental sort keys list after insertion/removal."""
+        if self.sort_column is None:
+            return
+        if old_index is not None and old_index < len(self._sort_keys):
+            self._sort_keys.pop(old_index)
+        data_sort_col_idx = self._get_col_idx_by_name(
+            self.sort_column, render_position=False
+        )
+        if data_sort_col_idx is not None:
+            raw_key = self._get_cell_value_without_markup(
+                str(
+                    split_line(log_line, self.delimiter, self.current_columns)[
+                        data_sort_col_idx
+                    ]
+                )
+            )
+            bisect.insort_left(self._sort_keys, self._coerce_sort_key(raw_key))
+
     def _add_log_line(self, log_line: str):
         """Adds a single log line, applying filters, dedup, sort, and search highlighting."""
         data_table = self.query_one(NlessDataTable)
@@ -974,48 +1010,23 @@ class NlessBuffer(Static):
         new_index = self._find_sorted_insert_index(cells)
 
         cells = self._align_cells_to_visible_columns([cells])[0]
-        highlighted = self._highlight_search_matches(
+        cells = self._highlight_search_matches(
             [cells], data_table.fixed_columns, row_offset=new_index
-        )
-        cells = highlighted[0]
+        )[0]
 
         if old_index is not None:
-            # Remove old row's sort key and dedup index entries
-            if self.sort_column is not None and old_index < len(self._sort_keys):
-                self._sort_keys.pop(old_index)
-            # Update dedup indices for rows shifted by removal
-            for k, idx in self._dedup_key_to_row_idx.items():
-                if idx > old_index:
-                    self._dedup_key_to_row_idx[k] = idx - 1
+            self._update_dedup_indices_after_removal(old_index)
             self.displayed_rows.remove(old_row)
             data_table.remove_row(old_index)
 
         data_table.add_row_at(index=new_index, row_data=cells)
         self.displayed_rows.insert(new_index, cells)
 
-        # Maintain sort keys
-        if self.sort_column is not None:
-            data_sort_col_idx = self._get_col_idx_by_name(
-                self.sort_column, render_position=False
-            )
-            if data_sort_col_idx is not None:
-                raw_key = self._get_cell_value_without_markup(
-                    str(
-                        split_line(log_line, self.delimiter, self.current_columns)[
-                            data_sort_col_idx
-                        ]
-                    )
-                )
-                bisect.insort_left(self._sort_keys, self._coerce_sort_key(raw_key))
+        self._update_sort_keys_for_line(log_line, new_index, old_index)
 
-        # Maintain dedup index
         if self.unique_column_names:
             dedup_key = self._build_composite_key(cells, render_position=True)
-            # Update indices for rows shifted by insertion
-            for k, idx in self._dedup_key_to_row_idx.items():
-                if idx >= new_index:
-                    self._dedup_key_to_row_idx[k] = idx + 1
-            self._dedup_key_to_row_idx[dedup_key] = new_index
+            self._update_dedup_indices_after_insertion(dedup_key, new_index)
 
         if self.is_tailing:
             data_table.action_scroll_bottom()

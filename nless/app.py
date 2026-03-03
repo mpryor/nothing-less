@@ -1,6 +1,8 @@
+import csv
 import json
 import os
 import re
+import subprocess
 from threading import Thread
 
 from textual import events
@@ -29,6 +31,9 @@ from .input import LineStream, ShellCommandLineStream
 from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
 from .types import CliArgs, Column, Filter, MetadataColumn
+
+
+_TAB_SWITCH_KEYS = frozenset(str(i) for i in range(1, 10))
 
 
 class NlessApp(App):
@@ -99,7 +104,7 @@ class NlessApp(App):
                 line_stream=line_stream,
             )
             self.add_buffer(new_buffer, name=command, add_prev_index=False)
-        except Exception as e:
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -182,7 +187,7 @@ class NlessApp(App):
                 id="json_header_select",
             )
             self.mount(select)
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
             curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
 
     def action_column_delimiter(self) -> None:
@@ -228,6 +233,16 @@ class NlessApp(App):
         )
 
         handle_mark_unique(new_buffer, new_unique_column_name)
+
+        # When adding a unique key, sort by count descending by default
+        if new_unique_column_name in new_buffer.unique_column_names:
+            new_buffer.sort_column = MetadataColumn.COUNT.value
+            new_buffer.sort_reverse = True
+            for col in new_buffer.current_columns:
+                if col.name == MetadataColumn.COUNT.value:
+                    col.labels.add("▼")
+                    break
+
         buffer_name = (
             f"+u:{new_unique_column_name}"
             if new_unique_column_name in new_buffer.unique_column_names
@@ -346,10 +361,25 @@ class NlessApp(App):
         if event.key == "enter" and isinstance(self.focused, NlessDataTable):
             self._filter_composite_key(current_buffer)
 
-        if event.key in [str(i) for i in range(1, 10)] and isinstance(
-            self.focused, NlessDataTable
-        ):
+        if event.key in _TAB_SWITCH_KEYS and isinstance(self.focused, NlessDataTable):
             self.show_tab_by_index(int(event.key) - 1)
+
+    @staticmethod
+    def _add_computed_columns(buffer, column_names, make_column_fn):
+        """Add computed columns to a buffer, skipping duplicates.
+
+        Args:
+            buffer: The NlessBuffer to add columns to.
+            column_names: Iterable of candidate column names.
+            make_column_fn: Callable(index, name, position) -> Column.
+        """
+        existing = {c.name for c in buffer.current_columns}
+        base_pos = len(buffer.current_columns)
+        added = 0
+        for i, name in enumerate(column_names):
+            if name not in existing:
+                buffer.current_columns.append(make_column_fn(i, name, base_pos + added))
+                added += 1
 
     def handle_column_delimiter_submitted(self, event: Input.Submitted) -> None:
         event.input.remove()
@@ -377,31 +407,25 @@ class NlessApp(App):
                         severity="error",
                     )
                     return
-                column_count = len(current_buffer.current_columns)
                 cell_json_keys = (
                     list(cell_json.keys())
                     if isinstance(cell_json, dict)
-                    else [i for i in range(len(cell_json))]
+                    else list(range(len(cell_json)))
                 )
-                duplicates = 0
-                for i, key in enumerate(cell_json_keys):
-                    if f"{selected_column.name}.{key}" not in [
-                        c.name for c in current_buffer.current_columns
-                    ]:
-                        current_buffer.current_columns.append(
-                            Column(
-                                name=f"{selected_column.name}.{key}",
-                                labels=set(),
-                                render_position=column_count + i - duplicates,
-                                data_position=column_count + i - duplicates,
-                                hidden=False,
-                                computed=True,
-                                json_ref=f"{selected_column.name}.{key}",
-                                delimiter=new_col_delimiter,
-                            )
-                        )
-                    else:
-                        duplicates += 1
+                self._add_computed_columns(
+                    current_buffer,
+                    [f"{selected_column.name}.{key}" for key in cell_json_keys],
+                    lambda i, name, pos: Column(
+                        name=name,
+                        labels=set(),
+                        render_position=pos,
+                        data_position=pos,
+                        hidden=False,
+                        computed=True,
+                        json_ref=name,
+                        delimiter=new_col_delimiter,
+                    ),
+                )
                 current_buffer._update_table()
             except json.JSONDecodeError:
                 current_buffer.notify(
@@ -416,31 +440,26 @@ class NlessApp(App):
             try:
                 pattern = re.compile(new_col_delimiter)
                 if pattern.groups == 0:
-                    raise Exception()
-                group_names = pattern.groupindex.keys()
-                duplicates = 0
-                for i, group in enumerate(group_names):
-                    if group not in [c.name for c in current_buffer.current_columns]:
-                        current_buffer.current_columns.append(
-                            Column(
-                                name=group,
-                                labels=set(),
-                                render_position=len(current_buffer.current_columns)
-                                - duplicates,
-                                data_position=len(current_buffer.current_columns)
-                                - duplicates,
-                                hidden=False,
-                                computed=True,
-                                col_ref=f"{selected_column.name}",
-                                col_ref_index=i,
-                                delimiter=pattern,
-                            )
-                        )
-                    else:
-                        duplicates += 1
+                    raise re.error("no named groups")
+                group_names = list(pattern.groupindex.keys())
+                self._add_computed_columns(
+                    current_buffer,
+                    group_names,
+                    lambda i, name, pos, _pat=pattern, _sel=selected_column: Column(
+                        name=name,
+                        labels=set(),
+                        render_position=pos,
+                        data_position=pos,
+                        hidden=False,
+                        computed=True,
+                        col_ref=f"{_sel.name}",
+                        col_ref_index=i,
+                        delimiter=_pat,
+                    ),
+                )
                 current_buffer._update_table()
                 return
-            except Exception:
+            except (re.error, ValueError):
                 pass
 
             try:
@@ -455,28 +474,27 @@ class NlessApp(App):
                         severity="error",
                     )
                     return
-                column_count = len(current_buffer.current_columns)
-                duplicates = 0
-                for i, part in enumerate(cell_parts):
-                    part = part.strip()
-                    if part not in [c.name for c in current_buffer.current_columns]:
-                        current_buffer.current_columns.append(
-                            Column(
-                                name=f"{selected_column.name}-{i + 1}",
-                                labels=set(),
-                                render_position=column_count + i - duplicates,
-                                data_position=column_count + i - duplicates,
-                                hidden=False,
-                                computed=True,
-                                col_ref_index=i,
-                                col_ref=f"{selected_column.name}",
-                                delimiter=new_col_delimiter,
-                            )
-                        )
-                    else:
-                        duplicates += 1
+                self._add_computed_columns(
+                    current_buffer,
+                    [f"{selected_column.name}-{i + 1}" for i in range(len(cell_parts))],
+                    lambda i,
+                    name,
+                    pos,
+                    _delim=new_col_delimiter,
+                    _sel=selected_column: Column(
+                        name=name,
+                        labels=set(),
+                        render_position=pos,
+                        data_position=pos,
+                        hidden=False,
+                        computed=True,
+                        col_ref_index=i,
+                        col_ref=f"{_sel.name}",
+                        delimiter=_delim,
+                    ),
+                )
                 current_buffer._update_table()
-            except Exception as e:
+            except (json.JSONDecodeError, csv.Error, ValueError, IndexError) as e:
                 current_buffer.notify(
                     f"Error splitting cell: {str(e)}", severity="error"
                 )
@@ -496,7 +514,7 @@ class NlessApp(App):
                             f"Wrote current view to {output_path}"
                         )
                     )
-            except Exception as exc:
+            except (OSError, csv.Error, ValueError) as exc:
                 msg = str(exc)
                 self.call_from_thread(
                     lambda: current_buffer.notify(
@@ -559,7 +577,7 @@ class NlessApp(App):
         data_table = curr_buffer.query_one(NlessDataTable)
 
         if event.input.id == "filter_input_any":
-            self._perform_filter_any(filter_value)
+            self._perform_filter(filter_value)
         else:
             column_index = data_table.cursor_column
             column = curr_buffer._get_column_at_position(column_index)
@@ -569,32 +587,13 @@ class NlessApp(App):
             column_label = curr_buffer._get_cell_value_without_markup(column.name)
             self._perform_filter(filter_value, column_label)
 
-    def _perform_filter_any(self, filter_value: str | None) -> None:
-        new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
-        """Performs a filter across all columns and updates the table."""
-        if not filter_value:
-            new_buffer.current_filters = []
-            new_buf_name = (
-                new_buffer.current_filters
-                and f"-f:{','.join([f'{f.column if f.column else "any"}={f.pattern.pattern}' for f in new_buffer.current_filters])}"
-                or "-f"
-            )
-        else:
-            try:
-                new_buffer.current_filters.append(
-                    Filter(column=None, pattern=re.compile(filter_value, re.IGNORECASE))
-                )
-            except re.error:
-                new_buffer.notify("Invalid regex pattern", severity="error")
-                return
-            new_buf_name = f"+f:any={filter_value}"
-
-        self.add_buffer(new_buffer, name=new_buf_name)
-
     def _perform_filter(
-        self, filter_value: str | None, column_name: str | None
+        self, filter_value: str | None, column_name: str | None = None
     ) -> None:
-        """Performs a filter on the data and updates the table."""
+        """Performs a filter on the data and updates the table.
+
+        When column_name is None, filters across all columns.
+        """
         new_buffer = self._get_current_buffer().copy(pane_id=self._get_new_pane_id())
         if not filter_value:
             new_buf_name = (
@@ -604,14 +603,13 @@ class NlessApp(App):
             )
             new_buffer.current_filters = []
         else:
-            if column_name in new_buffer.unique_column_names:
+            if column_name and column_name in new_buffer.unique_column_names:
                 handle_mark_unique(new_buffer, column_name)
                 self.notify(
                     f"Removed unique column: {column_name}, to allow filtering.",
                     severity="info",
                 )
             try:
-                # Compile the regex pattern
                 new_buffer.current_filters.append(
                     Filter(
                         column=column_name,
@@ -621,55 +619,67 @@ class NlessApp(App):
             except re.error:
                 new_buffer.notify("Invalid regex pattern", severity="error")
                 return
-            new_buf_name = f"+f:{column_name}={filter_value}"
+            if column_name is None:
+                new_buf_name = f"+f:any={filter_value}"
+            else:
+                new_buf_name = f"+f:{column_name}={filter_value}"
 
         self.add_buffer(new_buffer, name=new_buf_name)
 
-    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
-        curr_buffer = self._get_current_buffer()
-        curr_buffer.current_filters = []
-        curr_buffer.search_term = None
-        curr_buffer.sort_column = None
-        curr_buffer.unique_column_names = set()
-        prev_delimiter = curr_buffer.delimiter
+    @staticmethod
+    def _should_reinsert_header_as_data(
+        prev_delimiter, new_delimiter, parsed_full_json_file
+    ) -> bool:
+        """Check whether the old header line should be re-inserted as a data row.
 
-        event.input.remove()
-        curr_buffer.delimiter_inferred = False
-        delimiter = event.value
-        if delimiter not in [
-            "raw",
-            "json",
-        ]:  # if our delimiter is not one of the common ones, treat it as a regex
+        This is needed when switching from a standard delimiter (where the first
+        line was consumed as header) to raw/json/regex (where every line is data).
+        """
+        if prev_delimiter == new_delimiter or parsed_full_json_file:
+            return False
+        prev_is_standard = (
+            prev_delimiter != "raw"
+            and not isinstance(prev_delimiter, re.Pattern)
+            and prev_delimiter != "json"
+        )
+        new_is_headerless = (
+            new_delimiter == "raw"
+            or isinstance(new_delimiter, re.Pattern)
+            or new_delimiter == "json"
+        )
+        return prev_is_standard and new_is_headerless
+
+    @staticmethod
+    def _parse_delimiter_input(value: str) -> str | re.Pattern:
+        """Parse user delimiter input, handling tab escape and regex compilation.
+
+        Returns a compiled regex Pattern if the input has named capture groups,
+        otherwise returns the delimiter string (with \\t converted to tab).
+        """
+        if value not in ("raw", "json"):
             try:
-                pattern = re.compile(rf"{delimiter}")  # Validate regex
-                if pattern.groups == 0:
-                    raise Exception()
-                curr_buffer.delimiter = pattern
-                curr_buffer.current_columns = NlessBuffer._make_columns(
-                    list(pattern.groupindex.keys())
-                )
-                if prev_delimiter != "raw" and not isinstance(
-                    prev_delimiter, re.Pattern
-                ):
-                    curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
-                curr_buffer._update_table()
-                return
-            except Exception:
+                pattern = re.compile(rf"{value}")
+                if pattern.groups > 0:
+                    return pattern
+            except (re.error, ValueError):
                 pass
+        if value == "\\t":
+            return "\t"
+        return value
 
-        if delimiter == "\\t":
-            delimiter = "\t"
+    def _resolve_new_header(self, delimiter, prev_delimiter, curr_buffer):
+        """Determine the new header columns and whether the full JSON file was parsed.
 
-        curr_buffer.delimiter = delimiter
-
-        parsed_full_json_file = False
-
+        Returns (header_list, parsed_full_json_file) or None if an error occurred
+        and was reported to the user.
+        """
         if delimiter == "raw":
-            new_header = ["log"]
-        elif delimiter == "json":
+            return ["log"], False
+
+        if delimiter == "json":
             try:
-                new_header = json.loads(curr_buffer.first_log_line).keys()
-            except Exception as e:
+                return list(json.loads(curr_buffer.first_log_line).keys()), False
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
                 # attempt to read all logs as one json payload
                 try:
                     all_logs = ""
@@ -684,52 +694,73 @@ class NlessApp(App):
                         and len(buffer_json) > 0
                         and isinstance(buffer_json[0], dict)
                     ):
-                        new_header = buffer_json[0].keys()
+                        header = list(buffer_json[0].keys())
                         curr_buffer.raw_rows = [
                             json.dumps(item) for item in buffer_json
                         ]
                     elif isinstance(buffer_json, dict):
-                        new_header = buffer_json.keys()
+                        header = list(buffer_json.keys())
                         curr_buffer.raw_rows = [json.dumps(buffer_json)]
                     else:
                         curr_buffer.notify(
                             f"Failed to parse JSON logs: {e}", severity="error"
                         )
-                        return
+                        return None
                     curr_buffer.first_log_line = curr_buffer.raw_rows[0]
-                    parsed_full_json_file = True
-                except Exception as e2:
+                    return header, True
+                except (json.JSONDecodeError, KeyError, TypeError) as e2:
                     curr_buffer.notify(
                         f"Failed to parse JSON logs: {e2}", severity="error"
                     )
-                    return
-        elif prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
-            new_header = split_line(
+                    return None
+
+        if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
+            header = split_line(
                 curr_buffer.raw_rows[0],
                 curr_buffer.delimiter,
                 curr_buffer.current_columns,
             )
             curr_buffer.raw_rows.pop(0)
-        else:
-            new_header = split_line(
-                curr_buffer.first_log_line,
-                curr_buffer.delimiter,
-                curr_buffer.current_columns,
-            )
+            return header, False
 
-        if (
-            (prev_delimiter != delimiter)
-            and (
-                prev_delimiter != "raw"
-                and not isinstance(prev_delimiter, re.Pattern)
-                and prev_delimiter != "json"
+        return split_line(
+            curr_buffer.first_log_line,
+            curr_buffer.delimiter,
+            curr_buffer.current_columns,
+        ), False
+
+    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
+        curr_buffer = self._get_current_buffer()
+        curr_buffer.current_filters = []
+        curr_buffer.search_term = None
+        curr_buffer.sort_column = None
+        curr_buffer.unique_column_names = set()
+        prev_delimiter = curr_buffer.delimiter
+
+        event.input.remove()
+        curr_buffer.delimiter_inferred = False
+        delimiter = self._parse_delimiter_input(event.value)
+
+        # If it's a regex with named groups, apply directly
+        if isinstance(delimiter, re.Pattern):
+            curr_buffer.delimiter = delimiter
+            curr_buffer.current_columns = NlessBuffer._make_columns(
+                list(delimiter.groupindex.keys())
             )
-            and (
-                delimiter == "raw"
-                or isinstance(delimiter, re.Pattern)
-                or delimiter == "json"
-            )
-            and not parsed_full_json_file
+            if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
+                curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
+            curr_buffer._update_table()
+            return
+
+        curr_buffer.delimiter = delimiter
+
+        result = self._resolve_new_header(delimiter, prev_delimiter, curr_buffer)
+        if result is None:
+            return
+        new_header, parsed_full_json_file = result
+
+        if self._should_reinsert_header_as_data(
+            prev_delimiter, delimiter, parsed_full_json_file
         ):
             curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
 
@@ -808,7 +839,7 @@ class NlessApp(App):
                 f"^{cell_value}$",
                 curr_buffer._get_cell_value_without_markup(selected_column.name),
             )
-        except Exception:
+        except (IndexError, TypeError):
             self.notify("Cannot get cell value.", severity="error")
 
     def refresh_buffer_and_focus(

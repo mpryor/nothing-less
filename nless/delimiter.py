@@ -6,6 +6,26 @@ from io import StringIO
 from .types import Column, MetadataColumn
 
 
+def _find_ref_column_cell(
+    lookup_column: str | None,
+    sorted_columns: list[Column],
+    cells: list[str],
+    count_metadata_columns: int,
+) -> str | None:
+    """Find the cell value from the referenced source column.
+
+    Returns the cell string if found and in bounds, otherwise None.
+    """
+    if lookup_column is None:
+        return None
+    for c in sorted_columns:
+        if c.name == lookup_column and c.data_position - count_metadata_columns < len(
+            cells
+        ):
+            return cells[c.data_position - count_metadata_columns]
+    return None
+
+
 def split_line(
     line: str, delimiter: str | re.Pattern[str] | None, columns: list[Column]
 ) -> list[str]:
@@ -51,70 +71,61 @@ def split_line(
 
     for i, col in enumerate(sorted_columns):
         if col.delimiter and col.delimiter == "json":
-            json_ref = col.json_ref
-            json_path = json_ref.split(".")
-            lookup_column = json_path[0]
-            for c in sorted_columns:
-                if (
-                    c.name == lookup_column
-                    and c.data_position - count_metadata_columns < len(cells)
-                ):
-                    try:
-                        json_data = json.loads(
-                            cells[c.data_position - count_metadata_columns]
-                        )
-                        for key in json_path[1:]:
-                            if isinstance(json_data, dict):
-                                json_data = json_data.get(key, "")
-                            elif isinstance(json_data, list):
-                                try:
-                                    index = int(key)
-                                    json_data = json_data[index]
-                                except (ValueError, IndexError):
-                                    json_data = ""
-                            else:
-                                json_data = ""
-                    except (json.JSONDecodeError, IndexError):
+            json_path = col.json_ref.split(".")
+            ref_cell = _find_ref_column_cell(
+                json_path[0], sorted_columns, cells, count_metadata_columns
+            )
+            if ref_cell is None:
+                continue
+            try:
+                json_data = json.loads(ref_cell)
+                for key in json_path[1:]:
+                    if isinstance(json_data, dict):
+                        json_data = json_data.get(key, "")
+                    elif isinstance(json_data, list):
+                        try:
+                            json_data = json_data[int(key)]
+                        except (ValueError, IndexError):
+                            json_data = ""
+                    else:
                         json_data = ""
-                    cells.insert(
-                        col.data_position - count_metadata_columns,
-                        json.dumps(json_data)
-                        if isinstance(json_data, (dict, list))
-                        else str(json_data),
-                    )
-                    break
+            except (json.JSONDecodeError, IndexError):
+                json_data = ""
+            cells.insert(
+                col.data_position - count_metadata_columns,
+                json.dumps(json_data)
+                if isinstance(json_data, (dict, list))
+                else str(json_data),
+            )
         elif isinstance(col.delimiter, re.Pattern):
-            lookup_column = col.col_ref
-            for c in sorted_columns:
-                if (
-                    c.name == lookup_column
-                    and c.data_position - count_metadata_columns < len(cells)
-                ):
-                    subline = cells[c.data_position - count_metadata_columns]
-                    match = col.delimiter.match(subline)
-                    if match:
-                        subcells = [*match.groups()]
-                        subcells = [txt.replace("\t", "  ") for txt in subcells]
-                        cells.insert(
-                            col.data_position - count_metadata_columns,
-                            subcells[col.col_ref_index],
-                        )
+            ref_cell = _find_ref_column_cell(
+                col.col_ref, sorted_columns, cells, count_metadata_columns
+            )
+            if ref_cell is None:
+                continue
+            match = col.delimiter.match(ref_cell)
+            if match:
+                subcells = [txt.replace("\t", "  ") for txt in match.groups()]
+                cells.insert(
+                    col.data_position - count_metadata_columns,
+                    subcells[col.col_ref_index],
+                )
         else:
-            lookup_column = col.col_ref
-            for c in sorted_columns:
-                if (
-                    c.name == lookup_column
-                    and c.data_position - count_metadata_columns < len(cells)
-                ):
-                    subline = cells[c.data_position - count_metadata_columns]
-                    subcells = split_line(subline, col.delimiter, [])
-                    subcells = [txt.replace("\t", "  ") for txt in subcells]
-                    cells.insert(
-                        col.data_position - count_metadata_columns,
-                        subcells[col.col_ref_index]
-                        if col.col_ref_index < len(subcells)
-                        else "",
-                    )
+            ref_cell = _find_ref_column_cell(
+                col.col_ref, sorted_columns, cells, count_metadata_columns
+            )
+            if ref_cell is None:
+                continue
+            subcells = [
+                txt.replace("\t", "  ")
+                for txt in split_line(ref_cell, col.delimiter, [])
+            ]
+            cells.insert(
+                col.data_position - count_metadata_columns,
+                subcells[col.col_ref_index]
+                if col.col_ref_index < len(subcells)
+                else "",
+            )
     return cells
 
 

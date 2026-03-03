@@ -2,31 +2,6 @@ import csv
 import time
 from textual.app import App, ComposeResult
 from nless.datatable import Datatable
-from nless.nlesstable import NlessDataTable as OldDatatable
-
-
-class TestAppOld(App):
-    start_time = time.time_ns()
-    end_time = 0
-
-    def compose(self) -> ComposeResult:
-        table = OldDatatable()
-        with open("./example_data/people-1000000.csv") as f:
-            lines = f.readlines()
-            rows = []
-            for i, line in enumerate(lines):
-                if i == 0:
-                    columns = next(csv.reader([line]))
-                    table.add_columns(*(columns))
-                else:
-                    row = next(csv.reader([line]))
-                    rows.append(row)
-            table.add_rows(rows)
-        yield table
-
-    def on_ready(self) -> None:
-        self.end_time = time.time_ns()
-        self.exit()
 
 
 def load_data():
