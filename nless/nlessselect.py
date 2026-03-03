@@ -18,14 +18,14 @@ class NlessSelect(Static):
         super().__init__(*args, **kwargs)
 
     def _write_options(self):
-        l = self.query_one(RichLog)
-        l.clear()
+        rich_log = self.query_one(RichLog)
+        rich_log.clear()
         for i, (k, v) in enumerate(self.filtered_options):
             if i == self.highlight_index:
-                l.write(f"[reverse]{k}[/reverse]")
+                rich_log.write(f"[reverse]{k}[/reverse]")
             else:
-                l.write(k)
-        l.scroll_to(y=self.highlight_index)
+                rich_log.write(k)
+        rich_log.scroll_to(y=self.highlight_index)
 
     def on_key(self, event):
         if event.key == "down":
@@ -45,8 +45,8 @@ class NlessSelect(Static):
     def on_input_changed(self, event: Input.Changed):
         self.highlight_index = 0
         self.filter = event.input.value.lower()
-        l = self.query_one(RichLog)
-        l.clear()
+        rich_log = self.query_one(RichLog)
+        rich_log.clear()
 
         self.filtered_options = []
         for k, v in self.options:
@@ -62,15 +62,15 @@ class NlessSelect(Static):
         self.remove()
 
     def compose(self):
-        l = RichLog(markup=True, auto_scroll=False)
-        l.write(
+        rich_log = RichLog(markup=True, auto_scroll=False)
+        rich_log.write(
             "[#888888]Select a JSON key to add as a column - Type to filter, Enter to select, Up/Down to navigate"
         )
         for i, (k, v) in enumerate(self.options):
             if i == self.highlight_index:
-                l.write(f"[reverse]{k}[/reverse]")
+                rich_log.write(f"[reverse]{k}[/reverse]")
             else:
-                l.write(k)
-        l.scroll_to(y=0)
-        yield l
+                rich_log.write(k)
+        rich_log.scroll_to(y=0)
+        yield rich_log
         yield Input(placeholder=self.prompt or "Type to filter...")
