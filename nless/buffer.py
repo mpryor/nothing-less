@@ -270,12 +270,30 @@ class NlessBuffer(Static):
                 severity="error",
             )
 
+    def _filter_lines(self, lines: list[str]) -> list[str]:
+        """Return only lines that match all current filters."""
+        if not self.current_filters:
+            return lines
+        metadata = [mc.value for mc in MetadataColumn]
+        expected = len([c for c in self.current_columns if c.name not in metadata])
+        matching = []
+        for line in lines:
+            try:
+                cells = split_line(line, self.delimiter, self.current_columns)
+            except (json.JSONDecodeError, csv.Error, ValueError):
+                continue
+            if len(cells) != expected:
+                continue
+            if self._matches_all_filters(cells, adjust_for_count=True):
+                matching.append(line)
+        return matching
+
     def copy(self, pane_id) -> "NlessBuffer":
         new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
         new_buffer.mounted = self.mounted
         new_buffer.first_row_parsed = self.first_row_parsed
-        new_buffer.raw_rows = deepcopy(self.raw_rows)
-        new_buffer.displayed_rows = deepcopy(self.displayed_rows)
+        new_buffer.raw_rows = self._filter_lines(self.raw_rows)
+        new_buffer.displayed_rows = []
         new_buffer.first_log_line = self.first_log_line
         new_buffer.current_columns = deepcopy(self.current_columns)
         new_buffer.current_filters = deepcopy(self.current_filters)
@@ -291,7 +309,7 @@ class NlessBuffer(Static):
         new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
         new_buffer.line_stream = self.line_stream
         if self.line_stream:
-            self.line_stream.subscribe(
+            self.line_stream.subscribe_future_only(
                 new_buffer,
                 new_buffer.add_logs,
                 lambda: not new_buffer.locked and new_buffer.mounted,
@@ -487,9 +505,14 @@ class NlessBuffer(Static):
     def _filter_rows(
         self, expected_cell_count: int
     ) -> tuple[list[list[str]], list[str]]:
-        """Parse raw rows, filter by current filters, return (matching, mismatched)."""
+        """Parse raw rows, filter by current filters, return (matching, mismatched).
+
+        Also shrinks raw_rows to only keep matching lines so that subsequent
+        _update_table() calls (sort, search, etc.) scan fewer rows.
+        """
         filtered_rows = []
         rows_with_inconsistent_length = []
+        kept_raw = []
         for row_str in self.raw_rows:
             try:
                 cells = split_line(row_str, self.delimiter, self.current_columns)
@@ -500,6 +523,8 @@ class NlessBuffer(Static):
                 continue
             if self._matches_all_filters(cells, adjust_for_count=True):
                 filtered_rows.append(cells)
+                kept_raw.append(row_str)
+        self.raw_rows = kept_raw
         return filtered_rows, rows_with_inconsistent_length
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
@@ -819,14 +844,15 @@ class NlessBuffer(Static):
             self._rebuild_column_caches()
             self.first_row_parsed = True
 
-        self.raw_rows.extend(log_lines)
+        filtered = self._filter_lines(log_lines)
+        self.raw_rows.extend(filtered)
 
         mismatch_count = 0
 
-        if len(log_lines) > 1000:
+        if len(filtered) > 1000:
             self._update_table()
         else:
-            for line in log_lines:
+            for line in filtered:
                 try:
                     self._add_log_line(line)
                 except RowLengthMismatchError:

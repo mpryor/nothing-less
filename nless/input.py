@@ -43,6 +43,15 @@ class LineStream:
             self._initial_notify, is_ready_func, add_lines_func, self.lines.copy()
         )
 
+    def subscribe_future_only(
+        self,
+        subscriber: Any,
+        add_lines_func: AddLinesCallback,
+        is_ready_func: IsReadyCallback,
+    ) -> None:
+        """Register for future lines without replaying history."""
+        self.subscribers.append((subscriber, is_ready_func, add_lines_func))
+
     def unsubscribe(self, subscriber: Any) -> None:
         self.subscribers = [s for s in self.subscribers if s[0] != subscriber]
 
