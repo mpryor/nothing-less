@@ -1,4 +1,10 @@
 # Changelog
+## 1.0.0 (2026-03-03)
+
+### Feat
+
+- Cutting 1.0.0 release, with our MVP major features
+
 ## 0.7.0 (2026-03-03)
 
 ### Feat
