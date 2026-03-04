@@ -1,4 +1,10 @@
 # Changelog
+## 1.1.2 (2026-03-04)
+
+### Refactor
+
+- extract data processing, operations, status bar, and unparsed logs into separate modules
+
 ## 1.1.1 (2026-03-04)
 
 ### Fix
