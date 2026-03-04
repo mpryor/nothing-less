@@ -1,4 +1,10 @@
 # Changelog
+## 1.1.0 (2026-03-04)
+
+### Feat
+
+- add pivot focused view, reset highlights keybind, exclude filters, and docs updates
+
 ## 1.0.1 (2026-03-04)
 
 ### Fix
