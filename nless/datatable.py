@@ -239,8 +239,12 @@ class Datatable(ScrollView):
 
     def add_row_at(self, index: int, row_data: list[str]) -> None:
         for i, cell in enumerate(row_data):
-            if len(cell) > self.column_widths[i]:
-                self.column_widths[i] = len(cell)
+            if "[" in cell:
+                cell_len = Text.from_markup(cell).cell_len
+            else:
+                cell_len = len(cell)
+            if cell_len > self.column_widths[i]:
+                self.column_widths[i] = cell_len
 
         self.rows.insert(index, row_data)
         self.row_count += 1

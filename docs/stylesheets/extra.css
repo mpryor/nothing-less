@@ -19,3 +19,21 @@
 .md-header__topic .md-ellipsis {
   display: none;
 }
+
+.md-typeset a {
+  color: #76ff03;
+}
+
+.md-typeset a:visited {
+  color: #b9f6ca;
+}
+
+.md-nav__link--active {
+  color: #76ff03 !important;
+}
+
+.md-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}

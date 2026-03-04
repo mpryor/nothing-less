@@ -24,7 +24,7 @@
 - **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
 - **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
-- **Pivoting** — group records by composite key, dive into grouped data
+- **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
 
 ## Demos
 

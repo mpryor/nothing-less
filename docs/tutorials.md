@@ -83,6 +83,7 @@ nless orders.csv
 
 1. Press `c` and select `status` to jump to it
 2. Press `U` — the data is deduplicated by `status`, and a `count` column appears on the left
+3. The view automatically focuses on just the key and count columns, hiding the rest so you can see the summary clearly
 
     You should see something like:
 
@@ -91,6 +92,9 @@ nless orders.csv
     | 5     | shipped   |
     | 3     | pending   |
     | 2     | cancelled |
+
+    !!! tip "Streaming with pivots"
+        If you're watching live data (e.g. `kubectl get pods -w | nless`), the hidden columns automatically reappear when new lines arrive, so you see the full row detail alongside updated counts.
 
 **Drill into a group:**
 
@@ -289,7 +293,7 @@ nless auto-detects the double-space-aligned format. If it doesn't, press `D` and
 
 ## 7. Live Streaming
 
-nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen.
+nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen. Once you've reviewed the new data, press `r` to clear the green highlights and reset everything to normal.
 
 ### Streaming from a pipe
 
@@ -305,7 +309,7 @@ Or try it locally:
 ping localhost | nless
 ```
 
-New lines appear at the bottom highlighted in green. Press `t` to enable **tail mode** — the cursor stays pinned to the bottom so you always see the latest data as it arrives.
+New lines appear at the bottom highlighted in green. Press `t` to enable **tail mode** — the cursor stays pinned to the bottom so you always see the latest data as it arrives. When the green highlighting becomes distracting, press `r` to reset it — the next batch of new lines will be highlighted fresh.
 
 ### Streaming with `!` shell commands
 
@@ -320,7 +324,8 @@ You can also launch streaming commands from inside nless without leaving the app
 
 3. A new buffer opens and lines stream in, highlighted in green as they arrive
 4. Press `t` to enable tail mode and follow the output
-5. Press `L` / `H` or `1`–`9` to switch back to your original data
+5. Press `r` to reset the green highlights once you've seen the new data
+6. Press `L` / `H` or `1`–`9` to switch back to your original data
 
 ### Monitoring a live log with structure
 
@@ -339,7 +344,7 @@ tail -f /var/log/nginx/access.log | nless
 
 3. All existing and future lines are parsed into columns
 4. Press `t` for tail mode — new lines continue arriving, now structured and highlighted in green
-5. Press `c` and select `status`, then press `f` and type `^5` to filter to 5xx errors in real-time
+5. Press `r` to clear the highlights, then press `c` and select `status`, press `f` and type `^5` to filter to 5xx errors in real-time
 
 ### Watching Kubernetes pods
 
@@ -349,8 +354,10 @@ kubectl get pods -A -w | nless -d '  '
 
 1. The initial pod list loads as normal text
 2. As pods change state, new lines stream in highlighted in green
-3. Press `c` and select `STATUS`, then press `U` to pivot by status — the counts update as new lines arrive
-4. Press `t` to tail and watch changes as they happen
+3. Press `r` to reset highlights after reviewing the changes
+4. Press `c` and select `STATUS`, then press `U` to pivot by status — the view focuses on just `STATUS` and `count`
+5. When a new line arrives, all columns reappear automatically with updated counts, and the new row is highlighted in green
+6. Press `t` to tail and watch changes as they happen
 
 ### Running multiple streams side by side
 
@@ -360,7 +367,7 @@ You can open several streaming commands in separate buffers:
 2. Press `!` and type `kubectl get events -w` — a second buffer opens with the event stream
 3. Press `!` and type `tail -f /var/log/app.log` — a third buffer opens
 4. Switch between buffers with `1`, `2`, `3` or `L` / `H`
-5. Each buffer streams independently, with new lines highlighted in green
+5. Each buffer streams independently, with new lines highlighted in green — press `r` in any buffer to reset its highlights
 
 ### Streaming JSON logs
 
@@ -534,6 +541,7 @@ tail -f /tmp/live-access.log | nless
 3. Press `t` to enable tail mode — you're now watching structured data scroll by in real-time
 4. Press `c` and select `status`, then press `f` and type `^[45]` — you're filtering to errors live
 5. New lines still stream in (highlighted in green), but only errors pass the filter
-6. Press `c` and select `path`, then press `U` — see which endpoints are failing most, with counts updating live
-7. Press ++enter++ on a path to drill into the specific errors for that endpoint
+6. Press `c` and select `path`, then press `U` — the view focuses on `path` and `count` so you can see which endpoints are failing most
+7. As new errors stream in, all columns reappear with updated counts and the new rows highlighted in green
+8. Press ++enter++ on a path to drill into the specific errors for that endpoint
 8. Press `W` and type `errors.csv` to snapshot the current errors to a file
