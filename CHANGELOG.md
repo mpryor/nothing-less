@@ -1,4 +1,10 @@
 # Changelog
+## 1.1.1 (2026-03-04)
+
+### Fix
+
+- auto-detect JSON delimiter for JSONL and JSON array input
+
 ## 1.1.0 (2026-03-04)
 
 ### Feat
