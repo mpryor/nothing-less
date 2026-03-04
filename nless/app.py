@@ -11,7 +11,6 @@ from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.events import Key
 from textual.geometry import Offset
-from textual.scroll_view import ScrollView
 from textual.widgets import (
     Input,
     Select,
@@ -727,7 +726,7 @@ class NlessApp(App):
             if notify_removed_unique:
                 self.notify(
                     f"Removed unique column: {column_name}, to allow filtering.",
-                    severity="info",
+                    severity="information",
                 )
 
         self._copy_buffer_async(setup, new_buf_name, after_add_fn=after_add)
@@ -1044,9 +1043,7 @@ class NlessApp(App):
             id=f"buffer{new_buffer.pane_id}",
         )
         tabbed_content.add_pane(tab_pane)
-        scroll_view = ScrollView()
-        tab_pane.mount(scroll_view)
-        scroll_view.mount(new_buffer)
+        tab_pane.mount(new_buffer)
         self.curr_buffer_idx = len(self.buffers) - 1
         self.call_after_refresh(
             lambda: self.refresh_buffer_and_focus(
@@ -1153,7 +1150,6 @@ class NlessApp(App):
             with TabPane(
                 "[#00ff00]1[/#00ff00] original", id=f"buffer{init_buffer.pane_id}"
             ):
-                with ScrollView():
-                    yield init_buffer
+                yield init_buffer
 
         yield Static(id="status_bar", classes="dock-bottom")
