@@ -189,6 +189,30 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
     Returns:
         The most likely delimiter character.
     """
+    # Check for JSON first — try parsing each line as a JSON object
+    if sample_lines:
+        json_count = 0
+        non_empty = 0
+        for line in sample_lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            non_empty += 1
+            if stripped.startswith("{"):
+                # Handle trailing commas from JSON arrays
+                candidate = stripped.rstrip(",")
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        json_count += 1
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            elif stripped in ("[]", "[", "]"):
+                # JSON array delimiters — don't count against detection
+                non_empty -= 1
+        if non_empty > 0 and json_count == non_empty:
+            return "json"
+
     common_delimiters = [",", "\t", "|", ";", " ", "  "]
     delimiter_scores = {d: 0 for d in common_delimiters}
 
