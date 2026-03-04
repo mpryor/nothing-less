@@ -1,4 +1,10 @@
 # Changelog
+## 1.0.1 (2026-03-04)
+
+### Fix
+
+- fix an issue with more recent versions of textual
+
 ## 1.0.0 (2026-03-03)
 
 ### BREAKING CHANGE
