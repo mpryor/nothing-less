@@ -155,6 +155,25 @@ def handle_mark_unique(new_buffer: "NlessBuffer", new_unique_column_name: str) -
             elif col.pinned and col.render_position >= old_position:
                 col.render_position -= 1
 
+    # Hide non-key columns when pivot is active; restore when cleared
+    metadata_names = {mc.value for mc in MetadataColumn}
+    if new_buffer.unique_column_names:
+        for col in new_buffer.current_columns:
+            col_name = new_buffer._get_cell_value_without_markup(col.name)
+            if (
+                col_name not in new_buffer.unique_column_names
+                and col_name not in metadata_names
+                and not col.hidden
+            ):
+                col.hidden = True
+                new_buffer._pivot_hidden_columns.add(col_name)
+    else:
+        for col in new_buffer.current_columns:
+            col_name = new_buffer._get_cell_value_without_markup(col.name)
+            if col_name in new_buffer._pivot_hidden_columns:
+                col.hidden = False
+        new_buffer._pivot_hidden_columns.clear()
+
 
 def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
     if output_path == "-":
@@ -195,6 +214,7 @@ class NlessBuffer(Static):
             "toggle_tail",
             "Keep cursor at the bottom of the screen even as new logs arrive.",
         ),
+        ("r", "reset_highlights", "Reset new-line highlights"),
     ]
 
     def __init__(
@@ -242,6 +262,8 @@ class NlessBuffer(Static):
         self.is_tailing = False
         self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
+        # Columns hidden by pivot (to reveal when new lines arrive)
+        self._pivot_hidden_columns: set[str] = set()
 
         # Caches rebuilt when columns change
         self._col_data_idx: dict[str, int] = {}  # plain_name → data_position
@@ -315,6 +337,7 @@ class NlessBuffer(Static):
             new_buffer.is_tailing = self.is_tailing
             new_buffer.unique_column_names = deepcopy(self.unique_column_names)
             new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
+            new_buffer._pivot_hidden_columns = set(self._pivot_hidden_columns)
             new_buffer.line_stream = self.line_stream
             if self.line_stream:
                 self.line_stream.subscribe_future_only(
@@ -440,6 +463,17 @@ class NlessBuffer(Static):
     def action_toggle_tail(self) -> None:
         self.is_tailing = not self.is_tailing
         self._update_status_bar()
+
+    _GREEN_RE = re.compile(r"\[#00ff00\](.*?)\[/#00ff00\]")
+
+    def action_reset_highlights(self) -> None:
+        """Remove green new-line highlights from all displayed rows."""
+        data_table = self.query_one(NlessDataTable)
+        for row_idx, row in enumerate(self.displayed_rows):
+            new_row = [self._GREEN_RE.sub(r"\1", cell) for cell in row]
+            self.displayed_rows[row_idx] = new_row
+            data_table.rows[row_idx] = new_row
+        data_table.refresh()
 
     def action_next_search(self) -> None:
         """Move cursor to the next search result."""
@@ -703,6 +737,22 @@ class NlessBuffer(Static):
                 styled_rows = self._highlight_search_matches(
                     aligned_rows, fixed_columns
                 )
+
+                # Highlight rows affected by newly streamed lines
+                green_lines = getattr(self, "_green_lines", None)
+                if green_lines and self.unique_column_names:
+                    green_keys = set()
+                    for line in green_lines:
+                        cells = split_line(line, self.delimiter, self.current_columns)
+                        cells.insert(0, "")  # placeholder for count
+                        key = self._build_composite_key(cells, render_position=False)
+                        green_keys.add(key)
+                    for i, row in enumerate(styled_rows):
+                        key = self._build_composite_key(row, render_position=True)
+                        if key in green_keys:
+                            styled_rows[i] = [f"[#00ff00]{c}[/#00ff00]" for c in row]
+                    self._green_lines = None
+
                 self._last_flushed_idx = len(self.raw_rows)
 
             # Precompute column widths on the bg thread so the main thread
@@ -1048,6 +1098,17 @@ class NlessBuffer(Static):
         filtered = self._filter_lines(log_lines)
         self.raw_rows.extend(filtered)
 
+        # Reveal pivot-hidden columns when new streaming data arrives
+        pivot_revealed = False
+        if filtered and self._pivot_hidden_columns:
+            for col in self.current_columns:
+                col_name = self._get_cell_value_without_markup(col.name)
+                if col_name in self._pivot_hidden_columns:
+                    col.hidden = False
+            self._pivot_hidden_columns.clear()
+            self._rebuild_column_caches()
+            pivot_revealed = True
+
         is_large_batch = len(filtered) > 50000
 
         if self.sort_column is not None or self.unique_column_names:
@@ -1059,6 +1120,12 @@ class NlessBuffer(Static):
                 self._is_loading = True
                 self._update_status_bar()
                 self._needs_deferred_update = True
+            elif pivot_revealed:
+                # Track new lines so the rebuild can highlight them green
+                self._green_lines = set(filtered)
+                self.call_after_refresh(
+                    lambda: self._deferred_update_table(restore_position=False)
+                )
             else:
                 for line in filtered:
                     try:

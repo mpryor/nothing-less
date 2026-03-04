@@ -45,12 +45,16 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `U` | Mark the selected column as part of a composite key to group records by, adding a `count` column pinned to the left |
 | `enter` | While over a composite key column, dive into the data behind the pivot |
 
+When a pivot is active, the view focuses on just the key columns and `count`. If new data streams in, all columns are automatically revealed so you can see the full row detail alongside the updated counts.
+
 ## Filtering
 
 | Key | Action |
 |-----|--------|
 | `f` | Filter the current column and prompt for a filter |
 | `F` | Filter the current column by the highlighted cell |
+| `e` | Exclude from the current column and prompt for a value |
+| `E` | Exclude the current column by the highlighted cell |
 | `\|` | Filter ALL columns and prompt for a filter |
 | `&` | Apply the current search as a filter across all columns |
 
@@ -100,6 +104,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | Key | Action |
 |-----|--------|
 | `t` | Toggle tail mode — keep the cursor at the bottom as new data arrives |
+| `r` | Reset new-line highlights — clear the green highlighting on streamed rows |
 
 ## Unparsed Logs
 

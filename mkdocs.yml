@@ -24,6 +24,7 @@ theme:
   features:
     - navigation.instant
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
     - content.code.copy
     - search.highlight
