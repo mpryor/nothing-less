@@ -1,4 +1,16 @@
 # Changelog
+## 1.0.0 (2026-03-03)
+
+### BREAKING CHANGE
+
+- initial stable release with all MVP features
+
+### Feat
+
+- release 1.0.0
+- release 1.0.0!
+- test release change
+
 ## 0.7.0 (2026-03-03)
 
 ### Feat
