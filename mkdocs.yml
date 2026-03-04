@@ -10,14 +10,14 @@ theme:
   favicon: assets/nless-logo.png
   palette:
     - scheme: slate
-      primary: deep purple
-      accent: amber
+      primary: custom
+      accent: green
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
     - scheme: default
-      primary: deep purple
-      accent: amber
+      primary: custom
+      accent: green
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
@@ -32,6 +32,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Tutorials: tutorials.md
   - Keybindings: keybindings.md
   - Configuration: configuration.md
   - Contributing: contributing.md
@@ -49,3 +50,6 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+
+extra_css:
+  - stylesheets/extra.css

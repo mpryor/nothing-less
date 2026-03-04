@@ -1,7 +1,7 @@
 # nless
 
 <p align="center">
-  <img src="assets/nless-logo.png" width="200px" alt="nless logo"/>
+  <img src="assets/nless-logo.png" width="600px" alt="nless logo"/>
 </p>
 
 <p align="center">

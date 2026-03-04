@@ -1,6 +1,8 @@
 # Nothing-less (nless)
 
-<img src="./docs/assets/nless-logo.png" width="200px"/>
+<p align="center">
+  <img src="./docs/assets/nless-logo.png" width="400px" alt="nless logo"/>
+</p>
 
 [![PyPI](https://img.shields.io/pypi/v/nothing-less)](https://pypi.org/project/nothing-less/)
 [![Python](https://img.shields.io/pypi/pyversions/nothing-less)](https://pypi.org/project/nothing-less/)
