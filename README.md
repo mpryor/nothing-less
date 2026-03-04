@@ -8,8 +8,12 @@
 [![Python](https://img.shields.io/pypi/pyversions/nothing-less)](https://pypi.org/project/nothing-less/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml/badge.svg)](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-mpryor.github.io%2Fnothing--less-blue)](https://mpryor.github.io/nothing-less/)
 
 **Nless** is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) with vi-like keybindings.
+
+> **[Read the full documentation](https://mpryor.github.io/nothing-less/)** — tutorials, keybinding reference, configuration, and more.
+
 Nless has enhanced functionality for parsing tabular data:
 - inferring file delimiters
 - delimiter swapping on the fly
@@ -71,10 +75,10 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Buffers** - mutating actions create a new buffer, letting you jump up and down your analysis history
 - **Delimiter swapping** - swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
 - **Column delimiters** - split a column into more columns using JSON, regex, or string delimiters with `d`
-- **Filtering** - filter by column (`f`/`F`), across all columns (`|`), or from a search (`&`)
+- **Filtering** - filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`)
 - **Sorting** - toggle ascending/descending sort on any column with `s`
 - **Searching** - search (`/`), search by cell value (`*`), navigate matches (`n`/`p`)
-- **Pivoting** - group records by composite key with `U`, dive into grouped data with `enter`
+- **Pivoting** - group records by composite key with `U`, focused summary view, dive into grouped data with `enter`
 - **Column management** - show/hide columns (`C`), reorder columns (`<`/`>`)
 - **JSON extraction** - promote nested JSON fields to columns with `J`
 - **Shell commands** - run a shell command and pipe its output into a new buffer with `!`
@@ -119,6 +123,8 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 **Filtering**:
 - `f` - filter the current column and prompt for a filter
 - `F` - filter the current column by the highlighted cell
+- `e` - exclude from the current column and prompt for a value
+- `E` - exclude the current column by the highlighted cell
 - `|` - filter ALL columns and prompt for a filter
 - `&` - apply the current search as a filter across all columns
 
@@ -137,6 +143,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Tail Mode**:
 - `t` - toggle tail mode
+- `r` - reset new-line highlights
 
 **Unparsed Logs**:
 - `~` - view logs that did not match the current delimiter
@@ -153,6 +160,8 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Help**:
 - `?` - show the help screen with all keybindings
+
+See the [full keybinding reference](https://mpryor.github.io/nothing-less/keybindings/) and [tutorials](https://mpryor.github.io/nothing-less/tutorials/) for more.
 
 </details>
 
