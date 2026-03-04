@@ -110,3 +110,35 @@ class TestInferDelimiter:
 
     def test_single_column_returns_raw(self):
         assert infer_delimiter(["hello", "world", "test"]) == "raw"
+
+    def test_json_input(self):
+        lines = [
+            '{"name": "Alice", "age": 30, "city": "New York"}',
+            '{"name": "Bob", "age": 25, "city": "San Francisco"}',
+        ]
+        assert infer_delimiter(lines) == "json"
+
+    def test_json_input_single_line(self):
+        lines = ['{"status": "ok", "count": 42}']
+        assert infer_delimiter(lines) == "json"
+
+    def test_json_with_empty_lines(self):
+        lines = [
+            '{"a": 1}',
+            "",
+            '{"a": 2}',
+        ]
+        assert infer_delimiter(lines) == "json"
+
+    def test_json_array_input(self):
+        lines = [
+            "[",
+            '    {"op": "add", "path": "/a/b/c", "value": "foo"},',
+            '    {"op": "subtract", "path": "/b/c/d", "value": "bar"}',
+            "]",
+        ]
+        assert infer_delimiter(lines) == "json"
+
+    def test_non_json_with_braces_not_detected_as_json(self):
+        lines = ["name,age,city", "{invalid json,30,NYC"]
+        assert infer_delimiter(lines) != "json"

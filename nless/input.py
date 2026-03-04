@@ -116,17 +116,31 @@ class StdinLineStream(LineStream):
         buffer = ""
         TIMEOUT = 0.5
         FLUSH_INTERVAL_MS = 20
+        MAX_BUFFER_HOLD_MS = 200
+        MAX_BUFFER_SIZE = 1_000_000  # 1 MB
         last_read_time = time.time_ns() / 1_000_000  # - FLUSH_INTERVAL_MS
+        buffer_start_time = 0.0
 
         while True:
             if streaming:
                 current_time = time.time_ns() / 1_000_000
                 if buffer:
-                    if current_time - last_read_time >= FLUSH_INTERVAL_MS:
+                    elapsed_since_read = current_time - last_read_time
+                    elapsed_since_start = current_time - buffer_start_time
+                    should_flush = (
+                        elapsed_since_read >= FLUSH_INTERVAL_MS
+                        or elapsed_since_start >= MAX_BUFFER_HOLD_MS
+                        or len(buffer) >= MAX_BUFFER_SIZE
+                    )
+                    if should_flush:
                         lines, leftover = self.parse_streaming_line(buffer)
                         self.handle_input(lines)
                         buffer = leftover
                         last_read_time = current_time
+                        if leftover:
+                            buffer_start_time = current_time
+                        else:
+                            buffer_start_time = 0.0
                 file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
                 if file_readable:
                     while True:
@@ -134,6 +148,8 @@ class StdinLineStream(LineStream):
                             line = stdin.read()
                             if not line:
                                 break
+                            if not buffer:
+                                buffer_start_time = current_time
                             buffer += line
                             last_read_time = current_time
                             if self.delimiter != "json":
@@ -162,7 +178,9 @@ class StdinLineStream(LineStream):
 
     def handle_input(self, lines: list[str]) -> None:
         if lines:
-            if self.delimiter == "json":
+            if self.delimiter == "json" or (
+                not self.delimiter and self._looks_like_json(lines)
+            ):
                 try:
                     json.loads(
                         lines[0]
@@ -179,3 +197,21 @@ class StdinLineStream(LineStream):
                         self.notify(lines)
             else:
                 self.notify(lines)
+
+    @staticmethod
+    def _looks_like_json(lines: list[str]) -> bool:
+        """Check if lines look like JSON (array or line-delimited objects)."""
+        stripped = [line.strip() for line in lines if line.strip()]
+        if not stripped:
+            return False
+        # JSON array: first line starts with [
+        if stripped[0].startswith("["):
+            return True
+        # Line-delimited JSON: first line starts with {
+        if stripped[0].startswith("{"):
+            try:
+                json.loads(stripped[0].rstrip(","))
+                return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return False
