@@ -270,7 +270,7 @@ class NlessBuffer(Static):
             return
         try:
             pyperclip.copy(cell_value)
-            self.notify("Cell contents copied to clipboard.", severity="info")
+            self.notify("Cell contents copied to clipboard.", severity="information")
         except pyperclip.PyperclipException:
             self.notify(
                 "Clipboard not available — is xclip/xsel installed?",
@@ -347,7 +347,7 @@ class NlessBuffer(Static):
         """View logs that do not match the current delimiter."""
         if self.delimiter == "raw":
             self.notify(
-                "Delimiter is 'raw', all logs are being shown.", severity="info"
+                "Delimiter is 'raw', all logs are being shown.", severity="information"
             )
             return
 
@@ -359,7 +359,7 @@ class NlessBuffer(Static):
                 unparsed_rows.append(row)
 
         if len(unparsed_rows) == 0:
-            self.notify("All logs match the current delimiter.", severity="info")
+            self.notify("All logs match the current delimiter.", severity="information")
             return
 
         delimiter = self.delimiter

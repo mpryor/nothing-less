@@ -1,6 +1,11 @@
 # Nothing-less (nless)
 
-<img src="./docs/assets/nless-logo.png" width="200px"/>  
+<img src="./docs/assets/nless-logo.png" width="200px"/>
+
+[![PyPI](https://img.shields.io/pypi/v/nothing-less)](https://pypi.org/project/nothing-less/)
+[![Python](https://img.shields.io/pypi/pyversions/nothing-less)](https://pypi.org/project/nothing-less/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml/badge.svg)](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml)
 
 **Nless** is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) with vi-like keybindings.
 Nless has enhanced functionality for parsing tabular data:
@@ -14,37 +19,19 @@ Nless has enhanced functionality for parsing tabular data:
 
 ## Getting started
 ### Dependencies
-- python>=3.13  
-OR  
+- python>=3.13
+OR
 - [brew](https://brew.sh/)
 ### Installation
-`pip install nothing-less`  
-OR  
-`brew install mpryor/tap/nless`  
+`pip install nothing-less`
+OR
+`brew install mpryor/tap/nless`
 ### Usage
 - pipe the output of a command to nless to parse the output `$COMMAND | nless`
 - read a file with nless `nless $FILE_NAME`
 - redirect a file into nless `nless < $FILE_NAME`
 - Once output is loaded, press `?` to view the keybindings
 
-## Why?
-As a kubernetes engineer, I frequently need to interact with streaming tabular data. `k get pods -w`, `k get events -w`, etc. I want a TUI tool to quickly dissect and analyze this data - and none of the existing alternatives had exactly what I wanted:
-- streaming support
-- delimiter inference - I don't want to do a bunch of work to tell the program what type of data it's viewing, I want it to infer it if possible
-- vi-like keybindings
-So I decided to build my own tool, integrating some of my favorite features that I've seen in other similar tools.
-
-## Goals
-This project is not meant to be a replacement/competitor for any of the tools mentioned in the alternatives section at the end. Instead, it's meant to bring its own unique set of features to compliment your workflow.
-- UX:
-  - vi-like keybindings, familiar to any VIM user
-  - minimize the number of keypresses to analyze a dataset
-- Kubernetes support:
-  - support for K8s usecases out of the box - such as parsing data streams from kubectl
-- Tabular data toolkit:
-  - broad support for a variety of use-cases analyzing,filtering,sorting, and searching tabular data
-  - converting data streams *into* tabular data, such as JSON log parsing
-    
 ## Demos
 ### Basic functionality
 The below demo shows basic functionality:
@@ -52,26 +39,56 @@ The below demo shows basic functionality:
 - applying that search `&`
 - filtering the selected column by the value within the selected cell `F`
 - swapping the delimiter `D` (`raw` and `,`)
-  
-[![asciicast](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg.svg)](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg)  
-  
+
+[![asciicast](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg.svg)](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg)
+
 ### Streaming functionality
 The below demo showcases some of nless's features for handling streaming input, and interacting with unknown delimitation:
 - The nless view stays up-to-date as new log lines arrive on stdin (allows pipeline commands, or redirecting a file into nless)
 - Showcases using a custom (Python engine) regex, example - `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)` - to parse raw logs into tabular fields.
 - Sorts, filters, and searches on those fields.
 - Flips the delimiter back to raw, sorts, searches, and filters on the raw logs
-  
-[![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)  
-  
-## Features & Functionality
+
+[![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)
+
+## Why nless?
+
+As a kubernetes engineer, I frequently need to interact with streaming tabular data. `k get pods -w`, `k get events -w`, etc. I wanted a TUI tool to quickly dissect and analyze this data - and none of the existing alternatives had exactly what I wanted. So I decided to build my own tool, integrating some of my favorite features from other similar tools.
+
+This project is not meant to replace any of the tools mentioned in the [alternatives](#alternatives) section. Instead, it's meant to bring its own unique set of features to complement your workflow:
+
+- **Streaming support** - stay up-to-date as new data arrives on stdin
+- **Delimiter inference** - no configuration needed; nless infers the delimiter from your data
+- **Vi-like keybindings** - familiar to any Vim user, minimize keypresses to analyze a dataset
+- **Kubernetes-friendly** - built for K8s use-cases like parsing streams from kubectl
+- **Tabular data toolkit** - filter, sort, search, pivot, and reshape data on the fly
+- **JSON & log parsing** - convert unstructured data streams into tabular data
+
+## Features
+
+- **Buffers** - mutating actions create a new buffer, letting you jump up and down your analysis history
+- **Delimiter swapping** - swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
+- **Column delimiters** - split a column into more columns using JSON, regex, or string delimiters with `d`
+- **Filtering** - filter by column (`f`/`F`), across all columns (`|`), or from a search (`&`)
+- **Sorting** - toggle ascending/descending sort on any column with `s`
+- **Searching** - search (`/`), search by cell value (`*`), navigate matches (`n`/`p`)
+- **Pivoting** - group records by composite key with `U`, dive into grouped data with `enter`
+- **Column management** - show/hide columns (`C`), reorder columns (`<`/`>`)
+- **JSON extraction** - promote nested JSON fields to columns with `J`
+- **Shell commands** - run a shell command and pipe its output into a new buffer with `!`
+- **Tail mode** - keep the cursor at the bottom as new data arrives with `t`
+- **Output** - write buffer contents to a file or stdout (`W`), copy cell values (`y`)
+- **Unparsed lines** - view lines that didn't match the current delimiter with `~`
+
+<details>
+<summary>Full keybinding reference</summary>
+
 **Buffers**:
-- All mutating actions will apply the action by replicating the current "buffer". This allows you to jump up and down the stack to see how you've analyzed your data.
-- `[1-9]` - will select the buffer at the index corresponding to the input number
-- `L` - selects the next buffer
+- `[1-9]` - select the buffer at the corresponding index
+- `L` - select the next buffer
 - `H` - select the previous buffer
-- `q` - closes the current active buffer, or the program if all buffers are closed
-- `N` - creates a new buffer from the original data
+- `q` - close the current active buffer, or the program if all buffers are closed
+- `N` - create a new buffer from the original data
 
 **Navigation**:
 - `h` - move cursor left
@@ -86,64 +103,56 @@ The below demo showcases some of nless's features for handling streaming input, 
 - `b`/`B` - move cursor left
 - `ctrl+u` - page up
 - `ctrl+d` - page down
-- `c` - to select a column to jump the cursor to
+- `c` - select a column to jump the cursor to
 
-**Column visibility**
-- `C` - will prompt for a regex filter to selectively display columns, or `all` to see all columns. TIP: use a non-existing column (`none`, for example) to only see the current pivots/count
-- `>` - will move the current column one to the right
-- `<` - will move the current column one to the left
+**Column visibility**:
+- `C` - prompt for a regex filter to selectively display columns, or `all` to see all columns
+- `>` - move the current column one to the right
+- `<` - move the current column one to the left
 
-**Pivoting**
-- `U` - will mark the selected column as part of a composite key to group records by, adding a `count` column pinned to the left
-  - `enter` - pressing enter while the cursor is over one of the composite key columns will "dive in" to the data set behind the pivot - applying the composite key as a filter in a new buffer 
+**Pivoting**:
+- `U` - mark the selected column as part of a composite key to group records by, adding a `count` column pinned to the left
+- `enter` - while over a composite key column, dive into the data behind the pivot
 
 **Filtering**:
-- `f` - will filter the current column and prompt for a filter
-- `F` - will filter the current column by the highlighted cell
-- `|` - will filter ALL columns and prompt for a filter
-- `&` - applies the current search as a filter across all columns
+- `f` - filter the current column and prompt for a filter
+- `F` - filter the current column by the highlighted cell
+- `|` - filter ALL columns and prompt for a filter
+- `&` - apply the current search as a filter across all columns
 
 **Searching**:
-- `/` - will prompt for a search value and jump to the first match
-- `*` - will search all columns for the current highlighted cell value
+- `/` - prompt for a search value and jump to the first match
+- `*` - search all columns for the current highlighted cell value
 - `n` - jump to the next match
 - `p` - jump to previous match
 
 **Output**:
-- `W` - will prompt for a file to write the current buffer to. `-` can be used to write to `stdout`, allowing you to use `nless` inside of a command chain `cat $MY_FILE.txt | nless | grep -i active` for example.
-- `y` - copies the contents of the currently highlighted cell to the clipboard
+- `W` - prompt for a file to write the current buffer to (`-` writes to stdout)
+- `y` - copy the contents of the currently highlighted cell to the clipboard
 
 **Shell Commands**:
-- `!` - run a shell command and pipe its output into a new buffer for analysis
+- `!` - run a shell command and pipe its output into a new buffer
 
 **Tail Mode**:
-- `t` - toggle tail mode, which keeps the cursor at the bottom as new data arrives (useful for streaming input)
+- `t` - toggle tail mode
 
 **Unparsed Logs**:
-- `~` - view logs that did not match the current delimiter, useful for spotting malformed or unexpected lines
+- `~` - view logs that did not match the current delimiter
+
+**Sorting**:
+- `s` - toggle ascending/descending sort on the current column
+
+**JSON**:
+- `J` - select a JSON field under the current cell to add as a column
+
+**Delimiter/file parsing**:
+- `D` - swap the delimiter on the fly (common delimiters, regex with named capture groups, `raw`, `json`, or `  ` for double-space aligned output like kubectl)
+- `d` - split a column into more columns using a columnar delimiter (`json`, regex with named capture groups, or any string)
 
 **Help**:
 - `?` - show the help screen with all keybindings
 
-**Sorting**:
-- `s` - toggles ascending/descending sort on the current column
-
-**json**:
-- in addition to the `json` delimiter that can be set per session or per column, there's also support for json actions:
-- `J` - will prompt you to select a json field, under the current cell, to add as a column for further filtering/sorting/etc
-
-**Delimiter/file parsing**:
-- By default, `nless` will attempt to infer a file delimiter from the first few rows sent through stdin. It uses common delimiters to start - `,`, ` `, `|`, `\t`, etc.
-- `D` - you can use `D` to explicitly swap the delimiter on the fly. Just type in one of the common delimiters above, and the rows will be re-parsed into a tabular format.
-- `D` - alternatively, you can pass in a regex with named capture groups. Those named groups will become the tabular columns, and each row will be parsed and split across those groups. Example `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)`
-- `D` - additionally you can just pass the word `raw` to see the raw lines behind the data. You can still sort, filter, and search the raw lines.
-- `D` - pass the word `json` to parse the first set of keys from each JSON line (or read the whole buffer in as a JSON object/list)
-- `D` - last, you can pass a delimiter value of `  ` (two spaces). This will parse text that has been delimited utilizing multiple spaces, while preserving values that have a single space. This is most commonly useful for parsing kubernetes output (`kubectl get pods -w`), for example.
-
-- `d` - transforms a column into more columns using a columnar delimiter. Supports three modes:
-  - `json` — extracts keys from JSON objects in the selected column into new columns
-  - A regex with named capture groups — each group becomes a new column (e.g. `(?P<host>[^:]+):(?P<port>\d+)`)
-  - Any string delimiter — splits the column's values by the given string (e.g. `:`, `-`, etc.)
+</details>
 
 ## Contributing
 Contributions are welcome! Please open an issue or a pull request - check out the [contributing guidelines](CONTRIBUTING.md) for more information.

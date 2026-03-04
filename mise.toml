@@ -12,3 +12,4 @@ run = "python index.py < /tmp/insights-prod.csv"
 
 [tools]
 pipx = "latest"
+"pipx:nothing-less" = "latest"
