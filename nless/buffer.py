@@ -1,21 +1,17 @@
-import bisect
 import csv
 import json
 import re
 import threading
-import time
 from collections import defaultdict
+from contextlib import contextmanager
 from copy import deepcopy
-from typing import Any
 
 import pyperclip
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
-from textual.screen import Screen
 from textual.widgets import (
-    RichLog,
     Select,
     Static,
 )
@@ -24,172 +20,22 @@ from .delimiter import infer_delimiter, split_line
 from .input import LineStream
 from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable
-from .types import CliArgs, Column, Filter, MetadataColumn
-
-
-class UnparsedLogsScreen(Screen):
-    BINDINGS = [("q", "app.pop_screen", "Close")]
-
-    def __init__(self, unparsed_rows: list[str], delimiter: str):
-        super().__init__()
-        self.unparsed_rows = unparsed_rows
-        self.delimiter = delimiter
-
-    def compose(self) -> ComposeResult:
-        yield Static(
-            f"{len(self.unparsed_rows)} logs not matching columns (delimiter '{self.delimiter}'), press 'q' to close.",
-        )
-        rl = RichLog()
-        for row in self.unparsed_rows:
-            rl.write(row.strip())
-        yield rl
-
-
-class RowLengthMismatchError(Exception):
-    pass
-
-
-def handle_mark_unique(new_buffer: "NlessBuffer", new_unique_column_name: str) -> None:
-    if new_unique_column_name in [mc.value for mc in MetadataColumn]:
-        # can't toggle count column
-        return
-
-    col_idx = new_buffer._get_col_idx_by_name(new_unique_column_name)
-    new_unique_column = (
-        new_buffer.current_columns[col_idx] if col_idx is not None else None
-    )
-
-    if new_unique_column is None:
-        return
-
-    new_buffer.count_by_column_key = defaultdict(lambda: 0)
-
-    if (
-        new_unique_column_name in new_buffer.unique_column_names
-        and new_buffer.first_row_parsed
-    ):
-        new_buffer.unique_column_names.remove(new_unique_column_name)
-        if new_buffer.sort_column in [metadata.value for metadata in MetadataColumn]:
-            new_buffer.sort_column = None
-        new_unique_column.labels.discard("U")
-    else:
-        new_buffer.unique_column_names.add(new_unique_column_name)
-        new_unique_column.labels.add("U")
-
-    if len(new_buffer.unique_column_names) == 0:
-        # remove count column
-        new_buffer.current_columns = [
-            Column(
-                name=c.name,
-                labels=c.labels,
-                render_position=c.render_position - 1,
-                data_position=c.data_position - 1,
-                hidden=c.hidden,
-                json_ref=c.json_ref,
-                computed=c.computed,
-                col_ref=c.col_ref,
-                col_ref_index=c.col_ref_index,
-                delimiter=c.delimiter,
-            )
-            for c in new_buffer.current_columns
-            if c.name != MetadataColumn.COUNT.value
-        ]
-    elif MetadataColumn.COUNT.value not in [c.name for c in new_buffer.current_columns]:
-        # add count column at the start
-        new_buffer.current_columns = [
-            Column(
-                name=c.name,
-                labels=c.labels,
-                render_position=c.render_position + 1,
-                data_position=c.data_position + 1,
-                hidden=c.hidden,
-                json_ref=c.json_ref,
-                computed=c.computed,
-                col_ref=c.col_ref,
-                col_ref_index=c.col_ref_index,
-                delimiter=c.delimiter,
-            )
-            for c in new_buffer.current_columns
-        ]
-        new_buffer.current_columns.insert(
-            0,
-            Column(
-                name=MetadataColumn.COUNT.value,
-                labels=set(),
-                render_position=0,
-                data_position=0,
-                hidden=False,
-                pinned=True,
-            ),
-        )
-
-    pinned_columns_visible = len(
-        [c for c in new_buffer.current_columns if c.pinned and not c.hidden]
-    )
-    if new_unique_column_name in new_buffer.unique_column_names:
-        old_position = new_unique_column.render_position
-        for col in new_buffer.current_columns:
-            col_name = new_buffer._get_cell_value_without_markup(col.name)
-            if col_name == new_unique_column_name:
-                col.render_position = (
-                    pinned_columns_visible  # bubble to just after last pinned column
-                )
-                col.pinned = True
-            elif (
-                col_name != new_unique_column_name
-                and col.render_position <= old_position
-                and col.name not in [mc.value for mc in MetadataColumn]
-                and not col.pinned
-            ):
-                col.render_position += 1  # shift right to make space
-    else:
-        old_position = new_unique_column.render_position
-        pinned_columns_visible -= 1
-        for col in new_buffer.current_columns:
-            col_name = new_buffer._get_cell_value_without_markup(col.name)
-            if col_name == new_unique_column_name:
-                col.pinned = False
-                col.render_position = (
-                    pinned_columns_visible if pinned_columns_visible > 0 else 0
-                )
-            elif col.pinned and col.render_position >= old_position:
-                col.render_position -= 1
-
-    # Hide non-key columns when pivot is active; restore when cleared
-    metadata_names = {mc.value for mc in MetadataColumn}
-    if new_buffer.unique_column_names:
-        for col in new_buffer.current_columns:
-            col_name = new_buffer._get_cell_value_without_markup(col.name)
-            if (
-                col_name not in new_buffer.unique_column_names
-                and col_name not in metadata_names
-                and not col.hidden
-            ):
-                col.hidden = True
-                new_buffer._pivot_hidden_columns.add(col_name)
-    else:
-        for col in new_buffer.current_columns:
-            col_name = new_buffer._get_cell_value_without_markup(col.name)
-            if col_name in new_buffer._pivot_hidden_columns:
-                col.hidden = False
-        new_buffer._pivot_hidden_columns.clear()
-
-
-def write_buffer(current_buffer: "NlessBuffer", output_path: str) -> None:
-    if output_path == "-":
-        output_path = "/dev/stdout"
-        while current_buffer.app.is_running:
-            time.sleep(0.1)
-        time.sleep(0.1)
-
-    with open(output_path, "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(current_buffer._get_visible_column_labels())
-        for row in current_buffer.displayed_rows:
-            plain_row = [
-                current_buffer._get_cell_value_without_markup(str(cell)) for cell in row
-            ]
-            writer.writerow(plain_row)
+from .dataprocessing import (
+    build_composite_key,
+    coerce_sort_key,
+    coerce_to_numeric,
+    find_sorted_insert_index,
+    highlight_search_matches,
+    matches_all_filters,
+    strip_markup,
+    update_dedup_indices_after_insertion,
+    update_dedup_indices_after_removal,
+    update_sort_keys_for_line,
+)
+from .operations import handle_mark_unique
+from .statusbar import build_status_text
+from .types import CliArgs, Column, Filter, MetadataColumn, RowLengthMismatchError
+from .unparsedlogsscreen import UnparsedLogsScreen
 
 
 class NlessBuffer(Static):
@@ -286,7 +132,7 @@ class NlessBuffer(Static):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = self._get_cell_value_without_markup(cell_value)
+            cell_value = strip_markup(cell_value)
         except (IndexError, TypeError):
             self.notify("Cannot get cell value.", severity="error")
             return
@@ -392,7 +238,7 @@ class NlessBuffer(Static):
     def action_jump_columns(self) -> None:
         """Show columns by user input."""
         column_options = [
-            (self._get_cell_value_without_markup(c.name), c.render_position)
+            (strip_markup(c.name), c.render_position)
             for c in sorted(self.current_columns, key=lambda c: c.render_position)
             if not c.hidden
         ]
@@ -410,9 +256,9 @@ class NlessBuffer(Static):
         data_table.move_cursor(column=col_index)
 
     def action_move_column(self, direction: int) -> None:
-        if not self._with_lock("move column"):
-            return
-        try:
+        with self._try_lock("move column") as acquired:
+            if not acquired:
+                return
             data_table = self.query_one(NlessDataTable)
             current_cursor_column = data_table.cursor_column
             selected_column = self._get_column_at_position(current_cursor_column)
@@ -447,8 +293,6 @@ class NlessBuffer(Static):
                 selected_column.render_position,
             )
             new_position = selected_column.render_position
-        finally:
-            self._lock.release()
 
         self._deferred_update_table(
             callback=lambda: data_table.move_cursor(column=new_position)
@@ -489,7 +333,7 @@ class NlessBuffer(Static):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = self._get_cell_value_without_markup(cell_value)
+            cell_value = strip_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
             self._perform_search(cell_value)
         except (IndexError, TypeError):
@@ -497,9 +341,9 @@ class NlessBuffer(Static):
 
     def _perform_search(self, search_term: str | None) -> None:
         """Performs a search on the data and updates the table."""
-        if not self._with_lock("search"):
-            return
-        try:
+        with self._try_lock("search") as acquired:
+            if not acquired:
+                return
             try:
                 if search_term:
                     self.search_term = re.compile(search_term, re.IGNORECASE)
@@ -508,8 +352,6 @@ class NlessBuffer(Static):
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
-        finally:
-            self._lock.release()
 
         def _after_search():
             if self.search_matches:
@@ -518,9 +360,9 @@ class NlessBuffer(Static):
         self._deferred_update_table(restore_position=False, callback=_after_search)
 
     def action_sort(self) -> None:
-        if not self._with_lock("sort"):
-            return
-        try:
+        with self._try_lock("sort") as acquired:
+            if not acquired:
+                return
             data_table = self.query_one(NlessDataTable)
             current_cursor_column = data_table.cursor_column
             selected_column = self._get_column_at_position(current_cursor_column)
@@ -528,9 +370,7 @@ class NlessBuffer(Static):
                 self.notify("No column selected for sorting", severity="error")
                 return
 
-            new_sort_column_name = self._get_cell_value_without_markup(
-                selected_column.name
-            )
+            new_sort_column_name = strip_markup(selected_column.name)
 
             if self.sort_column == new_sort_column_name and self.sort_reverse:
                 self.sort_column = None
@@ -556,8 +396,6 @@ class NlessBuffer(Static):
                 if col.name != selected_column.name:
                     col.labels.discard("▲")
                     col.labels.discard("▼")
-        finally:
-            self._lock.release()
 
         self._deferred_update_table()
 
@@ -605,9 +443,7 @@ class NlessBuffer(Static):
                 if col_idx is None:
                     continue
                 col_idx -= 1  # account for count column
-                composite_key.append(
-                    self._get_cell_value_without_markup(cells[col_idx])
-                )
+                composite_key.append(strip_markup(cells[col_idx]))
             key = ",".join(composite_key)
             dedup_map[key] = cells
             self.count_by_column_key[key] += 1
@@ -627,7 +463,7 @@ class NlessBuffer(Static):
             return
         try:
             rows.sort(
-                key=lambda r: self.str_to_int(r[sort_column_idx]),
+                key=lambda r: coerce_to_numeric(r[sort_column_idx]),
                 reverse=self.sort_reverse,
             )
         except (ValueError, IndexError):
@@ -645,27 +481,10 @@ class NlessBuffer(Static):
         self, rows: list[list[str]], fixed_columns: int, row_offset: int = 0
     ) -> list[list[str]]:
         """Apply search highlighting to rows and populate search_matches."""
-        if not self.search_term:
-            return rows
-        result = []
-        for i, cells in enumerate(rows):
-            highlighted_cells = []
-            for col_idx, cell in enumerate(cells):
-                if (
-                    isinstance(self.search_term, re.Pattern)
-                    and self.search_term.search(str(cell))
-                    and col_idx > fixed_columns - 1
-                ):
-                    cell = re.sub(
-                        self.search_term,
-                        lambda m: f"[reverse]{m.group(0)}[/reverse]",
-                        cell,
-                    )
-                    highlighted_cells.append(cell)
-                    self.search_matches.append(Coordinate(row_offset + i, col_idx))
-                else:
-                    highlighted_cells.append(cell)
-            result.append(highlighted_cells)
+        result, new_matches = highlight_search_matches(
+            rows, self.search_term, fixed_columns, row_offset
+        )
+        self.search_matches.extend(Coordinate(r, c) for r, c in new_matches)
         return result
 
     def _deferred_update_table(self, restore_position=True, callback=None):
@@ -725,11 +544,7 @@ class NlessBuffer(Static):
                     )
                     if sort_col_idx is not None:
                         self._sort_keys = sorted(
-                            self._coerce_sort_key(
-                                self._get_cell_value_without_markup(
-                                    str(r[sort_col_idx])
-                                )
-                            )
+                            coerce_sort_key(strip_markup(str(r[sort_col_idx])))
                             for r in deduped_rows
                         )
 
@@ -883,76 +698,26 @@ class NlessBuffer(Static):
             )
         )
 
-    def _rich_bold(self, text):
-        return f"[bold]{text}[/bold]"
-
     def _update_status_bar(self) -> None:
         if self.pane_id != self.app.buffers[self.app.curr_buffer_idx].pane_id:
             return
         data_table = self.query_one(NlessDataTable)
-
-        sort_prefix = self._rich_bold("Sort")
-        filter_prefix = self._rich_bold("Filter")
-        search_prefix = self._rich_bold("Search")
-
-        if self.sort_column is None:
-            sort_text = f"{sort_prefix}: None"
-        else:
-            sort_text = f"{sort_prefix}: {self.sort_column} {'desc' if self.sort_reverse else 'asc'}"
-
-        if len(self.current_filters) == 0:
-            filter_text = f"{filter_prefix}: None"
-        else:
-            filter_descriptions = []
-            for f in self.current_filters:
-                prefix = "!" if f.exclude else ""
-                if f.column is None:
-                    filter_descriptions.append(f"{prefix}any='{f.pattern.pattern}'")
-                else:
-                    filter_descriptions.append(
-                        f"{prefix}{f.column}='{f.pattern.pattern}'"
-                    )
-            filter_text = f"{filter_prefix}: " + ", ".join(filter_descriptions)
-
-        if self.search_term is not None:
-            search_text = f"{search_prefix}: '{self.search_term.pattern}' ({self.current_match_index + 1} / {len(self.search_matches)} matches)"
-        else:
-            search_text = f"{search_prefix}: None"
-
-        total_rows = data_table.row_count
-        total_cols = len(data_table.columns)
-        current_row = data_table.cursor_row + 1  # Add 1 for 1-based indexing
-        current_col = data_table.cursor_column + 1  # Add 1 for 1-based indexing
-
-        row_prefix = self._rich_bold("Row")
-        col_prefix = self._rich_bold("Col")
-        position_text = f"{row_prefix}: {current_row}/{total_rows} {col_prefix}: {current_col}/{total_cols}"
-
-        if self.is_tailing:
-            tailing_text = "| " + self._rich_bold(
-                "[#00bb00]Tailing (`t` to stop)[/#00bb00]"
-            )
-        else:
-            tailing_text = ""
-
-        column_text = ""
-        if len(self.unique_column_names):
-            column_names = ",".join(self.unique_column_names)
-            column_text = f"| unique cols: ({column_names}) "
-
-        if self._is_loading:
-            loading_text = (
-                "| "
-                + self._rich_bold(f"[#ffaa00]Loading ({total_rows:,} rows)[/#ffaa00]")
-                + " "
-            )
-        else:
-            loading_text = ""
-
-        status_bar = self.app.query_one("#status_bar", Static)
-        status_bar.update(
-            f"{sort_text} | {filter_text} | {search_text} | {position_text} {column_text}{tailing_text}{loading_text}"
+        text = build_status_text(
+            sort_column=self.sort_column,
+            sort_reverse=self.sort_reverse,
+            filters=self.current_filters,
+            search_term=self.search_term,
+            search_matches_count=len(self.search_matches),
+            current_match_index=self.current_match_index,
+            total_rows=data_table.row_count,
+            total_cols=len(data_table.columns),
+            current_row=data_table.cursor_row + 1,
+            current_col=data_table.cursor_column + 1,
+            is_tailing=self.is_tailing,
+            unique_column_names=self.unique_column_names,
+            is_loading=self._is_loading,
         )
+        self.app.query_one("#status_bar", Static).update(text)
 
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
@@ -973,36 +738,13 @@ class NlessBuffer(Static):
         self, cells: list[str], adjust_for_count: bool = False
     ) -> bool:
         """Check if a row matches all current filters."""
-        if not self.current_filters:
-            return True
-        for f in self.current_filters:
-            if f.column is None:
-                matched = any(
-                    f.pattern.search(self._get_cell_value_without_markup(cell))
-                    for cell in cells
-                )
-            else:
-                col_idx = self._get_col_idx_by_name(f.column)
-                if col_idx is None:
-                    return False
-                if adjust_for_count and len(self.unique_column_names) > 0:
-                    col_idx -= 1
-                matched = bool(
-                    f.pattern.search(
-                        self._get_cell_value_without_markup(cells[col_idx])
-                    )
-                )
-            if matched == f.exclude:
-                return False
-        return True
-
-    _MARKUP_TAG_RE = re.compile(r"\[/?[^\]]*\]")
-
-    def _get_cell_value_without_markup(self, cell_value) -> str:
-        """Extract plain text from a cell value, removing any markup."""
-        if "[" not in cell_value:
-            return cell_value
-        return self._MARKUP_TAG_RE.sub("", cell_value)
+        return matches_all_filters(
+            cells,
+            self.current_filters,
+            self._get_col_idx_by_name,
+            adjust_for_count=adjust_for_count,
+            has_unique_columns=bool(self.unique_column_names),
+        )
 
     @staticmethod
     def _make_columns(names: list) -> list[Column]:
@@ -1037,12 +779,17 @@ class NlessBuffer(Static):
         else:
             return split_line(first_log_line, self.delimiter, self.current_columns)
 
-    def _with_lock(self, action: str) -> bool:
-        """Try to acquire the lock non-blocking. Returns True if acquired."""
-        acquired = self._lock.acquire(blocking=False)
-        if not acquired:
+    @contextmanager
+    def _try_lock(self, action: str):
+        """Context manager for non-blocking lock acquisition."""
+        if not self._lock.acquire(blocking=False):
             self.notify("Data loading, please wait…", severity="warning")
-        return acquired
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            self._lock.release()
 
     def add_logs(self, log_lines: list[str]) -> None:
         needs_deferred = False
@@ -1102,7 +849,7 @@ class NlessBuffer(Static):
         pivot_revealed = False
         if filtered and self._pivot_hidden_columns:
             for col in self.current_columns:
-                col_name = self._get_cell_value_without_markup(col.name)
+                col_name = strip_markup(col.name)
                 if col_name in self._pivot_hidden_columns:
                     col.hidden = False
             self._pivot_hidden_columns.clear()
@@ -1254,34 +1001,12 @@ class NlessBuffer(Static):
         if self.is_tailing:
             data_table.action_scroll_bottom()
 
-    def str_to_int(self, value: Any) -> int | float | str:
-        if isinstance(value, int):
-            return value
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            pass
-        return value
-
-    @staticmethod
-    def _coerce_sort_key(value: str) -> int | float | str:
-        """Coerce a string to numeric if possible, for sort comparison."""
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            pass
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            pass
-        return value
-
     def _rebuild_column_caches(self) -> None:
         """Rebuild all column-derived caches. Call when columns change."""
         self._col_data_idx = {}
         self._col_render_idx = {}
         for col in self.current_columns:
-            plain = self._get_cell_value_without_markup(col.name)
+            plain = strip_markup(col.name)
             self._col_data_idx[plain] = col.data_position
             self._col_render_idx[plain] = col.render_position
         self._sorted_visible_columns = sorted(
@@ -1309,15 +1034,12 @@ class NlessBuffer(Static):
         self, cells: list[str], render_position: bool = False
     ) -> str:
         """Build a composite key from the unique column values in a row."""
-        parts = []
-        for col_name in self.unique_column_names:
-            col_idx = self._get_col_idx_by_name(
-                col_name, render_position=render_position
-            )
-            if col_idx is None:
-                continue
-            parts.append(self._get_cell_value_without_markup(cells[col_idx]))
-        return ",".join(parts)
+        return build_composite_key(
+            cells,
+            self.unique_column_names,
+            self._get_col_idx_by_name,
+            render_position=render_position,
+        )
 
     def _handle_dedup_for_line(
         self, cells: list[str]
@@ -1342,7 +1064,7 @@ class NlessBuffer(Static):
                     self.count_by_column_key[new_key] += 1
                     cell = self.count_by_column_key[new_key]
                 else:
-                    cell = self._get_cell_value_without_markup(cell)
+                    cell = strip_markup(cell)
                 new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
             return new_cells, row_idx, self.displayed_rows[row_idx]
 
@@ -1351,76 +1073,40 @@ class NlessBuffer(Static):
 
     def _find_sorted_insert_index(self, cells: list[str]) -> int:
         """Find the insertion index for a row based on the current sort."""
-        if self.sort_column is None:
-            return len(self.displayed_rows)
-
-        data_sort_col_idx = self._get_col_idx_by_name(
-            self.sort_column, render_position=False
+        return find_sorted_insert_index(
+            cells,
+            self._sort_keys,
+            self.sort_column,
+            self.sort_reverse,
+            self._get_col_idx_by_name,
+            num_displayed_rows=len(self.displayed_rows),
         )
-
-        raw_key = self._get_cell_value_without_markup(str(cells[data_sort_col_idx]))
-        sort_key = self._coerce_sort_key(raw_key)
-
-        # _sort_keys is maintained in ascending order; for reverse sort,
-        # we need to find the insertion point from the end
-        idx = bisect.bisect_left(self._sort_keys, sort_key)
-        if self.sort_reverse:
-            return len(self._sort_keys) - idx
-        return idx
 
     def _update_dedup_indices_after_removal(self, old_index: int) -> None:
         """Shift dedup index entries down after a row removal."""
-        for k, idx in self._dedup_key_to_row_idx.items():
-            if idx > old_index:
-                self._dedup_key_to_row_idx[k] = idx - 1
+        update_dedup_indices_after_removal(self._dedup_key_to_row_idx, old_index)
 
     def _update_dedup_indices_after_insertion(
         self, dedup_key: str, new_index: int
     ) -> None:
         """Shift dedup index entries up after a row insertion, then record the new key."""
-        for k, idx in self._dedup_key_to_row_idx.items():
-            if idx >= new_index:
-                self._dedup_key_to_row_idx[k] = idx + 1
-        self._dedup_key_to_row_idx[dedup_key] = new_index
+        update_dedup_indices_after_insertion(
+            self._dedup_key_to_row_idx, dedup_key, new_index
+        )
 
     def _update_sort_keys_for_line(
         self,
         data_cells: list[str],
         old_row: list[str] | None,
     ) -> None:
-        """Update the incremental sort keys list after insertion/removal.
-
-        Args:
-            data_cells: The new row cells in data-position order (includes count column).
-            old_row: The old display row (render-position order) being replaced, or None.
-        """
-        if self.sort_column is None:
-            return
-        data_sort_col_idx = self._get_col_idx_by_name(
-            self.sort_column, render_position=False
+        """Update the incremental sort keys list after insertion/removal."""
+        update_sort_keys_for_line(
+            data_cells,
+            old_row,
+            self.sort_column,
+            self._sort_keys,
+            self._get_col_idx_by_name,
         )
-        if data_sort_col_idx is None:
-            return
-
-        # Remove old sort key by value lookup
-        if old_row is not None:
-            render_sort_col_idx = self._get_col_idx_by_name(
-                self.sort_column, render_position=True
-            )
-            if render_sort_col_idx is not None and render_sort_col_idx < len(old_row):
-                old_raw = self._get_cell_value_without_markup(
-                    str(old_row[render_sort_col_idx])
-                )
-                old_key = self._coerce_sort_key(old_raw)
-                ki = bisect.bisect_left(self._sort_keys, old_key)
-                if ki < len(self._sort_keys) and self._sort_keys[ki] == old_key:
-                    self._sort_keys.pop(ki)
-
-        # Insert new sort key from data-position cells
-        new_raw = self._get_cell_value_without_markup(
-            str(data_cells[data_sort_col_idx])
-        )
-        bisect.insort_left(self._sort_keys, self._coerce_sort_key(new_raw))
 
     def _add_log_line(self, log_line: str):
         """Adds a single log line, applying filters, dedup, sort, and search highlighting."""

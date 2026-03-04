@@ -21,10 +21,12 @@ from textual.widgets import (
 )
 
 from nless.autocomplete import AutocompleteInput
-from nless.buffer import NlessBuffer, handle_mark_unique, write_buffer
+from nless.buffer import NlessBuffer
+from nless.operations import handle_mark_unique, write_buffer
 from nless.gettingstarted import GettingStartedScreen
 
 from .config import NlessConfig, load_config, load_input_history
+from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .help import HelpScreen
 from .input import LineStream, ShellCommandLineStream
@@ -117,9 +119,9 @@ class NlessApp(App):
         event.control.remove()
         if event.control.id == "json_header_select":
             curr_buffer = self._get_current_buffer()
-            if not curr_buffer._with_lock("json header"):
-                return
-            try:
+            with curr_buffer._try_lock("json header") as acquired:
+                if not acquired:
+                    return
                 data_table = curr_buffer.query_one(NlessDataTable)
                 cursor_column = data_table.cursor_column
                 curr_column = curr_buffer._get_column_at_position(cursor_column)
@@ -128,9 +130,7 @@ class NlessApp(App):
                         "No column selected to add JSON key to", severity="error"
                     )
                     return
-                curr_column_name = curr_buffer._get_cell_value_without_markup(
-                    curr_column.name
-                )
+                curr_column_name = strip_markup(curr_column.name)
 
                 col_ref = str(event.value)
                 if not col_ref.startswith("."):
@@ -153,8 +153,6 @@ class NlessApp(App):
 
                 curr_buffer.current_columns.append(new_col)
                 old_row = data_table.cursor_row
-            finally:
-                curr_buffer._lock.release()
 
             curr_buffer._deferred_update_table(
                 restore_position=False,
@@ -170,7 +168,7 @@ class NlessApp(App):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            cell_value = strip_markup(cell_value)
             json_data = json.loads(cell_value)
             if not isinstance(json_data, (dict, list)):
                 curr_buffer.notify(
@@ -280,9 +278,7 @@ class NlessApp(App):
             self.notify("Cannot mark 'count' column as unique", severity="error")
             return
 
-        unique_column_name = curr_buffer._get_cell_value_without_markup(
-            selected_column.name
-        )
+        unique_column_name = strip_markup(selected_column.name)
 
         def setup(new_buffer):
             handle_mark_unique(new_buffer, unique_column_name)
@@ -307,10 +303,7 @@ class NlessApp(App):
             for i, col in enumerate(
                 sorted(new_buffer.current_columns, key=lambda c: c.render_position)
             ):
-                if (
-                    new_buffer._get_cell_value_without_markup(col.name)
-                    == unique_column_name
-                ):
+                if strip_markup(col.name) == unique_column_name:
                     new_cursor_position = i
                     break
             pos = new_cursor_position
@@ -373,9 +366,7 @@ class NlessApp(App):
         cursor_column = data_table.cursor_column
         selected_column = current_buffer._get_column_at_position(cursor_column)
         if selected_column:
-            selected_column_name = current_buffer._get_cell_value_without_markup(
-                selected_column.name
-            )
+            selected_column_name = strip_markup(selected_column.name)
             if selected_column_name in current_buffer.unique_column_names:
                 # Pre-read cell values on main thread (widget access)
                 filters = []
@@ -387,14 +378,10 @@ class NlessApp(App):
                     cell_value = data_table.get_cell_at(
                         NlessCoordinate(data_table.cursor_row, col_idx)
                     )
-                    cell_value = current_buffer._get_cell_value_without_markup(
-                        cell_value
-                    )
+                    cell_value = strip_markup(cell_value)
                     filters.append(
                         Filter(
-                            column=current_buffer._get_cell_value_without_markup(
-                                column
-                            ),
+                            column=strip_markup(column),
                             pattern=re.compile(re.escape(cell_value), re.IGNORECASE),
                         )
                     )
@@ -443,10 +430,10 @@ class NlessApp(App):
         new_col_delimiter = event.value
 
         current_buffer = self._get_current_buffer()
-        if not current_buffer._with_lock("column delimiter"):
-            return
         should_update = False
-        try:
+        with current_buffer._try_lock("column delimiter") as acquired:
+            if not acquired:
+                return
             data_table = current_buffer.query_one(NlessDataTable)
             cursor_coordinate = data_table.cursor_coordinate
             cell = data_table.get_cell_at(cursor_coordinate)
@@ -461,9 +448,7 @@ class NlessApp(App):
 
             if new_col_delimiter == "json":
                 try:
-                    cell_json = json.loads(
-                        current_buffer._get_cell_value_without_markup(cell)
-                    )
+                    cell_json = json.loads(strip_markup(cell))
                     if not isinstance(cell_json, (dict, list)):
                         current_buffer.notify(
                             "Selected cell does not contain a JSON object or array",
@@ -527,7 +512,7 @@ class NlessApp(App):
                 if not should_update:
                     try:
                         cell_parts = split_line(
-                            current_buffer._get_cell_value_without_markup(cell),
+                            strip_markup(cell),
                             new_col_delimiter,
                             [],
                         )
@@ -569,8 +554,6 @@ class NlessApp(App):
                         current_buffer.notify(
                             f"Error splitting cell: {str(e)}", severity="error"
                         )
-        finally:
-            current_buffer._lock.release()
 
         if should_update:
             current_buffer._deferred_update_table()
@@ -665,7 +648,7 @@ class NlessApp(App):
             if not column:
                 self.notify("No column selected for filtering")
                 return
-            column_label = curr_buffer._get_cell_value_without_markup(column.name)
+            column_label = strip_markup(column.name)
             self._perform_filter(filter_value, column_label, exclude=exclude)
 
     def _perform_filter(
@@ -837,10 +820,10 @@ class NlessApp(App):
     def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
         event.input.remove()
-        if not curr_buffer._with_lock("delimiter"):
-            return
         should_update = False
-        try:
+        with curr_buffer._try_lock("delimiter") as acquired:
+            if not acquired:
+                return
             curr_buffer.current_filters = []
             curr_buffer.search_term = None
             curr_buffer.sort_column = None
@@ -879,8 +862,6 @@ class NlessApp(App):
                         list(new_header)
                     )
                     should_update = True
-        finally:
-            curr_buffer._lock.release()
 
         if should_update:
             curr_buffer._deferred_update_table()
@@ -889,9 +870,9 @@ class NlessApp(App):
         curr_buffer = self._get_current_buffer()
         input_value = event.value
         event.input.remove()
-        if not curr_buffer._with_lock("column filter"):
-            return
-        try:
+        with curr_buffer._try_lock("column filter") as acquired:
+            if not acquired:
+                return
             if input_value.lower() == "all":
                 for col in curr_buffer.current_columns:
                     col.hidden = False
@@ -908,7 +889,7 @@ class NlessApp(App):
                 ]
                 for col in curr_buffer.current_columns:
                     matched = False
-                    plain_name = curr_buffer._get_cell_value_without_markup(col.name)
+                    plain_name = strip_markup(col.name)
                     for i, column_name_filter in enumerate(column_name_filter_regexes):
                         if column_name_filter.search(plain_name) and not col.pinned:
                             col.hidden = False
@@ -941,8 +922,6 @@ class NlessApp(App):
             )
             for i, col in enumerate(sorted_columns):
                 col.render_position = i
-        finally:
-            curr_buffer._lock.release()
 
         curr_buffer._deferred_update_table()
 
@@ -953,7 +932,7 @@ class NlessApp(App):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            cell_value = strip_markup(cell_value)
             cell_value = re.escape(cell_value)  # Validate regex
             selected_column = curr_buffer._get_column_at_position(coordinate.column)
             if not selected_column:
@@ -961,7 +940,7 @@ class NlessApp(App):
                 return
             self._perform_filter(
                 f"^{cell_value}$",
-                curr_buffer._get_cell_value_without_markup(selected_column.name),
+                strip_markup(selected_column.name),
             )
         except (IndexError, TypeError):
             self.notify("Cannot get cell value.", severity="error")
@@ -983,7 +962,7 @@ class NlessApp(App):
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = curr_buffer._get_cell_value_without_markup(cell_value)
+            cell_value = strip_markup(cell_value)
             cell_value = re.escape(cell_value)
             selected_column = curr_buffer._get_column_at_position(coordinate.column)
             if not selected_column:
@@ -991,7 +970,7 @@ class NlessApp(App):
                 return
             self._perform_filter(
                 f"^{cell_value}$",
-                curr_buffer._get_cell_value_without_markup(selected_column.name),
+                strip_markup(selected_column.name),
                 exclude=True,
             )
         except (IndexError, TypeError):
