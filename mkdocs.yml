@@ -1,0 +1,51 @@
+site_name: nless
+site_url: https://mpryor.github.io/nothing-less/
+site_description: A TUI pager for exploring and analyzing tabular data with vi-like keybindings
+repo_url: https://github.com/mpryor/nothing-less
+repo_name: mpryor/nothing-less
+
+theme:
+  name: material
+  logo: assets/nless-logo.png
+  favicon: assets/nless-logo.png
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Keybindings: keybindings.md
+  - Configuration: configuration.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      check_paths: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
