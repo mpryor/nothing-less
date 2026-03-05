@@ -1,7 +1,9 @@
 import csv
+from datetime import datetime, timezone
 import json
 import re
 import threading
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from copy import deepcopy
@@ -140,6 +142,14 @@ class NlessBuffer(Static):
         # Columns hidden by pivot (to reveal when new lines arrive)
         self._pivot_hidden_columns: set[str] = set()
 
+        # Arrival timestamps parallel to raw_rows (epoch floats)
+        self._arrival_timestamps: list[float] = []
+        # Time window filter: only show rows within this many seconds of now
+        self.time_window: float | None = None
+        # When True, the time window re-evaluates periodically
+        self.rolling_time_window: bool = False
+        self._rolling_timer = None
+
         # Caches rebuilt when columns change
         self._col_data_idx: dict[str, int] = {}  # plain_name → data_position
         self._col_render_idx: dict[str, int] = {}  # plain_name → render_position
@@ -183,23 +193,33 @@ class NlessBuffer(Static):
                 severity="error",
             )
 
-    def _filter_lines(self, lines: list[str]) -> list[str]:
-        """Return only lines that match all current filters."""
+    def _filter_lines(
+        self,
+        lines: list[str],
+        timestamps: list[float] | None = None,
+    ) -> tuple[list[str], list[float]]:
+        """Return only lines (and their timestamps) that match all current filters."""
+        now = time.time()
+        if timestamps is None:
+            timestamps = [now] * len(lines)
         if not self.current_filters:
-            return lines
+            return lines, timestamps
         metadata = [mc.value for mc in MetadataColumn]
         expected = len([c for c in self.current_columns if c.name not in metadata])
         matching = []
-        for line in lines:
+        kept_timestamps = []
+        for i, line in enumerate(lines):
             try:
                 cells = split_line(line, self.delimiter, self.current_columns)
             except (json.JSONDecodeError, csv.Error, ValueError):
                 continue
             if len(cells) != expected:
                 continue
+            cells.append(self._format_arrival(timestamps[i]))
             if self._matches_all_filters(cells, adjust_for_count=True):
                 matching.append(line)
-        return matching
+                kept_timestamps.append(timestamps[i])
+        return matching, kept_timestamps
 
     def copy(self, pane_id) -> "NlessBuffer":
         # Snapshot state under lock, then release so the UI stays responsive.
@@ -222,7 +242,10 @@ class NlessBuffer(Static):
             new_buffer.unique_column_names = deepcopy(self.unique_column_names)
             new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
             new_buffer._pivot_hidden_columns = set(self._pivot_hidden_columns)
+            new_buffer.time_window = self.time_window
+            new_buffer.rolling_time_window = self.rolling_time_window
             new_buffer.line_stream = self.line_stream
+            timestamps_snapshot = list(self._arrival_timestamps)
             if self.line_stream:
                 self.line_stream.subscribe_future_only(
                     new_buffer,
@@ -233,7 +256,9 @@ class NlessBuffer(Static):
             new_buffer._initial_load_done = True
 
         # Expensive filtering runs outside the lock on the snapshot.
-        new_buffer.raw_rows = new_buffer._filter_lines(raw_rows_snapshot)
+        new_buffer.raw_rows, new_buffer._arrival_timestamps = new_buffer._filter_lines(
+            raw_rows_snapshot, timestamps_snapshot
+        )
         return new_buffer
 
     def _get_theme(self):
@@ -502,6 +527,7 @@ class NlessBuffer(Static):
         rows_with_inconsistent_length = []
         kept_raw = []
         kept_parsed = []
+        kept_timestamps = []
         for i, row_str in enumerate(self.raw_rows):
             if parsed is not None:
                 cells = parsed[i]
@@ -513,12 +539,22 @@ class NlessBuffer(Static):
                 if len(cells) != expected_cell_count:
                     rows_with_inconsistent_length.append(row_str)
                     continue
+                # Append arrival timestamp to parsed cells
+                ts = (
+                    self._arrival_timestamps[i]
+                    if i < len(self._arrival_timestamps)
+                    else time.time()
+                )
+                cells.append(self._format_arrival(ts))
             if self._matches_all_filters(cells, adjust_for_count=True):
                 filtered_rows.append(cells)
                 kept_raw.append(row_str)
                 kept_parsed.append(cells)
+                if i < len(self._arrival_timestamps):
+                    kept_timestamps.append(self._arrival_timestamps[i])
         self.raw_rows = kept_raw
         self._parsed_rows = kept_parsed
+        self._arrival_timestamps = kept_timestamps
         return filtered_rows, rows_with_inconsistent_length
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
@@ -612,17 +648,18 @@ class NlessBuffer(Static):
             if gen != self._update_generation:
                 return None
             with self._lock:
+                metadata_names = {m.value for m in MetadataColumn}
                 curr_metadata_columns = {
-                    c.name
-                    for c in self.current_columns
-                    if c.name in [m.value for m in MetadataColumn]
+                    c.name for c in self.current_columns if c.name in metadata_names
                 }
                 expected_cell_count = len(self.current_columns) - len(
                     curr_metadata_columns
                 )
                 self._rebuild_column_caches()
                 column_labels = self._get_visible_column_labels()
-                fixed_columns = len(curr_metadata_columns)
+                fixed_columns = len(
+                    [c for c in self.current_columns if c.pinned and not c.hidden]
+                )
 
                 self.search_matches = []
                 self.current_match_index = -1
@@ -633,6 +670,7 @@ class NlessBuffer(Static):
                 filtered_rows, rows_with_inconsistent_length = self._filter_rows(
                     expected_cell_count
                 )
+                filtered_rows = self._apply_time_window(filtered_rows)
                 deduped_rows = self._dedup_rows(filtered_rows)
                 self._sort_rows(deduped_rows)
 
@@ -671,6 +709,7 @@ class NlessBuffer(Static):
                     green_keys = set()
                     for line in green_lines:
                         cells = split_line(line, self.delimiter, self.current_columns)
+                        cells.append("")  # placeholder for arrival
                         cells.insert(0, "")  # placeholder for count
                         key = self._build_composite_key(cells, render_position=False)
                         green_keys.add(key)
@@ -772,15 +811,16 @@ class NlessBuffer(Static):
         scroll_x = data_table.scroll_x
         scroll_y = data_table.scroll_y
 
+        metadata_names = {m.value for m in MetadataColumn}
         curr_metadata_columns = {
-            c.name
-            for c in self.current_columns
-            if c.name in [m.value for m in MetadataColumn]
+            c.name for c in self.current_columns if c.name in metadata_names
         }
         expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
         data_table.clear(columns=True)
 
-        data_table.fixed_columns = len(curr_metadata_columns)
+        data_table.fixed_columns = len(
+            [c for c in self.current_columns if c.pinned and not c.hidden]
+        )
         self._rebuild_column_caches()
         data_table.add_columns(self._get_visible_column_labels())
 
@@ -794,6 +834,7 @@ class NlessBuffer(Static):
         filtered_rows, rows_with_inconsistent_length = self._filter_rows(
             expected_cell_count
         )
+        filtered_rows = self._apply_time_window(filtered_rows)
         deduped_rows = self._dedup_rows(filtered_rows)
         self._sort_rows(deduped_rows)
 
@@ -858,6 +899,11 @@ class NlessBuffer(Static):
             format_str=self.app.config.status_format,
             keymap_name=self.app.nless_keymap.name,
             theme_name=self.app.nless_theme.name,
+            time_window=self.app._format_window(
+                self.time_window, self.rolling_time_window
+            )
+            if self.time_window
+            else None,
         )
         self.app.query_one("#status_bar", Static).update(text)
 
@@ -915,6 +961,34 @@ class NlessBuffer(Static):
         else:
             self._stop_spinner()
 
+    def _start_rolling_timer(self) -> None:
+        """Start a periodic timer that re-applies the time window filter."""
+        self._stop_rolling_timer()
+        try:
+            interval = min(self.time_window / 10, 5.0) if self.time_window else 5.0
+            interval = max(interval, 1.0)
+            self._rolling_timer = self.set_interval(interval, self._tick_rolling)
+        except Exception:
+            pass  # Not mounted yet
+
+    def _stop_rolling_timer(self) -> None:
+        """Stop the rolling time window timer."""
+        if self._rolling_timer is not None:
+            try:
+                self._rolling_timer.stop()
+            except Exception:
+                pass
+            self._rolling_timer = None
+
+    def _tick_rolling(self) -> None:
+        """Re-apply the time window filter to drop expired rows."""
+        if not self.time_window or not self.rolling_time_window:
+            self._stop_rolling_timer()
+            return
+        self._parsed_rows = None
+        self._cached_col_widths = None
+        self._deferred_update_table(reason="")
+
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
         if not self.search_matches:
@@ -940,6 +1014,63 @@ class NlessBuffer(Static):
             self._get_col_idx_by_name,
             adjust_for_count=adjust_for_count,
             has_unique_columns=bool(self.unique_column_names),
+        )
+
+    @staticmethod
+    def _format_arrival(ts: float) -> str:
+        """Format an epoch timestamp as ISO 8601 for display."""
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f"
+        )[:-3]  # trim to milliseconds
+
+    @staticmethod
+    def _parse_duration(text: str) -> float | None:
+        """Parse a duration string like '5m', '1h30m', '30s', '2d' into seconds.
+
+        Plain numbers are treated as minutes.  Returns None on invalid input.
+        """
+        text = text.strip()
+        if not text:
+            return None
+        # Plain number → minutes
+        try:
+            return float(text) * 60
+        except ValueError:
+            pass
+        units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+        total = 0.0
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*([dhms])", text, re.IGNORECASE):
+            total += float(match.group(1)) * units[match.group(2).lower()]
+        return total if total > 0 else None
+
+    def _apply_time_window(self, rows: list[list[str]]) -> list[list[str]]:
+        """Filter rows by the active time window using arrival timestamps."""
+        if not self.time_window:
+            return rows
+        cutoff = time.time() - self.time_window
+        # rows are parallel to self._arrival_timestamps after _filter_rows
+        return [
+            row
+            for i, row in enumerate(rows)
+            if i < len(self._arrival_timestamps)
+            and self._arrival_timestamps[i] >= cutoff
+        ]
+
+    @staticmethod
+    def _ensure_arrival_column(columns: list[Column]) -> None:
+        """Ensure the hidden _arrival metadata column is present at the end."""
+        if any(c.name == MetadataColumn.ARRIVAL.value for c in columns):
+            return
+        arrival_pos = len(columns)
+        columns.append(
+            Column(
+                name=MetadataColumn.ARRIVAL.value,
+                labels=set(),
+                render_position=arrival_pos,
+                data_position=arrival_pos,
+                hidden=True,
+                computed=True,
+            )
         )
 
     @staticmethod
@@ -1028,6 +1159,7 @@ class NlessBuffer(Static):
             self.first_log_line = log_lines[0]
             parts = self._parse_first_line_columns(self.first_log_line)
             self.current_columns = self._make_columns(parts)
+            self._ensure_arrival_column(self.current_columns)
             data_table.add_columns([str(p) for p in parts])
 
             # For non-special delimiters, first line is the header
@@ -1047,8 +1179,11 @@ class NlessBuffer(Static):
             self._rebuild_column_caches()
             self.first_row_parsed = True
 
-        filtered = self._filter_lines(log_lines)
+        now = time.time()
+        batch_timestamps = [now] * len(log_lines)
+        filtered, filtered_timestamps = self._filter_lines(log_lines, batch_timestamps)
         self.raw_rows.extend(filtered)
+        self._arrival_timestamps.extend(filtered_timestamps)
 
         # Reveal pivot-hidden columns when new streaming data arrives
         pivot_revealed = False
@@ -1063,7 +1198,7 @@ class NlessBuffer(Static):
 
         is_large_batch = len(filtered) > 50000
 
-        if self.sort_column is not None or self.unique_column_names:
+        if self.sort_column is not None or self.unique_column_names or self.time_window:
             if self._loading_reason:
                 # A deferred update is in flight — just extend raw_rows (done above).
                 # The in-flight update will chain another when it finishes.
@@ -1084,7 +1219,7 @@ class NlessBuffer(Static):
             else:
                 for line in filtered:
                     try:
-                        self._add_log_line(line)
+                        self._add_log_line(line, arrival_ts=now)
                     except (
                         RowLengthMismatchError,
                         json.JSONDecodeError,
@@ -1104,7 +1239,9 @@ class NlessBuffer(Static):
             try:
                 for i in range(0, len(filtered), CHUNK):
                     self._add_rows_incremental(
-                        filtered[i : i + CHUNK], highlight=had_rows
+                        filtered[i : i + CHUNK],
+                        highlight=had_rows,
+                        arrival_ts=now,
                     )
                     if is_large_batch:
                         self._update_status_bar()
@@ -1113,7 +1250,10 @@ class NlessBuffer(Static):
                 self._needs_deferred_update = True
 
     def _add_rows_incremental(
-        self, new_lines: list[str], highlight: bool = True
+        self,
+        new_lines: list[str],
+        highlight: bool = True,
+        arrival_ts: float | None = None,
     ) -> None:
         """Parse and add new lines to the table without a full rebuild.
 
@@ -1126,6 +1266,7 @@ class NlessBuffer(Static):
         expected = len(self.current_columns) - len(
             [c for c in self.current_columns if c.name in metadata]
         )
+        formatted_arrival = self._format_arrival(arrival_ts or time.time())
         column_widths = data_table.column_widths
         delimiter = self.delimiter
         has_nested = self._has_nested_delimiters
@@ -1176,6 +1317,8 @@ class NlessBuffer(Static):
                 continue
             if _len(cells) != expected:
                 continue
+            # Append arrival timestamp (metadata column at end)
+            cells.append(formatted_arrival)
             # Align to visible columns; strip only for fast-path delimiters
             if needs_cleanup:
                 row = [_strip(cells[p]) for p in col_positions]
@@ -1322,10 +1465,11 @@ class NlessBuffer(Static):
             self._get_col_idx_by_name,
         )
 
-    def _add_log_line(self, log_line: str):
+    def _add_log_line(self, log_line: str, arrival_ts: float | None = None):
         """Adds a single log line, applying filters, dedup, sort, and search highlighting."""
         data_table = self.query_one(NlessDataTable)
         cells = split_line(log_line, self.delimiter, self.current_columns)
+        cells.append(self._format_arrival(arrival_ts or time.time()))
         if self.unique_column_names:
             cells.insert(0, "1")
 

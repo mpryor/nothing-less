@@ -487,7 +487,9 @@ class TestMoveColumn:
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
             _load(buf, ["a,b,c", "1,2,3"])
-            positions_before = {c.name: c.render_position for c in buf.current_columns}
+            positions_before = {
+                c.name: c.render_position for c in buf.current_columns if not c.hidden
+            }
             assert positions_before == {"a": 0, "b": 1, "c": 2}
 
             buf.action_move_column_right()
@@ -528,7 +530,9 @@ class TestMoveColumn:
             buf.action_move_column_left()
             await _wait(pilot, app)
 
-            positions = {c.name: c.render_position for c in buf.current_columns}
+            positions = {
+                c.name: c.render_position for c in buf.current_columns if not c.hidden
+            }
             assert positions == {"a": 0, "b": 1, "c": 2}
 
 
@@ -583,7 +587,7 @@ class TestDelimiterChange:
 
             # Inferred as tab — change to comma
             assert buf.delimiter == "\t"
-            initial_col_names = [c.name for c in buf.current_columns]
+            initial_col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert len(initial_col_names) == 3
 
             await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
@@ -629,7 +633,7 @@ class TestDelimiterChange:
             _load(buf, ["name,age", "Alice,30", "Bob,25"])
             await _wait(pilot, app)
 
-            assert len(buf.current_columns) == 2
+            assert len([c for c in buf.current_columns if not c.hidden]) == 2
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "raw"
@@ -637,7 +641,7 @@ class TestDelimiterChange:
             await _wait(pilot, app)
 
             assert buf.delimiter == "raw"
-            col_names = [c.name for c in buf.current_columns]
+            col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert col_names == ["log"]
 
     @pytest.mark.asyncio
@@ -685,7 +689,7 @@ class TestDelimiterChange:
             await _wait(pilot, app)
 
             assert isinstance(buf.delimiter, re.Pattern)
-            col_names = [c.name for c in buf.current_columns]
+            col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert col_names == ["host", "level"]
 
     @pytest.mark.asyncio
@@ -766,7 +770,11 @@ class TestColumnFilter:
             )
             await _wait(pilot, app)
 
-            assert all(not c.hidden for c in buf.current_columns)
+            visible = [c for c in buf.current_columns if not c.hidden]
+            hidden = [c for c in buf.current_columns if c.hidden]
+            # All user columns restored; only hidden metadata stays hidden
+            assert len(visible) == 3  # name, age, city
+            assert all(c.name in {mc.value for mc in MetadataColumn} for c in hidden)
 
     @pytest.mark.asyncio
     async def test_filter_columns_preserves_metadata(self, cli_args):
@@ -1305,3 +1313,321 @@ class TestExcludeFilter:
             await _wait(pilot, app)
 
             assert len(buf.displayed_rows) == 3
+
+
+# ---------------------------------------------------------------------------
+# Arrival Timestamp Metadata Column
+# ---------------------------------------------------------------------------
+
+
+class TestArrivalTimestamp:
+    @pytest.mark.asyncio
+    async def test_arrival_column_exists_hidden(self, cli_args):
+        """ARRIVAL column should be created hidden when first row is parsed."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            arrival = next(
+                (
+                    c
+                    for c in buf.current_columns
+                    if c.name == MetadataColumn.ARRIVAL.value
+                ),
+                None,
+            )
+            assert arrival is not None
+            assert arrival.hidden is True
+            assert arrival.computed is True
+
+    @pytest.mark.asyncio
+    async def test_arrival_timestamps_recorded(self, cli_args):
+        """Arrival timestamps should be recorded for each raw row."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2", "3,4"])
+            await _wait(pilot, app)
+
+            assert len(buf._arrival_timestamps) == len(buf.raw_rows)
+            assert all(isinstance(ts, float) for ts in buf._arrival_timestamps)
+
+    @pytest.mark.asyncio
+    async def test_arrival_not_in_visible_columns(self, cli_args):
+        """ARRIVAL should not appear in visible column labels by default."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            visible = buf._get_visible_column_labels()
+            assert MetadataColumn.ARRIVAL.value not in visible
+
+    @pytest.mark.asyncio
+    async def test_toggle_arrival_shows_pinned(self, cli_args):
+        """Pressing A should show arrival column pinned to the left."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            app.action_toggle_arrival()
+            await _wait(pilot, app)
+
+            arrival = next(
+                c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value
+            )
+            assert arrival.hidden is False
+            assert arrival.pinned is True
+            # Should be in visible labels now
+            visible = buf._get_visible_column_labels()
+            assert MetadataColumn.ARRIVAL.value in visible
+
+    @pytest.mark.asyncio
+    async def test_toggle_arrival_hides_again(self, cli_args):
+        """Pressing A twice should hide the arrival column again."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            app.action_toggle_arrival()
+            await _wait(pilot, app)
+            app.action_toggle_arrival()
+            await _wait(pilot, app)
+
+            arrival = next(
+                c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value
+            )
+            assert arrival.hidden is True
+            assert arrival.pinned is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_arrival_pinned_left_of_data(self, cli_args):
+        """Arrival column should appear before data columns when shown."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30"])
+            await _wait(pilot, app)
+
+            app.action_toggle_arrival()
+            await _wait(pilot, app)
+
+            arrival = next(
+                c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value
+            )
+            data_cols = [
+                c
+                for c in buf.current_columns
+                if c.name != MetadataColumn.ARRIVAL.value and not c.hidden
+            ]
+            assert all(arrival.render_position < c.render_position for c in data_cols)
+
+
+# ---------------------------------------------------------------------------
+# Duration Parsing (_parse_duration)
+# ---------------------------------------------------------------------------
+
+
+class TestParseDuration:
+    def test_plain_number_as_minutes(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("5") == 300.0
+        assert NlessBuffer._parse_duration("0.5") == 30.0
+
+    def test_seconds(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("30s") == 30.0
+
+    def test_minutes(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("5m") == 300.0
+
+    def test_hours(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("2h") == 7200.0
+
+    def test_days(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("1d") == 86400.0
+
+    def test_compound_duration(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("1h30m") == 5400.0
+        assert NlessBuffer._parse_duration("1d2h30m15s") == 95415.0
+
+    def test_empty_returns_none(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("") is None
+        assert NlessBuffer._parse_duration("   ") is None
+
+    def test_invalid_returns_none(self):
+        from nless.buffer import NlessBuffer
+
+        assert NlessBuffer._parse_duration("abc") is None
+
+
+# ---------------------------------------------------------------------------
+# Time Window Filter
+# ---------------------------------------------------------------------------
+
+
+class TestTimeWindow:
+    @pytest.mark.asyncio
+    async def test_time_window_filters_rows(self, cli_args):
+        """Setting a time window should filter out old rows."""
+        import time
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2", "3,4", "5,6"])
+            await _wait(pilot, app)
+
+            # Backdate the first row's timestamp so it falls outside the window
+            buf._arrival_timestamps[0] = time.time() - 7200  # 2 hours ago
+
+            buf.time_window = 3600.0  # 1 hour
+            buf._parsed_rows = None
+            buf._cached_col_widths = None
+            buf._deferred_update_table(reason="test")
+            await _wait(pilot, app)
+
+            # Only the 2 recent rows should remain visible
+            assert len(buf.displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_time_window_clear(self, cli_args):
+        """Clearing the time window should restore all rows."""
+        import time
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2", "3,4", "5,6"])
+            await _wait(pilot, app)
+
+            buf._arrival_timestamps[0] = time.time() - 7200
+            buf.time_window = 3600.0
+            buf._parsed_rows = None
+            buf._cached_col_widths = None
+            buf._deferred_update_table(reason="test")
+            await _wait(pilot, app)
+            assert len(buf.displayed_rows) == 2
+
+            # Clear the window
+            buf.time_window = None
+            buf._parsed_rows = None
+            buf._cached_col_widths = None
+            buf._deferred_update_table(reason="test")
+            await _wait(pilot, app)
+
+            assert len(buf.displayed_rows) == 3
+
+    @pytest.mark.asyncio
+    async def test_time_window_via_action(self, cli_args):
+        """The @ action should set the time window on the buffer."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "30m"
+            )
+            await _wait(pilot, app)
+
+            assert buf.time_window == 1800.0
+
+    @pytest.mark.asyncio
+    async def test_time_window_off_via_action(self, cli_args):
+        """Submitting 'off' should clear the time window."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            # Set a window first
+            buf.time_window = 300.0
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "off"
+            )
+            await _wait(pilot, app)
+
+            assert buf.time_window is None
+
+    @pytest.mark.asyncio
+    async def test_rolling_window_via_action(self, cli_args):
+        """Appending '+' should enable rolling mode."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "5m+"
+            )
+            await _wait(pilot, app)
+
+            assert buf.time_window == 300.0
+            assert buf.rolling_time_window is True
+            assert buf._rolling_timer is not None
+
+    @pytest.mark.asyncio
+    async def test_non_rolling_window_no_timer(self, cli_args):
+        """Without '+', rolling should be off and no timer started."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "5m"
+            )
+            await _wait(pilot, app)
+
+            assert buf.time_window == 300.0
+            assert buf.rolling_time_window is False
+            assert buf._rolling_timer is None
+
+    @pytest.mark.asyncio
+    async def test_clear_stops_rolling(self, cli_args):
+        """Clearing a rolling window should stop the timer."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "5m+"
+            )
+            await _wait(pilot, app)
+            assert buf._rolling_timer is not None
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "off"
+            )
+            await _wait(pilot, app)
+
+            assert buf.time_window is None
+            assert buf.rolling_time_window is False
+            assert buf._rolling_timer is None

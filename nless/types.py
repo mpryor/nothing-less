@@ -9,6 +9,7 @@ class RowLengthMismatchError(Exception):
 
 class MetadataColumn(Enum):
     COUNT = "count"
+    ARRIVAL = "_arrival"
 
 
 @dataclass

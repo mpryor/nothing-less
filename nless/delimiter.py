@@ -67,9 +67,14 @@ def split_line(
         return cells
 
     sorted_columns = sorted(columns, key=lambda col: col.data_position)
-    metadata_columns = [mc.value for mc in MetadataColumn]
+    # Only count leading metadata columns (e.g. COUNT at position 0) for index
+    # adjustment — trailing metadata like ARRIVAL doesn't shift data indices.
     count_metadata_columns = len(
-        [col for col in sorted_columns if col.name in metadata_columns]
+        [
+            col
+            for col in sorted_columns
+            if col.name in {mc.value for mc in MetadataColumn} and col.pinned
+        ]
     )
 
     for i, col in enumerate(sorted_columns):
