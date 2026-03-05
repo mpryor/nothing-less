@@ -8,6 +8,15 @@ from nless.config import load_config, save_config
 class GettingStartedScreen(ModalScreen):
     """A widget to display a getting started message."""
 
+    DEFAULT_CSS = """
+    GettingStartedScreen {
+        align: center middle;
+    }
+    #getting_started {
+        overflow: auto;
+    }
+    """
+
     BINDINGS = [
         ("q", "app.pop_screen", "Close Getting Started"),
         ("ctrl+c", "dismiss_getting_started", "Dismiss Getting Started"),

@@ -19,6 +19,7 @@ class LineStream:
     def __init__(self):
         self.subscribers = []
         self.lines = []
+        self.done = False
 
     def _initial_notify(
         self,
@@ -69,18 +70,24 @@ class LineStream:
 class ShellCommandLineStream(LineStream):
     def __init__(self, command: str):
         super().__init__()
-        result = subprocess.Popen(
+        self._process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=True,
             text=True,
         )
-        Thread(target=self._setup_io_stream, args=(result.stdout,), daemon=True).start()
+
+    def start(self) -> None:
+        """Start reading from the subprocess. Call after subscribers are set up."""
+        Thread(
+            target=self._setup_io_stream, args=(self._process.stdout,), daemon=True
+        ).start()
 
     def _setup_io_stream(self, io: IO[str]) -> None:
         while line := io.readline():
             self.notify([line])
+        self.done = True
 
 
 class StdinLineStream(LineStream):

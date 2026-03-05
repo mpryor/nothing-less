@@ -53,6 +53,9 @@ _TAB_SWITCH_KEYS = frozenset(str(i) for i in range(1, 10))
 
 
 class NlessApp(App):
+    inherit_bindings = False
+    ENABLE_COMMAND_PALETTE = False
+
     def __init__(
         self,
         cli_args: CliArgs,
@@ -94,7 +97,7 @@ class NlessApp(App):
             return "stdin"
         if source.startswith("/"):
             return f"📄 {source}"
-        return f"❯ {source}"
+        return f"⏵ {source}"
 
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
@@ -204,7 +207,8 @@ class NlessApp(App):
                 cli_args=self.cli_args,
                 line_stream=line_stream,
             )
-            await self.add_group(f"❯ {command}", new_buffer, stream=line_stream)
+            await self.add_group(f"⏵ {command}", new_buffer, stream=line_stream)
+            line_stream.start()
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
 
@@ -799,8 +803,7 @@ class NlessApp(App):
                     )
                 )
 
-        t = Thread(target=_write_and_notify, daemon=True)
-        t.start()
+        self.run_worker(_write_and_notify, thread=True)
         if output_path == "-":
             self.exit()
 
@@ -1466,27 +1469,129 @@ class NlessApp(App):
         if len(self.groups) == 1:
             self._rename_first_buffer(self.groups[0], self.groups[0].name)
 
+    # Unicode figure space — used as a blank icon placeholder during animation
+    # so regex replacement doesn't accidentally match normal spaces.
+    _ICON_BLANK = "\u2007"
+    _ICON_CHARS = "⏵📄✓\u2007"
+
+    @staticmethod
+    def _get_group_source_icon(group: BufferGroup) -> str | None:
+        """Return the source icon character (⏵ or 📄) from a group name."""
+        for char in ("⏵", "📄"):
+            if char in group.name:
+                return char
+        return None
+
+    def _resolve_icon(self, group: BufferGroup, animate: bool = False) -> str:
+        """Return the resolved icon character for a group's current state."""
+        source = self._get_group_source_icon(group)
+        if source is None:
+            return ""
+        if (
+            source == "⏵"
+            and group.starting_stream is not None
+            and group.starting_stream.done
+        ):
+            return "✓"
+        if source == "⏵" and animate and self._group_bar_frame % 2 != 0:
+            return self._ICON_BLANK
+        return source
+
     def _rename_first_buffer(self, group: BufferGroup, name: str) -> None:
-        """Rename the first buffer tab in a group."""
+        """Rename the first buffer tab in a group, prepending the group icon."""
         try:
             container = self.query_one(f"#group_{group.group_id}")
             tabbed_content = container.query_one(TabbedContent)
             first_tab = next(tabbed_content.query(Tab).results())
-            first_tab.update(f"{self.nless_theme.markup('accent', '1')} {name}")
+            # Strip any existing icon prefix from the name
+            for prefix in ("⏵ ", "📄 ", "✓ ", f"{self._ICON_BLANK} "):
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            icon = self._resolve_icon(group)
+            icon_prefix = f"{icon} " if icon else ""
+            first_tab.update(
+                f"{self.nless_theme.markup('accent', '1')} {icon_prefix}{name}"
+            )
         except (NoMatches, StopIteration):
             pass
+
+    def _refresh_first_buffer_icon(
+        self, group: BufferGroup, animate: bool = False
+    ) -> None:
+        """Refresh the icon on the first buffer tab without changing the name."""
+        try:
+            container = self.query_one(f"#group_{group.group_id}")
+            tabbed_content = container.query_one(TabbedContent)
+            first_tab = next(tabbed_content.query(Tab).results())
+            content = str(first_tab.content)
+            # Strip Rich markup, index number, and icon to get the plain name
+            name = re.sub(r"\[/?[^\]]*\]", "", content)
+            name = re.sub(r"^\d+\s*", "", name)
+            for prefix in ("⏵ ", "📄 ", "✓ ", f"{self._ICON_BLANK} "):
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            # Rebuild with the resolved icon
+            icon = self._resolve_icon(group, animate=animate)
+            icon_prefix = f"{icon} " if icon else ""
+            first_tab.update(
+                f"{self.nless_theme.markup('accent', '1')} {icon_prefix}{name}"
+            )
+        except (NoMatches, StopIteration):
+            pass
+
+    _group_bar_frame: int = 0
+    _group_bar_timer = None
+
+    def _group_is_streaming(self, group: BufferGroup) -> bool:
+        return group.starting_stream is not None and not group.starting_stream.done
 
     def _build_group_bar(self) -> str:
         t = self.nless_theme
         parts = []
         for i, group in enumerate(self.groups):
+            name = group.name
+            source = self._get_group_source_icon(group)
+            if source is not None:
+                icon = self._resolve_icon(group, animate=(i == self.curr_group_idx))
+                name = name.replace(source, icon, 1)
             if i == self.curr_group_idx:
-                parts.append(
-                    f"[bold {t.cursor_fg}]\\[{group.name}][/bold {t.cursor_fg}]"
-                )
+                parts.append(f"[bold {t.accent}]\\[{name}][/bold {t.accent}]")
             else:
-                parts.append(f"[{t.header_fg}]{group.name}[/{t.header_fg}]")
+                parts.append(f"[{t.muted}]{name}[/{t.muted}]")
         return " " + "   ".join(parts)
+
+    def _tick_group_bar(self) -> None:
+        self._group_bar_frame += 1
+        has_active = any(self._group_is_streaming(g) for g in self.groups)
+        if has_active and len(self.groups) > 1:
+            bar = self.query_one("#group_bar", Static)
+            bar.update(self._build_group_bar())
+            # Also update the first buffer tab icon in the current group
+            group = self._current_group
+            if self._get_group_source_icon(group) is not None:
+                self._refresh_first_buffer_icon(
+                    group, animate=self._group_is_streaming(group)
+                )
+        else:
+            self._stop_group_bar_timer()
+            # Final update to show ✓ on completed streams
+            if len(self.groups) > 1:
+                bar = self.query_one("#group_bar", Static)
+                bar.update(self._build_group_bar())
+                for group in self.groups:
+                    if self._get_group_source_icon(group) == "⏵":
+                        self._refresh_first_buffer_icon(group)
+
+    def _start_group_bar_timer(self) -> None:
+        if self._group_bar_timer is None:
+            self._group_bar_timer = self.set_interval(0.8, self._tick_group_bar)
+
+    def _stop_group_bar_timer(self) -> None:
+        if self._group_bar_timer is not None:
+            self._group_bar_timer.stop()
+            self._group_bar_timer = None
 
     def _update_group_bar(self) -> None:
         try:
@@ -1496,11 +1601,14 @@ class NlessApp(App):
         if len(self.groups) > 1:
             t = self.nless_theme
             bar.update(self._build_group_bar())
-            bar.styles.border = ("round", t.accent)
+            bar.styles.border = ("round", t.muted)
             bar.styles.height = "auto"
+            if any(self._group_is_streaming(g) for g in self.groups):
+                self._start_group_bar_timer()
         else:
             bar.styles.height = 0
             bar.styles.border = None
+            self._stop_group_bar_timer()
 
     def action_rename_buffer(self) -> None:
         self._create_prompt("Enter new buffer name", "rename_buffer_input")
