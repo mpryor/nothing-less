@@ -35,6 +35,7 @@ def build_status_text(
     keymap_name: str = "vim",
     theme_name: str = "default",
     time_window: str | None = None,
+    delimiter: str | None = None,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -93,6 +94,10 @@ def build_status_text(
     if time_window:
         time_window_text = f"[bold]Window[/bold]: {time_window} "
 
+    delimiter_text = ""
+    if delimiter:
+        delimiter_text = f"[bold]Delim[/bold]: {delimiter} "
+
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
         loading_color = theme.markup("status_loading", f"{spinner} {loading_reason}")
@@ -114,6 +119,7 @@ def build_status_text(
         "cols": str(total_cols),
         "unique": column_text,
         "time_window": time_window_text,
+        "delimiter": delimiter_text,
         "tailing": tailing_text,
         "loading": loading_text,
         "keymap": keymap_name,

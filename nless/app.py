@@ -213,6 +213,8 @@ class NlessApp(App):
     ) -> None:
         event.control.remove()
         command = event.value.strip()
+        if not command:
+            return
         try:
             line_stream = ShellCommandLineStream(command)
             new_buffer = NlessBuffer(
@@ -379,7 +381,7 @@ class NlessApp(App):
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
 
-    _DELIMITER_OPTIONS = [",", "\\t", "space", "|", ";", ":", "raw"]
+    _DELIMITER_OPTIONS = [",", "\\t", "space", "space+", "|", ";", ":", "raw"]
 
     def action_column_delimiter(self) -> None:
         """Change the column delimiter."""
@@ -709,6 +711,8 @@ class NlessApp(App):
         self._apply_column_delimiter(event.value)
 
     def _apply_column_delimiter(self, new_col_delimiter: str) -> None:
+        if not new_col_delimiter:
+            return
         current_buffer = self._get_current_buffer()
         should_update = False
         with current_buffer._try_lock(
@@ -767,6 +771,10 @@ class NlessApp(App):
             else:
                 if new_col_delimiter == "\\t":
                     new_col_delimiter = "\t"
+                elif new_col_delimiter == "space":
+                    new_col_delimiter = " "
+                elif new_col_delimiter == "space+":
+                    new_col_delimiter = "  "
 
                 try:
                     pattern = re.compile(new_col_delimiter)
@@ -846,6 +854,8 @@ class NlessApp(App):
     ) -> None:
         output_path = event.value
         event.input.remove()
+        if not output_path.strip():
+            return
         current_buffer = self._get_current_buffer()
 
         def _write_and_notify():
@@ -1207,6 +1217,10 @@ class NlessApp(App):
                 pass
         if value == "\\t":
             return "\t"
+        if value == "space":
+            return " "
+        if value == "space+":
+            return "  "
         return value
 
     def _resolve_new_header(self, delimiter, prev_delimiter, curr_buffer):
@@ -1276,6 +1290,8 @@ class NlessApp(App):
         self._apply_delimiter(event.value)
 
     def _apply_delimiter(self, delimiter_input: str) -> None:
+        if not delimiter_input:
+            return
         curr_buffer = self._get_current_buffer()
         should_update = False
         with curr_buffer._try_lock(
@@ -1344,6 +1360,8 @@ class NlessApp(App):
         self._apply_column_filter(input_value)
 
     def _apply_column_filter(self, input_value: str) -> None:
+        if not input_value.strip():
+            return
         curr_buffer = self._get_current_buffer()
         with curr_buffer._try_lock(
             "column filter",
