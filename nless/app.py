@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from threading import Thread
 
 from textual.binding import Binding
@@ -1532,9 +1533,7 @@ class NlessApp(App):
     def _create_unparsed_buffer(
         self,
         unparsed_rows: list[str],
-        source_delimiter,
-        source_columns: list,
-        source_expected: int,
+        source_parse_filter: Callable[[str], bool],
         line_stream=None,
     ) -> None:
         """Create a new raw-delimiter buffer from lines that didn't parse."""
@@ -1551,33 +1550,19 @@ class NlessApp(App):
         now = time.time()
         new_buffer._arrival_timestamps = [now] * len(unparsed_rows)
         new_buffer._initial_load_done = True
+        new_buffer._source_parse_filter = source_parse_filter
 
         if line_stream:
-            delim = source_delimiter
-            cols = source_columns
-            expected = source_expected
+            parse_filter = source_parse_filter
 
-            def unparsed_filter(lines: list[str]) -> None:
-                rejected = []
-                for line in lines:
-                    try:
-                        cells = split_line(line, delim, cols)
-                    except (
-                        json.JSONDecodeError,
-                        csv.Error,
-                        ValueError,
-                        StopIteration,
-                    ):
-                        rejected.append(line)
-                        continue
-                    if len(cells) != expected:
-                        rejected.append(line)
+            def unparsed_stream_filter(lines: list[str]) -> None:
+                rejected = [line for line in lines if not parse_filter(line)]
                 if rejected:
                     new_buffer.add_logs(rejected)
 
             line_stream.subscribe_future_only(
                 new_buffer,
-                unparsed_filter,
+                unparsed_stream_filter,
                 lambda: new_buffer.mounted,
             )
             new_buffer.line_stream = line_stream
