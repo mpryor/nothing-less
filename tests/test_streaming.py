@@ -12,7 +12,7 @@ async def _wait(pilot, app):
     settled = 0
     for _ in range(300):  # 3s max
         await pilot.pause(delay=0.01)
-        if all(not b._is_loading for b in app.buffers):
+        if all(not b._loading_reason for b in app.buffers):
             settled += 1
             if settled >= 5:
                 return
@@ -167,7 +167,7 @@ class TestLargeBatchChunking:
             header = "a,b,c"
             data = [f"{i},{i + 1},{i + 2}" for i in range(60000)]
             buf.add_logs([header] + data)
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
     @pytest.mark.asyncio
     async def test_loading_flag_not_set_for_small_batch(self, cli_args):
@@ -175,7 +175,7 @@ class TestLargeBatchChunking:
         async with app.run_test():
             buf = app.buffers[0]
             buf.add_logs(["a,b,c", "1,2,3"])
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
 
 class TestIncrementalRowAddition:

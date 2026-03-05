@@ -18,6 +18,7 @@ ColLookupFn = Callable[[str, bool], int | None]
 StripMarkupFn = Callable[[str], str]
 
 _MARKUP_TAG_RE = re.compile(r"\[/?[^\]]*\]")
+_NUMERIC_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
 
 
 def strip_markup(cell_value: str) -> str:
@@ -27,9 +28,22 @@ def strip_markup(cell_value: str) -> str:
     return _MARKUP_TAG_RE.sub("", cell_value)
 
 
+def _looks_numeric(value: str) -> bool:
+    """Fast check whether a string looks like a number, avoiding exceptions."""
+    if not value:
+        return False
+    # Fast path: check first char to reject obvious non-numbers
+    c = value[0]
+    if c not in "0123456789+-.":
+        return False
+    return _NUMERIC_RE.match(value) is not None
+
+
 def coerce_to_numeric(value: Any) -> int | float | str:
     """Try to coerce *value* to a numeric type."""
     if isinstance(value, int):
+        return value
+    if isinstance(value, str) and not _looks_numeric(value):
         return value
     try:
         return float(value)
@@ -40,6 +54,8 @@ def coerce_to_numeric(value: Any) -> int | float | str:
 
 def coerce_sort_key(value: str) -> int | float | str:
     """Coerce a string to numeric if possible, for sort comparison."""
+    if not _looks_numeric(value):
+        return value
     try:
         return int(value)
     except (ValueError, TypeError):
@@ -155,6 +171,7 @@ def highlight_search_matches(
     search_term: re.Pattern | None,
     fixed_columns: int,
     row_offset: int = 0,
+    search_match_style: str = "reverse",
 ) -> tuple[list[list[str]], list[tuple[int, int]]]:
     """Apply search highlighting to rows.
 
@@ -165,13 +182,15 @@ def highlight_search_matches(
         return rows, []
     result = []
     new_matches: list[tuple[int, int]] = []
+    open_tag = f"[{search_match_style}]"
+    close_tag = f"[/{search_match_style}]"
     for i, cells in enumerate(rows):
         highlighted_cells = []
         for col_idx, cell in enumerate(cells):
             if search_term.search(str(cell)) and col_idx > fixed_columns - 1:
                 cell = re.sub(
                     search_term,
-                    lambda m: f"[reverse]{m.group(0)}[/reverse]",
+                    lambda m: f"{open_tag}{m.group(0)}{close_tag}",
                     cell,
                 )
                 highlighted_cells.append(cell)

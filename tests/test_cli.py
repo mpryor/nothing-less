@@ -55,6 +55,27 @@ class TestParseArgs:
         assert cli_args.unique_keys == set()
         assert cli_args.sort_by is None
         assert cli_args.filename is None
+        assert cli_args.theme is None
+
+    def test_theme_flag(self):
+        cli_args = parse_args(["--theme", "dracula"])
+        assert cli_args.theme == "dracula"
+
+    def test_theme_short_flag(self):
+        cli_args = parse_args(["-t", "nord"])
+        assert cli_args.theme == "nord"
+
+    def test_keymap_flag(self):
+        cli_args = parse_args(["--keymap", "less"])
+        assert cli_args.keymap == "less"
+
+    def test_keymap_short_flag(self):
+        cli_args = parse_args(["-k", "emacs"])
+        assert cli_args.keymap == "emacs"
+
+    def test_keymap_default_none(self):
+        cli_args = parse_args([])
+        assert cli_args.keymap is None
 
 
 class TestExcludeFilterArgs:

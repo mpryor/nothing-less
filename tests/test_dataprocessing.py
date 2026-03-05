@@ -204,6 +204,15 @@ class TestHighlightSearchMatches:
         assert matches[0] == (0, 0)
         assert matches[1] == (1, 0)
 
+    def test_custom_search_match_style(self):
+        rows = [["hello", "world"]]
+        pattern = re.compile("hello", re.IGNORECASE)
+        result, matches = highlight_search_matches(
+            rows, pattern, 0, search_match_style="#fff on #ff9e64"
+        )
+        assert "[#fff on #ff9e64]hello[/#fff on #ff9e64]" in result[0][0]
+        assert matches == [(0, 0)]
+
 
 class TestMatchesAllFilters:
     def _lookup(self, col_name, render_position):

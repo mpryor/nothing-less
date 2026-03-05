@@ -25,6 +25,8 @@ class CliArgs:
     unique_keys: set[str]
     sort_by: str | None
     filename: str | None = None
+    theme: str | None = None
+    keymap: str | None = None
 
 
 @dataclass

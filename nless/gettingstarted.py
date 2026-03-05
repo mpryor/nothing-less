@@ -13,6 +13,17 @@ class GettingStartedScreen(ModalScreen):
         ("ctrl+c", "dismiss_getting_started", "Dismiss Getting Started"),
     ]
 
+    def _help_text(self) -> str:
+        try:
+            brand = self.app.nless_theme.brand
+        except AttributeError:
+            brand = "green"
+        return (
+            f"Help: [{brand}]?[/{brand}] - keybindings | "
+            f"[{brand}]q[/{brand}] - close this dialog | "
+            f"[{brand}]<Ctrl+c>[/{brand}] - dismiss this dialog permanently"
+        )
+
     def action_dismiss_getting_started(self):
         config = load_config()
         config.show_getting_started = False
@@ -54,7 +65,7 @@ class GettingStartedScreen(ModalScreen):
                     classes="overflow",
                 ),
                 Static(
-                    "Help: [green]?[/green] - keybindings | [green]q[/green] - close this dialog | [green]<Ctrl+c>[/green] - dismiss this dialog permanently",
+                    self._help_text(),
                     classes="centered",
                 ),
                 id="dialog",

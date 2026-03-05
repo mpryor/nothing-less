@@ -6,6 +6,7 @@ import subprocess
 from threading import Thread
 
 from textual import events
+from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
@@ -25,13 +26,15 @@ from nless.buffer import NlessBuffer
 from nless.operations import handle_mark_unique, write_buffer
 from nless.gettingstarted import GettingStartedScreen
 
-from .config import NlessConfig, load_config, load_input_history
+from .config import NlessConfig, load_config, load_input_history, save_config
 from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .help import HelpScreen
 from .input import LineStream, ShellCommandLineStream
 from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
+from .keymap import get_all_keymaps, resolve_keymap
+from .theme import get_all_themes, resolve_theme
 from .types import CliArgs, Column, Filter, MetadataColumn
 
 
@@ -52,6 +55,11 @@ class NlessApp(App):
         self.config = NlessConfig()
         self.show_help = show_help
         self.mounted = False
+        # Theme is resolved lazily on_mount once config is loaded;
+        # bootstrap with CLI arg or default so buffers can reference it.
+        # Named nless_theme to avoid conflict with Textual's App.theme reactive.
+        self.nless_theme = resolve_theme(cli_theme=cli_args.theme)
+        self.nless_keymap = resolve_keymap(cli_keymap=cli_args.keymap)
         self.buffers = [
             NlessBuffer(pane_id=1, cli_args=cli_args, line_stream=starting_stream)
         ]
@@ -63,33 +71,77 @@ class NlessApp(App):
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
-        ("N", "add_buffer", "New Buffer"),
-        ("L", "show_tab_next", "Next Buffer"),
-        ("H", "show_tab_previous", "Previous Buffer"),
-        ("q", "close_active_buffer", "Close Active Buffer"),
-        ("/", "search", "Search (all columns, by prompt)"),
-        ("&", "search_to_filter", "Apply current search as filter"),
-        ("|", "filter_any", "Filter any column (by prompt)"),
-        ("f", "filter", "Filter selected column (by prompt)"),
-        ("F", "filter_cursor_word", "Filter selected column by word under cursor"),
-        ("e", "exclude_filter", "Exclude from selected column (by prompt)"),
-        (
+        Binding("N", "add_buffer", "New Buffer", id="app.add_buffer"),
+        Binding("L", "show_tab_next", "Next Buffer", id="app.show_tab_next"),
+        Binding(
+            "H", "show_tab_previous", "Previous Buffer", id="app.show_tab_previous"
+        ),
+        Binding(
+            "q",
+            "close_active_buffer",
+            "Close Active Buffer",
+            id="app.close_active_buffer",
+        ),
+        Binding("/", "search", "Search (all columns, by prompt)", id="app.search"),
+        Binding(
+            "&",
+            "search_to_filter",
+            "Apply current search as filter",
+            id="app.search_to_filter",
+        ),
+        Binding(
+            "|", "filter_any", "Filter any column (by prompt)", id="app.filter_any"
+        ),
+        Binding("f", "filter", "Filter selected column (by prompt)", id="app.filter"),
+        Binding(
+            "F",
+            "filter_cursor_word",
+            "Filter selected column by word under cursor",
+            id="app.filter_cursor_word",
+        ),
+        Binding(
+            "e",
+            "exclude_filter",
+            "Exclude from selected column (by prompt)",
+            id="app.exclude_filter",
+        ),
+        Binding(
             "E",
             "exclude_filter_cursor_word",
             "Exclude selected column by word under cursor",
+            id="app.exclude_filter_cursor_word",
         ),
-        ("D", "delimiter", "Change Delimiter"),
-        ("d", "column_delimiter", "Change Column Delimiter"),
-        ("W", "write_to_file", "Write current view to file"),
-        ("J", "json_header", "Select new header from JSON in cell"),
-        ("!", "run_command", "Run Shell Command (by prompt)"),
-        (
+        Binding("D", "delimiter", "Change Delimiter", id="app.delimiter"),
+        Binding(
+            "d",
+            "column_delimiter",
+            "Change Column Delimiter",
+            id="app.column_delimiter",
+        ),
+        Binding(
+            "W", "write_to_file", "Write current view to file", id="app.write_to_file"
+        ),
+        Binding(
+            "J",
+            "json_header",
+            "Select new header from JSON in cell",
+            id="app.json_header",
+        ),
+        Binding(
+            "!", "run_command", "Run Shell Command (by prompt)", id="app.run_command"
+        ),
+        Binding(
             "U",
             "mark_unique",
             "Mark a column unique to create a composite key for distinct/analysis",
+            id="app.mark_unique",
         ),
-        ("C", "filter_columns", "Filter Columns (by prompt)"),
-        ("?", "push_screen('HelpScreen')", "Show Help"),
+        Binding(
+            "C", "filter_columns", "Filter Columns (by prompt)", id="app.filter_columns"
+        ),
+        Binding("T", "select_theme", "Select Theme", id="app.select_theme"),
+        Binding("K", "select_keymap", "Select Keymap", id="app.select_keymap"),
+        Binding("?", "help", "Show Help", id="app.help"),
     ]
 
     async def on_resize(self, event: events.Resize) -> None:
@@ -116,7 +168,16 @@ class NlessApp(App):
             self.notify(f"Error running command: {str(e)}", severity="error")
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        event.control.remove()
+        try:
+            event.control.remove()
+        except Exception:
+            pass  # NlessSelect already removes itself in on_input_submitted
+        if event.control.id == "theme_select":
+            self.apply_theme(str(event.value))
+            return
+        if event.control.id == "keymap_select":
+            self.apply_keymap(str(event.value))
+            return
         if event.control.id == "json_header_select":
             curr_buffer = self._get_current_buffer()
             with curr_buffer._try_lock("json header") as acquired:
@@ -159,6 +220,7 @@ class NlessApp(App):
                 callback=lambda: data_table.move_cursor(
                     column=new_cursor_x, row=old_row
                 ),
+                reason="Adding column",
             )
 
     def action_json_header(self) -> None:
@@ -231,7 +293,8 @@ class NlessApp(App):
         """Run copy() + setup on a background thread, then add_buffer on main thread."""
         curr_buffer = self._get_current_buffer()
         new_pane_id = self._get_new_pane_id()
-        curr_buffer._is_loading = True
+        curr_buffer._loading_reason = "Copying buffer"
+        curr_buffer._start_spinner()
         curr_buffer._update_status_bar()
 
         def _run():
@@ -242,7 +305,8 @@ class NlessApp(App):
                 msg = str(e)
 
                 def _on_error():
-                    curr_buffer._is_loading = False
+                    curr_buffer._loading_reason = None
+                    curr_buffer._stop_spinner()
                     curr_buffer._update_status_bar()
                     self.notify(f"Error: {msg}", severity="error")
 
@@ -250,7 +314,8 @@ class NlessApp(App):
                 return
 
             def _finish():
-                curr_buffer._is_loading = False
+                curr_buffer._loading_reason = None
+                curr_buffer._stop_spinner()
                 curr_buffer._update_status_bar()
                 self.add_buffer(
                     new_buffer,
@@ -556,7 +621,7 @@ class NlessApp(App):
                         )
 
         if should_update:
-            current_buffer._deferred_update_table()
+            current_buffer._deferred_update_table(reason="Splitting column")
 
     def handle_write_to_file_submitted(self, event: Input.Submitted) -> None:
         output_path = event.value
@@ -864,7 +929,7 @@ class NlessApp(App):
                     should_update = True
 
         if should_update:
-            curr_buffer._deferred_update_table()
+            curr_buffer._deferred_update_table(reason="Changing delimiter")
 
     def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
@@ -923,7 +988,7 @@ class NlessApp(App):
             for i, col in enumerate(sorted_columns):
                 col.render_position = i
 
-        curr_buffer._deferred_update_table()
+        curr_buffer._deferred_update_table(reason="Filtering columns")
 
     def action_filter_cursor_word(self) -> None:
         """Filter by the word under the cursor."""
@@ -1006,7 +1071,7 @@ class NlessApp(App):
             )
 
         new_buffer._deferred_update_table(
-            restore_position=False, callback=_restore_position
+            restore_position=False, callback=_restore_position, reason="Loading"
         )
 
     def add_buffer(
@@ -1018,7 +1083,7 @@ class NlessApp(App):
         tabbed_content = self.query_one(TabbedContent)
         buffer_number = len(self.buffers)
         tab_pane = TabPane(
-            f"[#00ff00]{buffer_number}[/#00ff00] {self.curr_buffer_idx + 1 if add_prev_index else ''}{name}",
+            f"{self.nless_theme.markup('accent', str(buffer_number))} {self.curr_buffer_idx + 1 if add_prev_index else ''}{name}",
             id=f"buffer{new_buffer.pane_id}",
         )
         tabbed_content.add_pane(tab_pane)
@@ -1069,14 +1134,16 @@ class NlessApp(App):
 
     def _update_panes(self) -> None:
         tabbed_content = self.query_one(TabbedContent)
-        pattern = re.compile(r"((\[#00ff00\])?(\d+?)(\[/#00ff00\])?) .*")
+        pattern = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
         for i, pane in enumerate(tabbed_content.query(Tab).results()):
             curr_title = str(pane.content)
             pattern_matches = pattern.match(curr_title)
             if pattern_matches:
                 old_index = pattern_matches.group(1)
                 curr_title = curr_title.replace(
-                    old_index, f"[#00ff00]{str(i + 1)}[/#00ff00]", count=1
+                    old_index,
+                    self.nless_theme.markup("accent", str(i + 1)),
+                    count=1,
                 )
                 pane.update(curr_title)
 
@@ -1107,10 +1174,115 @@ class NlessApp(App):
         self.config = load_config()
         self.input_history = load_input_history()
 
+        # Re-resolve theme now that config is loaded (CLI arg still wins)
+        new_theme = resolve_theme(
+            cli_theme=self.cli_args.theme, config_theme=self.config.theme
+        )
+        if new_theme.name != self.nless_theme.name:
+            self.apply_theme(new_theme.name, notify=False)
+
+        # Re-resolve keymap now that config is loaded (CLI arg still wins)
+        new_keymap = resolve_keymap(
+            cli_keymap=self.cli_args.keymap, config_keymap=self.config.keymap
+        )
+        if new_keymap.name != self.nless_keymap.name:
+            self.apply_keymap(new_keymap.name, notify=False)
+        elif new_keymap.bindings:
+            self.set_keymap(new_keymap.bindings)
+
         if self.show_help and self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())
         else:
             self.query_one(NlessDataTable).focus()
+
+    def action_help(self) -> None:
+        """Show the help screen."""
+        self.push_screen(
+            HelpScreen(
+                keymap_name=self.nless_keymap.name,
+                keymap_bindings=self.nless_keymap.bindings,
+            )
+        )
+
+    def action_select_keymap(self) -> None:
+        """Open a select widget to pick a keymap."""
+        all_keymaps = get_all_keymaps()
+        options = [(name, name) for name in sorted(all_keymaps)]
+        select = NlessSelect(
+            options=options,
+            prompt="Select a keymap",
+            classes="dock-bottom",
+            id="keymap_select",
+        )
+        self._get_current_buffer().mount(select)
+
+    def apply_keymap(self, name: str, *, notify: bool = True) -> None:
+        """Apply a keymap by name and save to config."""
+        all_keymaps = get_all_keymaps()
+        new_keymap = all_keymaps.get(name)
+        if new_keymap is None:
+            self.notify(f"Unknown keymap: {name}", severity="error")
+            return
+        self.nless_keymap = new_keymap
+        self.set_keymap(new_keymap.bindings)
+
+        # Update status bar to reflect new keymap name
+        self._get_current_buffer()._update_status_bar()
+
+        # Save to config
+        self.config.keymap = name
+        save_config(self.config)
+
+        if notify:
+            self.notify(f"Keymap: {name}")
+
+    def action_select_theme(self) -> None:
+        """Open a select widget to pick a theme."""
+        all_themes = get_all_themes()
+        options = [(name, name) for name in sorted(all_themes)]
+        select = NlessSelect(
+            options=options,
+            prompt="Select a theme",
+            classes="dock-bottom",
+            id="theme_select",
+        )
+        self._get_current_buffer().mount(select)
+
+    def apply_theme(self, name: str, *, notify: bool = True) -> None:
+        """Apply a theme by name, update all buffers, and save to config."""
+        all_themes = get_all_themes()
+        new_theme = all_themes.get(name)
+        if new_theme is None:
+            self.notify(f"Unknown theme: {name}", severity="error")
+            return
+        self.nless_theme = new_theme
+
+        # Rebuild each buffer so search highlights, new-row highlights,
+        # and datatable styles all pick up the new theme colors.
+        for buf in self.buffers:
+            try:
+                # Clear cached highlight tags so they pick up the new color
+                buf.__dict__.pop("_highlight_tags", None)
+                data_table = buf.query_one(NlessDataTable)
+                data_table.apply_theme(new_theme)
+                buf._deferred_update_table(
+                    restore_position=True, reason="Applying theme"
+                )
+            except Exception:
+                pass
+
+        # Re-render tab labels with new accent color
+        self._update_panes()
+
+        # Update status bar
+        self._get_current_buffer()._update_status_bar()
+
+        # Save to config
+        self.config.theme = name
+        save_config(self.config)
+
+        if notify:
+            self.notify(f"Theme: {name}")
 
     def action_add_buffer(self) -> None:
         max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
@@ -1127,7 +1299,8 @@ class NlessApp(App):
         init_buffer = self.buffers[0]
         with TabbedContent():
             with TabPane(
-                "[#00ff00]1[/#00ff00] original", id=f"buffer{init_buffer.pane_id}"
+                f"{self.nless_theme.markup('accent', '1')} original",
+                id=f"buffer{init_buffer.pane_id}",
             ):
                 yield init_buffer
 
