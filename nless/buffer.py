@@ -5,6 +5,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import contextmanager
 from copy import deepcopy
 
@@ -103,6 +104,7 @@ class NlessBuffer(Static):
         super().__init__()
         self.line_stream = line_stream
         self._lock = threading.RLock()
+        self._pending_action: tuple[str, Callable] | None = None
         self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
@@ -350,7 +352,9 @@ class NlessBuffer(Static):
         data_table.move_cursor(column=col_index)
 
     def action_move_column(self, direction: int) -> None:
-        with self._try_lock("move column") as acquired:
+        with self._try_lock(
+            "move column", deferred=lambda: self.action_move_column(direction)
+        ) as acquired:
             if not acquired:
                 return
             data_table = self.query_one(NlessDataTable)
@@ -435,7 +439,9 @@ class NlessBuffer(Static):
 
     def _perform_search(self, search_term: str | None) -> None:
         """Performs a search on the data and updates the table."""
-        with self._try_lock("search") as acquired:
+        with self._try_lock(
+            "search", deferred=lambda: self._perform_search(search_term)
+        ) as acquired:
             if not acquired:
                 return
             try:
@@ -456,7 +462,7 @@ class NlessBuffer(Static):
         )
 
     def action_sort(self) -> None:
-        with self._try_lock("sort") as acquired:
+        with self._try_lock("sort", deferred=self.action_sort) as acquired:
             if not acquired:
                 return
             data_table = self.query_one(NlessDataTable)
@@ -1107,10 +1113,19 @@ class NlessBuffer(Static):
             return split_line(first_log_line, self.delimiter, self.current_columns)
 
     @contextmanager
-    def _try_lock(self, action: str):
-        """Context manager for non-blocking lock acquisition."""
+    def _try_lock(self, action: str, deferred: Callable | None = None):
+        """Context manager for non-blocking lock acquisition.
+
+        If *deferred* is provided and the lock is busy, the action is queued
+        to run once ``add_logs`` releases the lock instead of showing a
+        warning.  Only one pending action is kept (last wins).
+        """
         if not self._lock.acquire(blocking=False):
-            self.notify("Data loading, please wait…", severity="warning")
+            if deferred:
+                self._pending_action = (action, deferred)
+                self.notify(f"{action.capitalize()} queued…", severity="information")
+            else:
+                self.notify("Data loading, please wait…", severity="warning")
             yield False
             return
         try:
@@ -1146,6 +1161,12 @@ class NlessBuffer(Static):
 
         if needs_deferred:
             self.app.call_from_thread(self._deferred_update_table)
+
+        pending = self._pending_action
+        if pending is not None:
+            self._pending_action = None
+            _, fn = pending
+            self.app.call_from_thread(fn)
 
     def _add_logs_inner(self, log_lines: list[str]) -> None:
         data_table = self.query_one(NlessDataTable)
