@@ -216,14 +216,14 @@ def matches_all_filters(
         return True
     for f in filters:
         if f.column is None:
-            matched = any(f.pattern.search(strip_markup(cell)) for cell in cells)
+            matched = any(f.pattern.search(cell) for cell in cells)
         else:
             col_idx = col_lookup_fn(f.column, False)
             if col_idx is None:
                 return False
             if adjust_for_count and has_unique_columns:
                 col_idx -= 1
-            matched = bool(f.pattern.search(strip_markup(cells[col_idx])))
+            matched = bool(f.pattern.search(cells[col_idx]))
         if matched == f.exclude:
             return False
     return True
