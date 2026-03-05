@@ -266,71 +266,77 @@ class NlessApp(App):
             self.apply_keymap(str(event.value))
             return
         if event.control.id == "json_header_select":
-            curr_buffer = self._get_current_buffer()
-            with curr_buffer._try_lock("json header") as acquired:
-                if not acquired:
-                    return
-                data_table = curr_buffer.query_one(NlessDataTable)
-                cursor_column = data_table.cursor_column
-                curr_column = curr_buffer._get_column_at_position(cursor_column)
-                if not curr_column:
-                    curr_buffer.notify(
-                        "No column selected to add JSON key to", severity="error"
-                    )
-                    return
-                curr_column_name = strip_markup(curr_column.name)
+            self._apply_json_header(str(event.value))
 
-                col_ref = str(event.value)
-                if not col_ref.startswith("."):
-                    col_ref = f".{col_ref}"
-
-                new_column_name = f"{curr_column_name}{col_ref}"
-
-                # Insert before trailing ARRIVAL metadata so it stays last
-                arrival_col = next(
-                    (
-                        c
-                        for c in curr_buffer.current_columns
-                        if c.name == MetadataColumn.ARRIVAL.value
-                    ),
-                    None,
+    def _apply_json_header(self, col_ref_value: str) -> None:
+        curr_buffer = self._get_current_buffer()
+        with curr_buffer._try_lock(
+            "json header",
+            deferred=lambda: self._apply_json_header(col_ref_value),
+        ) as acquired:
+            if not acquired:
+                return
+            data_table = curr_buffer.query_one(NlessDataTable)
+            cursor_column = data_table.cursor_column
+            curr_column = curr_buffer._get_column_at_position(cursor_column)
+            if not curr_column:
+                curr_buffer.notify(
+                    "No column selected to add JSON key to", severity="error"
                 )
-                new_data_position = (
-                    arrival_col.data_position
-                    if arrival_col
-                    else len(curr_buffer.current_columns)
-                )
-                new_render_position = len(
-                    [c for c in curr_buffer.current_columns if not c.hidden]
-                )
+                return
+            curr_column_name = strip_markup(curr_column.name)
 
-                new_col = Column(
-                    name=new_column_name,
-                    labels=set(),
-                    computed=True,
-                    render_position=new_render_position,
-                    data_position=new_data_position,
-                    hidden=False,
-                    json_ref=f"{curr_column_name}{col_ref}",
-                    delimiter="json",
-                )
+            col_ref = col_ref_value
+            if not col_ref.startswith("."):
+                col_ref = f".{col_ref}"
 
-                curr_buffer.current_columns.append(new_col)
-                # Push ARRIVAL to the end
-                if arrival_col:
-                    arrival_col.data_position = new_data_position + 1
-                    arrival_col.render_position = (
-                        max(c.render_position for c in curr_buffer.current_columns) + 1
-                    )
-                old_row = data_table.cursor_row
+            new_column_name = f"{curr_column_name}{col_ref}"
 
-            curr_buffer._deferred_update_table(
-                restore_position=False,
-                callback=lambda: data_table.move_cursor(
-                    column=new_render_position, row=old_row
+            # Insert before trailing ARRIVAL metadata so it stays last
+            arrival_col = next(
+                (
+                    c
+                    for c in curr_buffer.current_columns
+                    if c.name == MetadataColumn.ARRIVAL.value
                 ),
-                reason="Adding column",
+                None,
             )
+            new_data_position = (
+                arrival_col.data_position
+                if arrival_col
+                else len(curr_buffer.current_columns)
+            )
+            new_render_position = len(
+                [c for c in curr_buffer.current_columns if not c.hidden]
+            )
+
+            new_col = Column(
+                name=new_column_name,
+                labels=set(),
+                computed=True,
+                render_position=new_render_position,
+                data_position=new_data_position,
+                hidden=False,
+                json_ref=f"{curr_column_name}{col_ref}",
+                delimiter="json",
+            )
+
+            curr_buffer.current_columns.append(new_col)
+            # Push ARRIVAL to the end
+            if arrival_col:
+                arrival_col.data_position = new_data_position + 1
+                arrival_col.render_position = (
+                    max(c.render_position for c in curr_buffer.current_columns) + 1
+                )
+            old_row = data_table.cursor_row
+
+        curr_buffer._deferred_update_table(
+            restore_position=False,
+            callback=lambda: data_table.move_cursor(
+                column=new_render_position, row=old_row
+            ),
+            reason="Adding column",
+        )
 
     def action_json_header(self) -> None:
         """Set the column headers from JSON in the selected cell."""
@@ -700,11 +706,15 @@ class NlessApp(App):
         self, event: AutocompleteInput.Submitted
     ) -> None:
         event.input.remove()
-        new_col_delimiter = event.value
+        self._apply_column_delimiter(event.value)
 
+    def _apply_column_delimiter(self, new_col_delimiter: str) -> None:
         current_buffer = self._get_current_buffer()
         should_update = False
-        with current_buffer._try_lock("column delimiter") as acquired:
+        with current_buffer._try_lock(
+            "column delimiter",
+            deferred=lambda: self._apply_column_delimiter(new_col_delimiter),
+        ) as acquired:
             if not acquired:
                 return
             data_table = current_buffer.query_one(NlessDataTable)
@@ -1262,10 +1272,16 @@ class NlessApp(App):
         ), False
 
     def handle_delimiter_submitted(self, event: AutocompleteInput.Submitted) -> None:
-        curr_buffer = self._get_current_buffer()
         event.input.remove()
+        self._apply_delimiter(event.value)
+
+    def _apply_delimiter(self, delimiter_input: str) -> None:
+        curr_buffer = self._get_current_buffer()
         should_update = False
-        with curr_buffer._try_lock("delimiter") as acquired:
+        with curr_buffer._try_lock(
+            "delimiter",
+            deferred=lambda: self._apply_delimiter(delimiter_input),
+        ) as acquired:
             if not acquired:
                 return
             had_filters = bool(curr_buffer.current_filters)
@@ -1276,7 +1292,7 @@ class NlessApp(App):
             prev_delimiter = curr_buffer.delimiter
 
             curr_buffer.delimiter_inferred = False
-            delimiter = self._parse_delimiter_input(event.value)
+            delimiter = self._parse_delimiter_input(delimiter_input)
 
             # If it's a regex with named groups, apply directly
             if isinstance(delimiter, re.Pattern):
@@ -1323,10 +1339,16 @@ class NlessApp(App):
     def handle_column_filter_submitted(
         self, event: AutocompleteInput.Submitted
     ) -> None:
-        curr_buffer = self._get_current_buffer()
         input_value = event.value
         event.input.remove()
-        with curr_buffer._try_lock("column filter") as acquired:
+        self._apply_column_filter(input_value)
+
+    def _apply_column_filter(self, input_value: str) -> None:
+        curr_buffer = self._get_current_buffer()
+        with curr_buffer._try_lock(
+            "column filter",
+            deferred=lambda: self._apply_column_filter(input_value),
+        ) as acquired:
             if not acquired:
                 return
             if input_value.lower() == "all":
