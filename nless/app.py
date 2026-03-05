@@ -5,7 +5,6 @@ import re
 import subprocess
 from threading import Thread
 
-from textual import events
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.app import App, ComposeResult
@@ -143,9 +142,6 @@ class NlessApp(App):
         Binding("K", "select_keymap", "Select Keymap", id="app.select_keymap"),
         Binding("?", "help", "Show Help", id="app.help"),
     ]
-
-    async def on_resize(self, event: events.Resize) -> None:
-        self.refresh()
 
     def action_run_command(self) -> None:
         """Run a shell command and pipe the output into a new buffer."""
@@ -1226,7 +1222,8 @@ class NlessApp(App):
         self.nless_keymap = new_keymap
         self.set_keymap(new_keymap.bindings)
 
-        # Update status bar to reflect new keymap name
+        # Update title bar (help key may have changed) and status bar
+        self._update_title_bar()
         self._get_current_buffer()._update_status_bar()
 
         # Save to config
@@ -1274,7 +1271,8 @@ class NlessApp(App):
         # Re-render tab labels with new accent color
         self._update_panes()
 
-        # Update status bar
+        # Update title bar (theme colors changed) and status bar
+        self._update_title_bar()
         self._get_current_buffer()._update_status_bar()
 
         # Save to config
@@ -1295,7 +1293,26 @@ class NlessApp(App):
             new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False
         )
 
+    def _build_title_bar(self) -> str:
+        """Build the title bar text with app name and help hint."""
+        help_key = "?"
+        bindings = self.nless_keymap.bindings
+        if "app.help" in bindings:
+            help_key = bindings["app.help"].split(",")[0]
+        name = self.nless_theme.markup("brand", "nless")
+        hint = self.nless_theme.markup("muted", f"{help_key} help")
+        return f" {name}  {hint}"
+
+    def _update_title_bar(self) -> None:
+        """Refresh the title bar content."""
+        try:
+            title = self.query_one("#title_bar", Static)
+            title.update(self._build_title_bar())
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
+        yield Static(self._build_title_bar(), id="title_bar")
         init_buffer = self.buffers[0]
         with TabbedContent():
             with TabPane(
