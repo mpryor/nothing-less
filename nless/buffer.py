@@ -377,24 +377,26 @@ class NlessBuffer(Static):
         return shown
 
     def action_view_unparsed_logs(self) -> None:
-        """Create a new buffer containing all logs not shown in this (or ancestor) buffers."""
-        if (
-            self.delimiter == "raw"
-            and not self._source_parse_filter
-            and not self.current_filters
-        ):
-            self.notify("All logs are being shown.", severity="information")
-            return
+        """Create a new buffer containing logs not shown in any open buffer."""
+        # Build shown filters for all open buffers
+        buffer_filters = []
+        for buf in self.app.buffers:
+            if buf.delimiter == "raw" and not buf.current_filters:
+                # Raw with no filters shows everything — nothing to exclude from
+                self.notify("All logs are being shown.", severity="information")
+                return
+            buffer_filters.append(buf._make_shown_filter())
 
-        shown_filter = self._make_shown_filter()
+        def shown_in_any(line: str) -> bool:
+            return any(f(line) for f in buffer_filters)
 
-        # Use the line stream's full history if available, otherwise fall back to raw_rows
+        # Use the line stream's full history if available
         if self.line_stream:
             all_lines = self.line_stream.lines
         else:
             all_lines = self.raw_rows
 
-        excluded_rows = [line for line in all_lines if not shown_filter(line)]
+        excluded_rows = [line for line in all_lines if not shown_in_any(line)]
 
         if not excluded_rows:
             self.notify("All logs are being shown.", severity="information")
@@ -402,7 +404,7 @@ class NlessBuffer(Static):
 
         self.app._create_unparsed_buffer(
             excluded_rows,
-            source_parse_filter=shown_filter,
+            source_parse_filter=shown_in_any,
             line_stream=self.line_stream,
         )
 
@@ -860,7 +862,10 @@ class NlessBuffer(Static):
             if bad_lines:
                 n_total = result["n_filtered"] + len(bad_lines)
                 msg = self._try_auto_switch_delimiter(
-                    bad_lines, len(bad_lines), n_total
+                    bad_lines,
+                    len(bad_lines),
+                    n_total,
+                    lines_already_in_raw=True,
                 )
                 if msg:
                     self._flash_status(msg)
@@ -945,7 +950,10 @@ class NlessBuffer(Static):
             n_inconsistent = len(rows_with_inconsistent_length)
             n_total = len(filtered_rows) + n_inconsistent
             msg = self._try_auto_switch_delimiter(
-                rows_with_inconsistent_length, n_inconsistent, n_total
+                rows_with_inconsistent_length,
+                n_inconsistent,
+                n_total,
+                lines_already_in_raw=True,
             )
             if msg:
                 self._flash_status(msg)
@@ -1160,7 +1168,12 @@ class NlessBuffer(Static):
             self.app.call_from_thread(self.notify, msg, severity="warning")
 
     def _try_auto_switch_delimiter(
-        self, bad_lines: list[str], n_bad: int, n_total: int
+        self,
+        bad_lines: list[str],
+        n_bad: int,
+        n_total: int,
+        *,
+        lines_already_in_raw: bool = False,
     ) -> str | None:
         """Attempt to auto-switch delimiter based on mismatched rows.
 
@@ -1175,7 +1188,13 @@ class NlessBuffer(Static):
         if not candidate or candidate == self.delimiter or candidate == "raw":
             self._warn_mismatch_once(n_bad)
             return None
-        return self._apply_auto_switch_delimiter(candidate, bad_lines, majority, n_bad)
+        return self._apply_auto_switch_delimiter(
+            candidate,
+            bad_lines,
+            majority,
+            n_bad,
+            lines_already_in_raw=lines_already_in_raw,
+        )
 
     def _should_auto_switch_delimiter(self, n_bad: int, n_total: int) -> bool:
         """Check whether auto-switch conditions are met."""
@@ -1189,12 +1208,22 @@ class NlessBuffer(Static):
         )
 
     def _apply_auto_switch_delimiter(
-        self, candidate, bad_lines: list[str], majority: list[str], n_bad: int
+        self,
+        candidate,
+        bad_lines: list[str],
+        majority: list[str],
+        n_bad: int,
+        *,
+        lines_already_in_raw: bool = False,
     ) -> str:
         """Switch to a new delimiter and prepare for rebuild.
 
         Mutates buffer state: delimiter, columns, caches, raw_rows.
         Returns the flash message string.
+
+        Args:
+            lines_already_in_raw: If True, bad_lines are already preserved in
+                raw_rows (e.g. by _filter_rows) and should not be re-added.
         """
         old_label = self._format_delimiter_label(self.delimiter)
         self.delimiter = candidate
@@ -1204,14 +1233,24 @@ class NlessBuffer(Static):
         self._total_skipped = 0
         self._parsed_rows = None
         self._cached_col_widths = None
-        # Re-add bad lines so they get parsed with the new delimiter
-        self.raw_rows.extend(bad_lines)
         now = time.time()
-        self._arrival_timestamps.extend([now] * len(bad_lines))
+        if not lines_already_in_raw:
+            self.raw_rows.extend(bad_lines)
+            self._arrival_timestamps.extend([now] * len(bad_lines))
         # Old header may not parse with new delimiter — add as data
         self.raw_rows.append(self.first_log_line)
         self._arrival_timestamps.append(now)
-        self.first_log_line = majority[0]
+        # New header is drawn from majority lines — remove from raw_rows
+        # to avoid it appearing as both header and data row.
+        new_header = majority[0]
+        try:
+            idx = self.raw_rows.index(new_header)
+            self.raw_rows.pop(idx)
+            if idx < len(self._arrival_timestamps):
+                self._arrival_timestamps.pop(idx)
+        except ValueError:
+            pass
+        self.first_log_line = new_header
         parts = self._parse_first_line_columns(self.first_log_line)
         self.current_columns = self._make_columns(parts)
         self._ensure_arrival_column(self.current_columns)
@@ -1359,7 +1398,12 @@ class NlessBuffer(Static):
         if skipped > 0 and not needs_deferred:
             self._skipped_lines = []
             n_total = len(self.displayed_rows) + skipped
-            flash_msg = self._try_auto_switch_delimiter(skipped_lines, skipped, n_total)
+            flash_msg = self._try_auto_switch_delimiter(
+                skipped_lines,
+                skipped,
+                n_total,
+                lines_already_in_raw=True,
+            )
             if flash_msg:
 
                 def rebuild():
