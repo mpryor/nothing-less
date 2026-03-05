@@ -1268,6 +1268,7 @@ class NlessApp(App):
         with curr_buffer._try_lock("delimiter") as acquired:
             if not acquired:
                 return
+            had_filters = bool(curr_buffer.current_filters)
             curr_buffer.current_filters = []
             curr_buffer.search_term = None
             curr_buffer.sort_column = None
@@ -1310,7 +1311,14 @@ class NlessApp(App):
                     should_update = True
 
         if should_update:
-            curr_buffer._deferred_update_table(reason="Changing delimiter")
+
+            def callback():
+                if had_filters:
+                    curr_buffer._flash_status("Filters cleared — delimiter changed")
+
+            curr_buffer._deferred_update_table(
+                reason="Changing delimiter", callback=callback
+            )
 
     def handle_column_filter_submitted(
         self, event: AutocompleteInput.Submitted
