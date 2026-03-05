@@ -84,7 +84,7 @@ class NlessBuffer(Static):
             id="buffer.toggle_tail",
         ),
         Binding(
-            "r",
+            "x",
             "reset_highlights",
             "Reset new-line highlights",
             id="buffer.reset_highlights",
@@ -1053,19 +1053,24 @@ class NlessBuffer(Static):
         else:
             # Process in chunks for progressive display on large inputs
             CHUNK = 50000
+            had_rows = bool(self.displayed_rows)
             if is_large_batch:
                 self._loading_reason = self._loading_reason or "Loading"
                 self._request_spinner_start()
             try:
                 for i in range(0, len(filtered), CHUNK):
-                    self._add_rows_incremental(filtered[i : i + CHUNK])
+                    self._add_rows_incremental(
+                        filtered[i : i + CHUNK], highlight=had_rows
+                    )
                     if is_large_batch:
                         self._update_status_bar()
             except Exception:
                 # Fall back to full rebuild if incremental path fails
                 self._needs_deferred_update = True
 
-    def _add_rows_incremental(self, new_lines: list[str]) -> None:
+    def _add_rows_incremental(
+        self, new_lines: list[str], highlight: bool = True
+    ) -> None:
         """Parse and add new lines to the table without a full rebuild.
 
         Fuses parsing, column alignment, and column width tracking into a
@@ -1157,7 +1162,7 @@ class NlessBuffer(Static):
             styled = new_rows
 
         # Highlight new streaming rows green (skip initial load)
-        if self.displayed_rows:
+        if highlight and self.displayed_rows:
             styled = [[self._highlight_markup(c) for c in row] for row in styled]
 
         self.displayed_rows.extend(styled)

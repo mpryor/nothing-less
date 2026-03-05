@@ -24,7 +24,7 @@ class HistorySuggestionProvider(SuggestionProvider):
 
     def get_suggestions(self, value: str) -> list[str]:
         if not value:
-            return []
+            return list(reversed(self.history))
         lower = value.lower()
         prefix = []
         substring = []
@@ -35,6 +35,104 @@ class HistorySuggestionProvider(SuggestionProvider):
             elif lower in item_lower:
                 substring.append(item)
         return prefix + substring
+
+
+class StaticSuggestionProvider(SuggestionProvider):
+    """Provides suggestions from a fixed list of options.
+
+    Prefix matches appear first, then substring matches. Case-insensitive.
+    Shows all options when input is empty.
+    """
+
+    MAX_RESULTS = 20
+
+    def __init__(self, options: list[str]) -> None:
+        self.options = options
+
+    def get_suggestions(self, value: str) -> list[str]:
+        if not value:
+            return self.options[: self.MAX_RESULTS]
+        lower = value.lower()
+        prefix = []
+        substring = []
+        for item in self.options:
+            item_lower = item.lower()
+            if item_lower.startswith(lower):
+                prefix.append(item)
+            elif lower in item_lower:
+                substring.append(item)
+        return (prefix + substring)[: self.MAX_RESULTS]
+
+
+class PipeSeparatedSuggestionProvider(SuggestionProvider):
+    """Provides suggestions for pipe-separated multi-value input.
+
+    Matches against the portion after the last '|', excludes already-selected
+    values, and returns full prefixed suggestions.
+    """
+
+    MAX_RESULTS = 20
+
+    def __init__(self, options: list[str]) -> None:
+        self.options = options
+
+    def get_suggestions(self, value: str) -> list[str]:
+        if "|" in value:
+            prefix = value.rsplit("|", 1)[0] + "|"
+            partial = value.rsplit("|", 1)[1]
+            already_selected = {
+                v.strip().lower() for v in prefix.split("|") if v.strip()
+            }
+        else:
+            prefix = ""
+            partial = value
+            already_selected = set()
+
+        available = [o for o in self.options if o.lower() not in already_selected]
+
+        if not partial:
+            return [prefix + o for o in available][: self.MAX_RESULTS]
+
+        lower = partial.lower()
+        starts = []
+        contains = []
+        for item in available:
+            item_lower = item.lower()
+            if item_lower.startswith(lower):
+                starts.append(prefix + item)
+            elif lower in item_lower:
+                contains.append(prefix + item)
+        return (starts + contains)[: self.MAX_RESULTS]
+
+
+class ColumnValueSuggestionProvider(SuggestionProvider):
+    """Provides suggestions from unique values in a data table column.
+
+    Shows most frequent values first when input is empty.
+    Prefix matches appear first, then substring matches. Case-insensitive.
+    Cap at 20 results.
+    """
+
+    MAX_RESULTS = 20
+
+    def __init__(self, values: list[str]) -> None:
+        self.values = values
+
+    def get_suggestions(self, value: str) -> list[str]:
+        if not value:
+            return self.values[: self.MAX_RESULTS]
+        lower = value.lower()
+        prefix = []
+        substring = []
+        for item in self.values:
+            item_lower = item.lower()
+            if item_lower.startswith(lower):
+                prefix.append(item)
+            elif lower in item_lower:
+                substring.append(item)
+            if len(prefix) + len(substring) >= self.MAX_RESULTS:
+                break
+        return (prefix + substring)[: self.MAX_RESULTS]
 
 
 class FilePathSuggestionProvider(SuggestionProvider):
@@ -49,7 +147,14 @@ class FilePathSuggestionProvider(SuggestionProvider):
 
     def get_suggestions(self, value: str) -> list[str]:
         if not value:
-            return []
+            # List current directory contents
+            try:
+                entries = sorted(Path(".").iterdir())
+                return [str(e) + ("/" if e.is_dir() else "") for e in entries][
+                    : self.MAX_RESULTS
+                ]
+            except PermissionError:
+                return []
         path = Path(value)
         try:
             if value.endswith("/"):
@@ -118,9 +223,12 @@ class ShellCommandSuggestionProvider(SuggestionProvider):
 
     def get_suggestions(self, value: str) -> list[str]:
         if not value:
-            return []
+            return self._history_provider.get_suggestions("")
         # After a space, delegate to history
         if " " in value:
+            return self._history_provider.get_suggestions(value)
+        # If PATH scan is still running, fall back to history matches
+        if self._scan_thread.is_alive():
             return self._history_provider.get_suggestions(value)
         # First word: match executables
         lower = value.lower()

@@ -32,6 +32,16 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
             ("app.show_tab_previous", "H", "Previous buffer"),
             ("app.close_active_buffer", "q", "Close buffer or quit"),
             ("app.add_buffer", "N", "New buffer"),
+            ("app.rename_buffer", "r", "Rename buffer"),
+        ],
+    ),
+    (
+        "Groups",
+        [
+            ("app.show_group_next", "}", "Next group"),
+            ("app.show_group_previous", "{", "Previous group"),
+            ("app.rename_group", "R", "Rename group"),
+            ("app.open_file", "O", "Open file"),
         ],
     ),
     (
@@ -121,7 +131,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         "Tail Mode",
         [
             ("buffer.toggle_tail", "t", "Toggle tail mode"),
-            ("buffer.reset_highlights", "r", "Reset highlights"),
+            ("buffer.reset_highlights", "x", "Reset highlights"),
         ],
     ),
     (

@@ -20,21 +20,28 @@ from textual.widgets import (
     TabPane,
 )
 
+from textual.containers import Vertical
+
 from nless.autocomplete import AutocompleteInput
 from nless.buffer import NlessBuffer
+from nless.buffergroup import BufferGroup
 from nless.operations import handle_mark_unique, write_buffer
 from nless.gettingstarted import GettingStartedScreen
 from nless.suggestions import (
+    ColumnValueSuggestionProvider,
     FilePathSuggestionProvider,
     HistorySuggestionProvider,
+    PipeSeparatedSuggestionProvider,
     ShellCommandSuggestionProvider,
+    StaticSuggestionProvider,
 )
 
 from .config import NlessConfig, load_config, load_input_history, save_config
+from .procutil import get_stdin_source
 from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .help import HelpScreen
-from .input import LineStream, ShellCommandLineStream
+from .input import LineStream, ShellCommandLineStream, StdinLineStream
 from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
 from .keymap import get_all_keymaps, resolve_keymap
@@ -53,7 +60,6 @@ class NlessApp(App):
         show_help: bool = False,
     ) -> None:
         super().__init__()
-        self.starting_stream = starting_stream
         self.cli_args = cli_args
         self.input_history = []
         self.config = NlessConfig()
@@ -64,10 +70,22 @@ class NlessApp(App):
         # Named nless_theme to avoid conflict with Textual's App.theme reactive.
         self.nless_theme = resolve_theme(cli_theme=cli_args.theme)
         self.nless_keymap = resolve_keymap(cli_keymap=cli_args.keymap)
-        self.buffers = [
-            NlessBuffer(pane_id=1, cli_args=cli_args, line_stream=starting_stream)
+        self._next_pane_id = 2
+        self._next_group_id = 2
+        init_buffer = NlessBuffer(
+            pane_id=1, cli_args=cli_args, line_stream=starting_stream
+        )
+        self.groups: list[BufferGroup] = [
+            BufferGroup(
+                group_id=1,
+                name=os.path.basename(cli_args.filename)
+                if cli_args.filename
+                else get_stdin_source() or "stdin",
+                buffers=[init_buffer],
+                starting_stream=starting_stream,
+            )
         ]
-        self.curr_buffer_idx = 0
+        self.curr_group_idx = 0
 
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
@@ -146,7 +164,18 @@ class NlessApp(App):
         Binding("T", "select_theme", "Select Theme", id="app.select_theme"),
         Binding("K", "select_keymap", "Select Keymap", id="app.select_keymap"),
         Binding("?", "help", "Show Help", id="app.help"),
+        Binding("}", "show_group_next", "Next Group", id="app.show_group_next"),
+        Binding(
+            "{", "show_group_previous", "Previous Group", id="app.show_group_previous"
+        ),
+        Binding("r", "rename_buffer", "Rename Buffer", id="app.rename_buffer"),
+        Binding("R", "rename_group", "Rename Group", id="app.rename_group"),
+        Binding("O", "open_file", "Open File", id="app.open_file"),
     ]
+
+    def action_open_file(self) -> None:
+        """Open a file in a new group."""
+        self._create_prompt("Enter file path", "open_file_input")
 
     def action_run_command(self) -> None:
         """Run a shell command and pipe the output into a new buffer."""
@@ -154,7 +183,9 @@ class NlessApp(App):
             "Type shell command (e.g. tail -f /var/log/syslog)", "run_command_input"
         )
 
-    def handle_run_command_submitted(self, event: AutocompleteInput.Submitted) -> None:
+    async def handle_run_command_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
         event.control.remove()
         command = event.value.strip()
         try:
@@ -164,9 +195,36 @@ class NlessApp(App):
                 cli_args=self.cli_args,
                 line_stream=line_stream,
             )
-            self.add_buffer(new_buffer, name=command, add_prev_index=False)
+            await self.add_group(f"!{command}", new_buffer, stream=line_stream)
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
+
+    async def handle_open_file_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
+        event.control.remove()
+        path = event.value.strip()
+        if not path:
+            return
+        try:
+            cli_args = CliArgs(
+                delimiter=None,
+                filters=[],
+                unique_keys=set(),
+                sort_by=None,
+                filename=path,
+            )
+            line_stream = StdinLineStream(cli_args, file_name=path, new_fd=None)
+            new_buffer = NlessBuffer(
+                pane_id=self._get_new_pane_id(),
+                cli_args=cli_args,
+                line_stream=line_stream,
+            )
+            t = Thread(target=line_stream.run, daemon=True)
+            t.start()
+            await self.add_group(os.path.basename(path), new_buffer, stream=line_stream)
+        except (OSError, FileNotFoundError) as e:
+            self.notify(f"Error opening file: {e}", severity="error")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         try:
@@ -265,11 +323,14 @@ class NlessApp(App):
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             curr_buffer.notify(f"Error parsing JSON: {str(e)}", severity="error")
 
+    _DELIMITER_OPTIONS = [",", "\\t", "space", "|", ";", ":", "raw"]
+
     def action_column_delimiter(self) -> None:
         """Change the column delimiter."""
         self._create_prompt(
             "Type column delimiter (e.g. , or \\t or 'space' or 'raw')",
             "column_delimiter_input",
+            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS),
         )
 
     def action_write_to_file(self) -> None:
@@ -280,19 +341,50 @@ class NlessApp(App):
 
     def action_filter_columns(self) -> None:
         """Filter columns by user input."""
+        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        column_names = [strip_markup(c) for c in data_table.columns]
         self._create_prompt(
             "Type pipe delimited column names to show (e.g. col1|col2) or 'all' to reset",
             "column_filter_input",
+            provider=PipeSeparatedSuggestionProvider(column_names),
         )
 
+    @property
+    def _current_group(self) -> BufferGroup:
+        return self.groups[self.curr_group_idx]
+
+    @property
+    def buffers(self) -> list[NlessBuffer]:
+        return self._current_group.buffers
+
+    @property
+    def curr_buffer_idx(self) -> int:
+        return self._current_group.curr_buffer_idx
+
+    @curr_buffer_idx.setter
+    def curr_buffer_idx(self, value: int) -> None:
+        self._current_group.curr_buffer_idx = value
+
+    @property
+    def all_buffers(self) -> list[NlessBuffer]:
+        return [buf for group in self.groups for buf in group.buffers]
+
     def _get_new_pane_id(self) -> int:
-        return max(b.pane_id for b in self.buffers) + 1 if self.buffers else 1
+        pane_id = self._next_pane_id
+        self._next_pane_id += 1
+        return pane_id
+
+    def _get_active_tabbed_content(self) -> TabbedContent:
+        container = self.query_one(f"#group_{self._current_group.group_id}")
+        return container.query_one(TabbedContent)
 
     def _copy_buffer_async(
         self, setup_fn, buffer_name, after_add_fn=None, add_prev_index=True
     ):
         """Run copy() + setup on a background thread, then add_buffer on main thread."""
         curr_buffer = self._get_current_buffer()
+        source_group_idx = self.curr_group_idx
+        source_buffer_idx = self.curr_buffer_idx
         new_pane_id = self._get_new_pane_id()
         curr_buffer._loading_reason = "Copying buffer"
         curr_buffer._start_spinner()
@@ -318,13 +410,27 @@ class NlessApp(App):
                 curr_buffer._loading_reason = None
                 curr_buffer._stop_spinner()
                 curr_buffer._update_status_bar()
+
+                def _on_ready():
+                    if after_add_fn:
+                        after_add_fn(new_buffer)
+                    # Notify if the user navigated away while the task was running.
+                    if (
+                        self.curr_group_idx != source_group_idx
+                        or self.curr_buffer_idx != source_buffer_idx
+                    ):
+                        group_name = self.groups[source_group_idx].name
+                        self.notify(
+                            f"Buffer ready: {buffer_name} ({group_name})",
+                            severity="information",
+                        )
+
                 self.add_buffer(
                     new_buffer,
                     name=buffer_name,
                     add_prev_index=add_prev_index,
+                    on_ready=_on_ready,
                 )
-                if after_add_fn:
-                    after_add_fn(new_buffer)
 
             self.call_from_thread(_finish)
 
@@ -385,6 +491,7 @@ class NlessApp(App):
         self._create_prompt(
             "Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
             "delimiter_input",
+            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS),
         )
 
     def action_search_to_filter(self) -> None:
@@ -410,14 +517,15 @@ class NlessApp(App):
         """Bring up search input to highlight matching text."""
         self._create_prompt("Type search term and press Enter", "search_input")
 
-    def _create_prompt(self, placeholder, id):
+    def _create_prompt(self, placeholder, id, provider=None):
         history = [h["val"] for h in self.input_history if h["id"] == id]
-        if id == "write_to_file_input":
-            provider = FilePathSuggestionProvider()
-        elif id == "run_command_input":
-            provider = ShellCommandSuggestionProvider(history)
-        else:
-            provider = HistorySuggestionProvider(history)
+        if provider is None:
+            if id in ("write_to_file_input", "open_file_input"):
+                provider = FilePathSuggestionProvider()
+            elif id == "run_command_input":
+                provider = ShellCommandSuggestionProvider(history)
+            else:
+                provider = HistorySuggestionProvider(history)
         input = AutocompleteInput(
             placeholder=placeholder,
             id=id,
@@ -427,9 +535,9 @@ class NlessApp(App):
             on_add=lambda val: self.input_history.append({"id": id, "val": val}),
             on_remove=lambda val: self.input_history.remove({"id": id, "val": val}),
         )
-        tab_content = self.query_one(TabbedContent)
-        active_tab = tab_content.active
-        for tab_pane in tab_content.query(TabPane):
+        tabbed_content = self._get_active_tabbed_content()
+        active_tab = tabbed_content.active
+        for tab_pane in tabbed_content.query(TabPane):
             if tab_pane.id == active_tab:
                 tab_pane.mount(input)
                 self.call_after_refresh(lambda: input.focus())
@@ -668,7 +776,7 @@ class NlessApp(App):
         else:
             t.join()
 
-    def on_autocomplete_input_submitted(
+    async def on_autocomplete_input_submitted(
         self, event: AutocompleteInput.Submitted
     ) -> None:
         if event.input.id == "search_input":
@@ -689,7 +797,13 @@ class NlessApp(App):
         elif event.input.id == "column_delimiter_input":
             self.handle_column_delimiter_submitted(event)
         elif event.input.id == "run_command_input":
-            self.handle_run_command_submitted(event)
+            await self.handle_run_command_submitted(event)
+        elif event.input.id == "open_file_input":
+            await self.handle_open_file_submitted(event)
+        elif event.input.id == "rename_group_input":
+            self.handle_rename_group_submitted(event)
+        elif event.input.id == "rename_buffer_input":
+            self.handle_rename_buffer_submitted(event)
 
     def handle_search_submitted(self, event: AutocompleteInput.Submitted) -> None:
         input_value = event.value
@@ -700,14 +814,27 @@ class NlessApp(App):
     def _get_current_buffer(self) -> NlessBuffer:
         return self.buffers[self.curr_buffer_idx]
 
+    def _get_column_values(self, column_index: int) -> list[str]:
+        """Get unique values for a column, ordered by frequency (most common first)."""
+        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        counts: dict[str, int] = {}
+        for row in data_table.rows:
+            if column_index < len(row):
+                val = strip_markup(row[column_index])
+                if val:
+                    counts[val] = counts.get(val, 0) + 1
+        return sorted(counts, key=lambda v: counts[v], reverse=True)
+
     def action_filter(self) -> None:
         """Filter rows based on user input."""
         data_table = self._get_current_buffer().query_one(NlessDataTable)
         column_index = data_table.cursor_column
         column_label = data_table.columns[column_index]
+        provider = ColumnValueSuggestionProvider(self._get_column_values(column_index))
         self._create_prompt(
             f"Type filter text for column: {column_label} and press enter",
             "filter_input",
+            provider=provider,
         )
 
     def action_filter_any(self) -> None:
@@ -1035,9 +1162,11 @@ class NlessApp(App):
         data_table = self._get_current_buffer().query_one(NlessDataTable)
         column_index = data_table.cursor_column
         column_label = data_table.columns[column_index]
+        provider = ColumnValueSuggestionProvider(self._get_column_values(column_index))
         self._create_prompt(
             f"Type exclude filter text for column: {column_label} and press enter",
             "exclude_filter_input",
+            provider=provider,
         )
 
     def action_exclude_filter_cursor_word(self) -> None:
@@ -1066,8 +1195,9 @@ class NlessApp(App):
         new_buffer: NlessBuffer,
         cursor_coordinate: Coordinate,
         offset: Offset,
+        on_ready=None,
     ) -> None:
-        tabbed_content = self.query_one(TabbedContent)
+        tabbed_content = self._get_active_tabbed_content()
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
         try:
             data_table = new_buffer.query_one(NlessDataTable)
@@ -1075,7 +1205,7 @@ class NlessApp(App):
             # Buffer not yet composed; retry after next refresh
             self.call_after_refresh(
                 lambda: self.refresh_buffer_and_focus(
-                    new_buffer, cursor_coordinate, offset
+                    new_buffer, cursor_coordinate, offset, on_ready=on_ready
                 )
             )
             return
@@ -1089,18 +1219,24 @@ class NlessApp(App):
                 offset.x,
                 offset.y,
             )
+            if on_ready:
+                on_ready()
 
         new_buffer._deferred_update_table(
             restore_position=False, callback=_restore_position, reason="Loading"
         )
 
     def add_buffer(
-        self, new_buffer: NlessBuffer, name: str, add_prev_index: bool = True
+        self,
+        new_buffer: NlessBuffer,
+        name: str,
+        add_prev_index: bool = True,
+        on_ready=None,
     ) -> None:
         curr_data_table = self._get_current_buffer().query_one(NlessDataTable)
 
         self.buffers.append(new_buffer)
-        tabbed_content = self.query_one(TabbedContent)
+        tabbed_content = self._get_active_tabbed_content()
         buffer_number = len(self.buffers)
         tab_pane = TabPane(
             f"{self.nless_theme.markup('accent', str(buffer_number))} {self.curr_buffer_idx + 1 if add_prev_index else ''}{name}",
@@ -1114,6 +1250,7 @@ class NlessApp(App):
                 new_buffer,
                 curr_data_table.cursor_coordinate,
                 curr_data_table.scroll_offset,
+                on_ready=on_ready,
             )
         )
 
@@ -1128,10 +1265,13 @@ class NlessApp(App):
 
     def action_close_active_buffer(self) -> None:
         if len(self.buffers) == 1:
-            self.exit()
+            if len(self.groups) == 1:
+                self.exit()
+                return
+            self._close_current_group()
             return
 
-        tabbed_content = self.query_one(TabbedContent)
+        tabbed_content = self._get_active_tabbed_content()
         current_buffer = self._get_current_buffer()
         if current_buffer.line_stream:
             current_buffer.line_stream.unsubscribe(current_buffer)
@@ -1152,8 +1292,13 @@ class NlessApp(App):
         self.call_after_refresh(lambda: new_curr_buffer._update_status_bar())
         self.call_after_refresh(lambda: self._update_panes())
 
-    def _update_panes(self) -> None:
-        tabbed_content = self.query_one(TabbedContent)
+    def _update_panes(self, group: BufferGroup | None = None) -> None:
+        group = group or self._current_group
+        try:
+            container = self.query_one(f"#group_{group.group_id}")
+            tabbed_content = container.query_one(TabbedContent)
+        except NoMatches:
+            return
         pattern = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
         for i, pane in enumerate(tabbed_content.query(Tab).results()):
             curr_title = str(pane.content)
@@ -1171,7 +1316,7 @@ class NlessApp(App):
         if index < 0 or index >= len(self.buffers):
             return
         self.curr_buffer_idx = index
-        tabbed_content = self.query_one(TabbedContent)
+        tabbed_content = self._get_active_tabbed_content()
         active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
         tabbed_content.active = active_buffer_id
         tabbed_content.query_one(f"#{active_buffer_id}").query_one(
@@ -1187,6 +1332,171 @@ class NlessApp(App):
 
     def show_tab_by_index(self, index: int) -> None:
         self._switch_to_buffer(index)
+
+    # ── Group management ──────────────────────────────────────────────
+
+    async def add_group(
+        self,
+        name: str,
+        first_buffer: NlessBuffer,
+        stream: LineStream | None = None,
+    ) -> None:
+        group_id = self._next_group_id
+        self._next_group_id += 1
+        group = BufferGroup(
+            group_id=group_id,
+            name=name,
+            buffers=[first_buffer],
+            starting_stream=stream,
+        )
+        self.groups.append(group)
+
+        # When going from 1 to 2 groups, rename the first buffer in the
+        # original group to "original" so the user can distinguish them.
+        if len(self.groups) == 2:
+            self._rename_first_buffer(self.groups[0], "original")
+
+        # Build DOM: Vertical > TabbedContent > TabPane > buffer
+        container = Vertical(id=f"group_{group_id}", classes="buffer-group")
+        tabbed_content = TabbedContent()
+        tab_pane = TabPane(
+            f"{self.nless_theme.markup('accent', '1')} {name}",
+            id=f"buffer{first_buffer.pane_id}",
+        )
+        # Mount container before status_bar so it stays above it
+        await self.mount(container, before=self.query_one("#status_bar"))
+        container.display = False
+        await container.mount(tabbed_content)
+        await tabbed_content.add_pane(tab_pane)
+        await tab_pane.mount(first_buffer)
+
+        self._switch_to_group(len(self.groups) - 1)
+
+    def _switch_to_group(self, index: int) -> None:
+        if index < 0 or index >= len(self.groups):
+            return
+        # Hide current group container
+        old_container = self.query_one(f"#group_{self._current_group.group_id}")
+        old_container.display = False
+
+        self.curr_group_idx = index
+
+        # Show new group container
+        new_container = self.query_one(f"#group_{self._current_group.group_id}")
+        new_container.display = True
+
+        # Focus active buffer in new group
+        current_buffer = self._get_current_buffer()
+        try:
+            current_buffer.query_one(NlessDataTable).focus()
+        except NoMatches:
+            pass
+        self.call_after_refresh(lambda: current_buffer._update_status_bar())
+        self._update_group_bar()
+
+    def _close_current_group(self) -> None:
+        group = self._current_group
+        # Unsubscribe all buffers
+        for buf in group.buffers:
+            if buf.line_stream:
+                buf.line_stream.unsubscribe(buf)
+
+        # Remove DOM container
+        container = self.query_one(f"#group_{group.group_id}")
+        container.remove()
+
+        self.groups.pop(self.curr_group_idx)
+        if self.curr_group_idx >= len(self.groups):
+            self.curr_group_idx = len(self.groups) - 1
+
+        # Show adjacent group
+        new_container = self.query_one(f"#group_{self._current_group.group_id}")
+        new_container.display = True
+
+        current_buffer = self._get_current_buffer()
+        try:
+            current_buffer.query_one(NlessDataTable).focus()
+        except NoMatches:
+            pass
+        self.call_after_refresh(lambda: current_buffer._update_status_bar())
+        self._update_group_bar()
+
+        # When back to 1 group, restore the first buffer name to the group name.
+        if len(self.groups) == 1:
+            self._rename_first_buffer(self.groups[0], self.groups[0].name)
+
+    def _rename_first_buffer(self, group: BufferGroup, name: str) -> None:
+        """Rename the first buffer tab in a group."""
+        try:
+            container = self.query_one(f"#group_{group.group_id}")
+            tabbed_content = container.query_one(TabbedContent)
+            first_tab = next(tabbed_content.query(Tab).results())
+            first_tab.update(f"{self.nless_theme.markup('accent', '1')} {name}")
+        except (NoMatches, StopIteration):
+            pass
+
+    def _build_group_bar(self) -> str:
+        t = self.nless_theme
+        parts = []
+        for i, group in enumerate(self.groups):
+            if i == self.curr_group_idx:
+                parts.append(
+                    f"[bold {t.cursor_fg}]\\[{group.name}][/bold {t.cursor_fg}]"
+                )
+            else:
+                parts.append(f"[{t.header_fg}]{group.name}[/{t.header_fg}]")
+        return " " + "   ".join(parts)
+
+    def _update_group_bar(self) -> None:
+        try:
+            bar = self.query_one("#group_bar", Static)
+        except NoMatches:
+            return
+        if len(self.groups) > 1:
+            t = self.nless_theme
+            bar.update(self._build_group_bar())
+            bar.styles.border = ("round", t.accent)
+            bar.styles.height = "auto"
+        else:
+            bar.styles.height = 0
+            bar.styles.border = None
+
+    def action_rename_buffer(self) -> None:
+        self._create_prompt("Enter new buffer name", "rename_buffer_input")
+
+    def handle_rename_buffer_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
+        event.control.remove()
+        name = event.value.strip()
+        if name:
+            tabbed_content = self._get_active_tabbed_content()
+            idx = self.curr_buffer_idx
+            tab_label = f"{self.nless_theme.markup('accent', str(idx + 1))} {name}"
+            for i, tab in enumerate(tabbed_content.query(Tab).results()):
+                if i == idx:
+                    tab.update(tab_label)
+                    break
+
+    def action_rename_group(self) -> None:
+        self._create_prompt("Enter new group name", "rename_group_input")
+
+    def handle_rename_group_submitted(self, event: AutocompleteInput.Submitted) -> None:
+        event.control.remove()
+        name = event.value.strip()
+        if name:
+            self._current_group.name = name
+            self._update_group_bar()
+
+    def action_show_group_next(self) -> None:
+        if len(self.groups) <= 1:
+            return
+        self._switch_to_group((self.curr_group_idx + 1) % len(self.groups))
+
+    def action_show_group_previous(self) -> None:
+        if len(self.groups) <= 1:
+            return
+        self._switch_to_group((self.curr_group_idx - 1) % len(self.groups))
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -1282,7 +1592,7 @@ class NlessApp(App):
 
         # Rebuild each buffer so search highlights, new-row highlights,
         # and datatable styles all pick up the new theme colors.
-        for buf in self.buffers:
+        for buf in self.all_buffers:
             try:
                 # Clear cached highlight tags so they pick up the new color
                 buf.__dict__.pop("_highlight_tags", None)
@@ -1294,8 +1604,12 @@ class NlessApp(App):
             except Exception:
                 pass
 
-        # Re-render tab labels with new accent color
-        self._update_panes()
+        # Re-render tab labels with new accent color in all groups
+        for group in self.groups:
+            self._update_panes(group)
+
+        # Update group bar colors
+        self._update_group_bar()
 
         # Update title bar (theme colors changed) and status bar
         self._update_title_bar()
@@ -1309,11 +1623,11 @@ class NlessApp(App):
             self.notify(f"Theme: {name}")
 
     def action_add_buffer(self) -> None:
-        max_buffer_id = max(buffer.pane_id for buffer in self.buffers)
+        new_pane_id = self._get_new_pane_id()
         new_buffer = NlessBuffer(
-            pane_id=max_buffer_id + 1,
+            pane_id=new_pane_id,
             cli_args=self.cli_args,
-            line_stream=self.starting_stream,
+            line_stream=self._current_group.starting_stream,
         )
         self.add_buffer(
             new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False
@@ -1338,13 +1652,16 @@ class NlessApp(App):
             pass
 
     def compose(self) -> ComposeResult:
-        yield Static(self._build_title_bar(), id="title_bar")
-        init_buffer = self.buffers[0]
-        with TabbedContent():
-            with TabPane(
-                f"{self.nless_theme.markup('accent', '1')} original",
-                id=f"buffer{init_buffer.pane_id}",
-            ):
-                yield init_buffer
+        with Vertical(id="top_bar"):
+            yield Static(self._build_title_bar(), id="title_bar")
+            yield Static(id="group_bar")
+        init_buffer = self.groups[0].buffers[0]
+        with Vertical(id="group_1", classes="buffer-group"):
+            with TabbedContent():
+                with TabPane(
+                    f"{self.nless_theme.markup('accent', '1')} {self.groups[0].name}",
+                    id=f"buffer{init_buffer.pane_id}",
+                ):
+                    yield init_buffer
 
         yield Static(id="status_bar", classes="dock-bottom")

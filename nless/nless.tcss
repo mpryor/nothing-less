@@ -1,8 +1,25 @@
-#title_bar {
+#top_bar {
     dock: top;
+    height: auto;
+    width: 100%;
+}
+
+#title_bar {
     height: 1;
     width: 100%;
 }
+
+#group_bar {
+    height: 0;
+    width: 100%;
+    padding: 0 1;
+}
+
+.buffer-group {
+    height: 1fr;
+    width: 100%;
+}
+
 
 #bottom-container {
     height:auto;

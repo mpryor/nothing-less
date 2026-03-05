@@ -375,6 +375,7 @@ class Datatable(ScrollView):
                         trim_len = x - accumulated_x
 
                     cell_render_len = 0
+                    original_trim_len = trim_len
                     if "[" in cell:
                         parsed_markup_text = Text.from_markup(cell)
                         for (
@@ -388,6 +389,7 @@ class Datatable(ScrollView):
                                     continue
                                 else:
                                     parsed_text = parsed_text[trim_len:]
+                                    trim_len = 0
                             segments.append(
                                 Segment(parsed_text, segment_style + parsed_style)
                             )
@@ -399,7 +401,7 @@ class Datatable(ScrollView):
                         segments.append(Segment(cell, segment_style))
 
                     separator_trim_amt = 0
-                    rjust_amt = curr_column_width - trim_len - cell_render_len
+                    rjust_amt = curr_column_width - original_trim_len - cell_render_len
                     if rjust_amt < self.col_separator_width:
                         separator_trim_amt = self.col_separator_width - rjust_amt
 
