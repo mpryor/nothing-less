@@ -7,7 +7,53 @@ These tutorials walk through real-world workflows with sample data you can copy 
 
 ---
 
-## 1. Exploring a CSV
+## 1. Terminology
+
+Before diving in, here are the core concepts you'll encounter throughout nless.
+
+### Buffers
+
+A **buffer** is a single view of data. When you open a file, nless creates a buffer to display it. Buffers are like tabs — you can have several open at once and switch between them.
+
+Buffers are created automatically when you:
+
+- **Filter** (`f` / `F` / `e` / `E`) — a new buffer opens showing only the matching (or excluded) rows
+- **Drill into a pivot** (++enter++ on a grouped row) — a new buffer opens with the detail rows behind that group
+- **Create one manually** (`N`) — a fresh buffer from the original data
+
+Switch between buffers with `L` (next) and `H` (previous), or press `1`–`9` to jump directly. Press `q` to close the current buffer. When the last buffer is closed, nless exits.
+
+Each buffer maintains its own independent state — sort order, search position, column visibility, and scroll position. This means you can have one buffer sorted by price while another is filtered to a specific customer, without them interfering with each other.
+
+### Buffer Groups
+
+A **buffer group** is a collection of related buffers. When you first open a file, nless creates a group to hold its buffers. Groups let you keep separate data sources organized.
+
+New groups are created when you:
+
+- **Open a file** (`O`) — creates a group with a `📄` icon
+- **Run a shell command** (`!`) — creates a group with a `⏵` icon indicating a streaming source
+- **Start nless with a file argument** — the initial group
+
+Switch between groups with `}` (next) and `{` (previous). Press `R` to rename a group for easy identification.
+
+Within a group, buffers work as described above — filter, pivot, and create new buffers, all scoped to that group's data.
+
+### Other Key Terms
+
+| Term | Meaning |
+|------|---------|
+| **Delimiter** | The character or pattern used to split each line into columns. Auto-detected for CSV, TSV, JSON, and space-aligned formats. Change with `D`. |
+| **Column delimiter** | A secondary delimiter applied to a single column to split it into sub-columns (`d`). |
+| **Pivot / Unique key** | Mark columns with `U` to group rows by their values, adding a `count` column. Multiple `U` presses create composite keys. |
+| **Filter** | A regex applied to a column (or all columns) to show only matching rows. |
+| **Exclude filter** | The inverse — hides rows matching the pattern. |
+| **Tail mode** | Keeps the cursor pinned to the bottom so you always see the latest data as it streams in (`t`). |
+| **Highlights** | New rows from streaming sources appear highlighted in green. Press `x` to clear. |
+
+---
+
+## 2. Exploring a CSV
 
 Create a file called `orders.csv`:
 
@@ -71,7 +117,7 @@ nless orders.csv
 
 ---
 
-## 2. Pivoting and Grouping
+## 3. Pivoting and Grouping
 
 Using the same `orders.csv` from above:
 
@@ -118,7 +164,7 @@ This is equivalent to `SELECT customer, status, COUNT(*) FROM orders GROUP BY cu
 
 ---
 
-## 3. Working with JSON Lines
+## 4. Working with JSON Lines
 
 Create a file called `events.jsonl`:
 
@@ -161,7 +207,7 @@ You now have flat columns for `user.name` and `meta.ip` alongside the original n
 
 ---
 
-## 4. Parsing Logs with Regex Capture Groups
+## 5. Parsing Logs with Regex Capture Groups
 
 Regex named capture groups let you define column structure with a pattern. This is one of the most powerful features in nless.
 
@@ -213,7 +259,7 @@ nless -d '(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}) (?P<method>\w+
 
 ---
 
-## 5. Splitting Columns with Regex Capture Groups
+## 6. Splitting Columns with Regex Capture Groups
 
 Column delimiters (`d`) also support regex capture groups — useful for breaking apart a single column into structured sub-columns.
 
@@ -254,7 +300,7 @@ The `request` column is now split into `method`, `path`, and `query` columns.
 
 ---
 
-## 6. Kubectl and Aligned Output
+## 7. Kubectl and Aligned Output
 
 nless works well with space-aligned output from tools like `kubectl`, `docker`, and `ps`.
 
@@ -291,7 +337,7 @@ nless auto-detects the double-space-aligned format. If it doesn't, press `D` and
 
 ---
 
-## 7. Live Streaming
+## 8. Live Streaming
 
 nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen. Once you've reviewed the new data, press `x` to clear the green highlights and reset everything to normal.
 
@@ -396,7 +442,7 @@ If each log line is a JSON object, nless auto-detects the format and parses fiel
 
 ---
 
-## 8. Reshaping Data with Column Visibility
+## 9. Reshaping Data with Column Visibility
 
 Create a file called `employees.csv`:
 
@@ -441,7 +487,7 @@ To show all columns again, press `C` and type `all`.
 
 ---
 
-## 9. Exporting Results
+## 10. Exporting Results
 
 After filtering, sorting, and reshaping data, you can export the current view.
 
@@ -469,9 +515,44 @@ nless data.csv  # filter/sort interactively, then W and -
 
 ---
 
-## 10. Putting It All Together
+## 11. Live Debugging a Web Server
 
-Here's a realistic workflow combining multiple features. Create a file called `app.log`:
+This tutorial combines live streaming, regex parsing, and interactive analysis. Start a log stream in one terminal:
+
+```bash
+# Simulate a live access log (or use a real one)
+while true; do
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $(shuf -n1 -e GET POST PUT DELETE) /api/$(shuf -n1 -e users orders health sessions) $(shuf -n1 -e 200 200 200 201 400 404 500) $(shuf -n1 -e 5 12 45 89 120 230)ms"
+  sleep 1
+done > /tmp/live-access.log &
+```
+
+Now open it with nless:
+
+```bash
+tail -f /tmp/live-access.log | nless
+```
+
+1. Lines stream in and are **highlighted in green** as they arrive
+2. Press `D` and enter the regex to structure the data:
+
+    ```
+    (?P<date>\S+) (?P<time>\S+) (?P<method>\w+) (?P<path>\S+) (?P<status>\d+) (?P<duration>\d+)ms
+    ```
+
+3. Press `t` to enable tail mode — you're now watching structured data scroll by in real-time
+4. Press `c` and select `status`, then press `f` and type `^[45]` — you're filtering to errors live
+5. New lines still stream in (highlighted in green), but only errors pass the filter
+6. Press `c` and select `path`, then press `U` — the view focuses on `path` and `count` so you can see which endpoints are failing most
+7. As new errors stream in, all columns reappear with updated counts and the new rows highlighted in green
+8. Press ++enter++ on a path to drill into the specific errors for that endpoint
+9. Press `W` and type `errors.csv` to snapshot the current errors to a file
+
+---
+
+## 12. Putting It All Together
+
+This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 
 ```
 2025-03-01 08:00:01 INFO  server started on port 8080
@@ -523,35 +604,175 @@ Press `D` and enter:
 
 ---
 
-## 11. Live Debugging a Web Server
+## 13. Themes and Keymaps
 
-This tutorial combines live streaming, regex parsing, and interactive analysis. Start a log stream in one terminal:
+nless is fully customizable — you can switch color themes and keybinding presets on the fly, or create your own from scratch.
 
-```bash
-# Simulate a live access log (or use a real one)
-while true; do
-  echo "$(date '+%Y-%m-%d %H:%M:%S') $(shuf -n1 -e GET POST PUT DELETE) /api/$(shuf -n1 -e users orders health sessions) $(shuf -n1 -e 200 200 200 201 400 404 500) $(shuf -n1 -e 5 12 45 89 120 230)ms"
-  sleep 1
-done > /tmp/live-access.log &
-```
+### Switching Themes
 
-Now open it with nless:
+Press `T` inside nless to open the theme selector. Pick any built-in theme and it applies immediately. Your choice is saved to `~/.config/nless/config.json` so it persists across sessions.
+
+You can also set a theme from the command line:
 
 ```bash
-tail -f /tmp/live-access.log | nless
+nless --theme dracula file.csv
+nless -t nord file.csv
 ```
 
-1. Lines stream in and are **highlighted in green** as they arrive
-2. Press `D` and enter the regex to structure the data:
+The CLI flag takes priority over the saved config, so you can try a theme without changing your default.
 
-    ```
-    (?P<date>\S+) (?P<time>\S+) (?P<method>\w+) (?P<path>\S+) (?P<status>\d+) (?P<duration>\d+)ms
-    ```
+**Built-in themes:**
 
-3. Press `t` to enable tail mode — you're now watching structured data scroll by in real-time
-4. Press `c` and select `status`, then press `f` and type `^[45]` — you're filtering to errors live
-5. New lines still stream in (highlighted in green), but only errors pass the filter
-6. Press `c` and select `path`, then press `U` — the view focuses on `path` and `count` so you can see which endpoints are failing most
-7. As new errors stream in, all columns reappear with updated counts and the new rows highlighted in green
-8. Press ++enter++ on a path to drill into the specific errors for that endpoint
-8. Press `W` and type `errors.csv` to snapshot the current errors to a file
+| Theme | Style |
+|-------|-------|
+| `default` | Green accents on dark background |
+| `dracula` | Dracula color scheme |
+| `monokai` | Monokai Pro colors |
+| `nord` | Cool blue/teal palette |
+| `solarized-dark` | Solarized dark mode |
+| `solarized-light` | Solarized light mode |
+| `gruvbox` | Warm retro groove colors |
+| `tokyo-night` | Modern dark blues/purples |
+| `catppuccin-mocha` | Dark mode with pastels |
+| `catppuccin-latte` | Light mode with pastels |
+
+### Creating a Custom Theme
+
+Create a JSON file in `~/.config/nless/themes/`:
+
+```bash
+mkdir -p ~/.config/nless/themes
+```
+
+```json title="~/.config/nless/themes/ocean.json"
+{
+    "name": "ocean",
+    "cursor_bg": "#264f78",
+    "cursor_fg": "#e0e0e0",
+    "header_bg": "#1b3a5c",
+    "header_fg": "#c8dce8",
+    "row_odd_bg": "#0d1b2a",
+    "row_even_bg": "#1b2838",
+    "highlight": "#00d4aa",
+    "accent": "#5dadec",
+    "border": "#5dadec",
+    "brand": "#5dadec"
+}
+```
+
+Only the `name` key is required — any color slots you omit inherit from the default theme. Your custom theme appears in the `T` selector immediately.
+
+**Available color slots:**
+
+| Slot | Controls |
+|------|----------|
+| `cursor_bg` / `cursor_fg` | Selected row background and text |
+| `header_bg` / `header_fg` | Column header bar |
+| `fixed_column_bg` | Pinned column background (e.g. `count` in pivots) |
+| `row_odd_bg` / `row_even_bg` | Alternating row backgrounds |
+| `col_odd_fg` / `col_even_fg` | Alternating column text colors |
+| `scrollbar_bg` / `scrollbar_fg` | Scrollbar track and thumb |
+| `search_match_bg` / `search_match_fg` | Search result highlighting |
+| `highlight` | New-line highlighting color (streaming) |
+| `accent` | UI accents (borders, active indicators) |
+| `status_tailing` | "Tailing" indicator in the status bar |
+| `status_loading` | Loading/filtering indicator in the status bar |
+| `muted` | De-emphasized text (separators, inactive elements) |
+| `border` | Border color for UI elements |
+| `brand` | Brand accent color |
+
+### Switching Keymaps
+
+Press `K` inside nless to open the keymap selector. Like themes, your choice is saved automatically.
+
+From the command line:
+
+```bash
+nless --keymap less file.csv
+nless -k emacs file.csv
+```
+
+**Built-in keymaps:**
+
+| Keymap | Style |
+|--------|-------|
+| `vim` | Vi-like keybindings (default) — `h`/`j`/`k`/`l` navigation, `/` search, `f` filter |
+| `less` | Matches less(1) conventions — `space` pages down, `b` pages up, `h` opens help |
+| `emacs` | Ctrl/Alt-based — `ctrl+n`/`ctrl+p` navigation, `ctrl+s` search, `alt+f` filter |
+
+### Creating a Custom Keymap
+
+Create a JSON file in `~/.config/nless/keymaps/`:
+
+```bash
+mkdir -p ~/.config/nless/keymaps
+```
+
+```json title="~/.config/nless/keymaps/custom.json"
+{
+    "name": "custom",
+    "extends": "vim",
+    "bindings": {
+        "app.search": "ctrl+slash",
+        "table.page_down": "space",
+        "table.page_up": "shift+space",
+        "app.filter": "ctrl+f"
+    }
+}
+```
+
+- `name` — required, appears in the `K` selector
+- `extends` — base preset to inherit from (`vim`, `less`, or `emacs`). Defaults to `vim`. You only need to specify the bindings you want to change.
+- `bindings` — maps binding IDs to key strings. Use commas to bind multiple keys: `"space,f"`.
+
+**Binding IDs reference:**
+
+| ID | Default (vim) | Action |
+|----|---------------|--------|
+| `table.cursor_down` | `j` / `down` | Move cursor down |
+| `table.cursor_up` | `k` / `up` | Move cursor up |
+| `table.cursor_right` | `l` / `w` | Move cursor right |
+| `table.cursor_left` | `h` / `b` / `B` | Move cursor left |
+| `table.page_down` | `ctrl+d` | Page down |
+| `table.page_up` | `ctrl+u` | Page up |
+| `table.scroll_top` | `g` | Jump to first row |
+| `table.scroll_bottom` | `G` | Jump to last row |
+| `table.scroll_to_beginning` | `0` | Jump to first column |
+| `table.scroll_to_end` | `$` | Jump to last column |
+| `app.search` | `/` | Search |
+| `app.filter` | `f` | Filter column |
+| `app.filter_cursor_word` | `F` | Filter by cursor word |
+| `app.exclude_filter` | `e` | Exclude from column |
+| `app.exclude_filter_cursor_word` | `E` | Exclude by cursor word |
+| `app.filter_any` | `\|` | Filter all columns |
+| `app.search_to_filter` | `&` | Search to filter |
+| `app.filter_columns` | `C` | Show/hide columns |
+| `app.mark_unique` | `U` | Mark column as pivot key |
+| `app.delimiter` | `D` | Change delimiter |
+| `app.column_delimiter` | `d` | Split column |
+| `app.json_header` | `J` | Extract JSON key |
+| `app.write_to_file` | `W` | Write to file |
+| `app.run_command` | `!` | Run shell command |
+| `app.select_theme` | `T` | Select theme |
+| `app.select_keymap` | `K` | Select keymap |
+| `app.help` | `?` | Show help |
+| `app.add_buffer` | `N` | New buffer |
+| `app.show_tab_next` | `L` | Next buffer |
+| `app.show_tab_previous` | `H` | Previous buffer |
+| `app.close_active_buffer` | `q` | Close buffer / quit |
+| `app.rename_buffer` | `r` | Rename buffer |
+| `app.show_group_next` | `}` | Next group |
+| `app.show_group_previous` | `{` | Previous group |
+| `app.rename_group` | `R` | Rename group |
+| `app.open_file` | `O` | Open file |
+| `buffer.sort` | `s` | Sort column |
+| `buffer.next_search` | `n` | Next search match |
+| `buffer.previous_search` | `p` | Previous search match |
+| `buffer.search_cursor_word` | `*` | Search cursor word |
+| `buffer.copy` | `y` | Copy cell |
+| `buffer.jump_columns` | `c` | Jump to column |
+| `buffer.move_column_right` | `>` | Move column right |
+| `buffer.move_column_left` | `<` | Move column left |
+| `buffer.toggle_tail` | `t` | Toggle tail mode |
+| `buffer.reset_highlights` | `x` | Reset new-line highlights |
+| `buffer.view_unparsed_logs` | `~` | View unparsed lines |
