@@ -43,6 +43,37 @@ from .types import CliArgs, Column, Filter, MetadataColumn, RowLengthMismatchErr
 from .unparsedlogsscreen import UnparsedLogsScreen
 
 
+def _sample_lines(lines: list[str], max_total: int = 15) -> list[str]:
+    """Sample lines from beginning, middle, and end for delimiter inference."""
+    n = len(lines)
+    if n <= max_total:
+        return lines
+    chunk = max_total // 3
+    start = lines[:chunk]
+    mid_start = (n - chunk) // 2
+    middle = lines[mid_start : mid_start + chunk]
+    end = lines[n - chunk :]
+    return start + middle + end
+
+
+def _majority_sample(lines: list[str], max_total: int = 10) -> list[str]:
+    """Pick lines from the largest group sharing the same word count.
+
+    This avoids the space-delimiter -20 penalty in ``infer_delimiter``
+    that fires when lines have inconsistent field counts.
+    """
+
+    if len(lines) <= 1:
+        return lines[:max_total]
+    counts: dict[int, list[str]] = {}
+    for line in lines:
+        wc = len(line.split())
+        counts.setdefault(wc, []).append(line)
+    # Pick the word-count group with the most lines
+    best = max(counts.values(), key=len)
+    return best[:max_total]
+
+
 class NlessBuffer(Static):
     """A modern pager with tabular data sorting/filtering capabilities."""
 
@@ -175,6 +206,9 @@ class NlessBuffer(Static):
         self._has_nested_delimiters = False
         self._update_generation = 0
         self._needs_deferred_update = False
+        self._skipped_rows_count = 0
+        self._skipped_lines: list[str] = []
+        self._delimiter_suggestion_shown = False
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -757,12 +791,31 @@ class NlessBuffer(Static):
                             col_widths[i] = str_len
                 self._cached_col_widths = col_widths
 
+            suggested_delimiter = None
+            n_inconsistent = len(rows_with_inconsistent_length)
+            n_total = len(filtered_rows) + n_inconsistent
+            if (
+                self.delimiter_inferred
+                and not self._delimiter_suggestion_shown
+                and not self._initial_load_done
+                and n_inconsistent >= 3
+                and n_total > 0
+                and n_inconsistent / n_total > 0.3
+            ):
+                candidate = infer_delimiter(
+                    _majority_sample(rows_with_inconsistent_length)
+                )
+                if candidate and candidate != self.delimiter and candidate != "raw":
+                    suggested_delimiter = candidate
+
             return {
                 "styled_rows": styled_rows,
                 "column_labels": column_labels,
                 "column_widths": col_widths,
                 "fixed_columns": fixed_columns,
                 "inconsistent_count": len(rows_with_inconsistent_length),
+                "inconsistent_rows": rows_with_inconsistent_length,
+                "suggested_delimiter": suggested_delimiter,
             }
 
         def _apply_to_widgets(result):
@@ -778,10 +831,38 @@ class NlessBuffer(Static):
             data_table.add_rows_precomputed(result["styled_rows"])
 
             if result["inconsistent_count"] > 0:
-                self.notify(
-                    f"{result['inconsistent_count']} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
-                    severity="warning",
-                )
+                suggested = result.get("suggested_delimiter")
+                count = result["inconsistent_count"]
+                if suggested:
+                    old_label = self._format_delimiter_label(self.delimiter)
+                    self.delimiter = suggested
+                    self.delimiter_inferred = True
+                    self._delimiter_suggestion_shown = True
+                    self._parsed_rows = None
+                    self._cached_col_widths = None
+                    # Re-add inconsistent rows for re-parsing
+                    inconsistent = result["inconsistent_rows"]
+                    now = time.time()
+                    self.raw_rows.extend(inconsistent)
+                    self._arrival_timestamps.extend([now] * len(inconsistent))
+                    # Old header may not parse with new delimiter
+                    self.raw_rows.insert(0, self.first_log_line)
+                    self._arrival_timestamps.insert(0, now)
+                    self.first_log_line = _majority_sample(inconsistent)[0]
+                    parts = self._parse_first_line_columns(self.first_log_line)
+                    self.current_columns = self._make_columns(parts)
+                    self._ensure_arrival_column(self.current_columns)
+                    new_label = self._format_delimiter_label(suggested)
+                    self._flash_status(
+                        f"Switched delimiter to {new_label} ({count} rows failed with {old_label})"
+                    )
+                    self._deferred_update_table(reason="Switching delimiter")
+                    return
+                else:
+                    self.notify(
+                        f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
+                        severity="warning",
+                    )
 
             # Check if more data arrived while we were processing
             if len(self.raw_rows) > self._last_flushed_idx:
@@ -858,8 +939,47 @@ class NlessBuffer(Static):
         )
 
         if len(rows_with_inconsistent_length) > 0:
+            n_inconsistent = len(rows_with_inconsistent_length)
+            n_total = len(filtered_rows) + n_inconsistent
+            if (
+                self.delimiter_inferred
+                and not self._delimiter_suggestion_shown
+                and not self._initial_load_done
+                and n_inconsistent >= 3
+                and n_total > 0
+                and n_inconsistent / n_total > 0.3
+            ):
+                candidate = infer_delimiter(
+                    _majority_sample(rows_with_inconsistent_length)
+                )
+                if candidate and candidate != self.delimiter and candidate != "raw":
+                    old_label = self._format_delimiter_label(self.delimiter)
+                    self.delimiter = candidate
+                    self.delimiter_inferred = True
+                    self._delimiter_suggestion_shown = True
+                    self._parsed_rows = None
+                    self._cached_col_widths = None
+                    now = time.time()
+                    self.raw_rows.extend(rows_with_inconsistent_length)
+                    self._arrival_timestamps.extend(
+                        [now] * len(rows_with_inconsistent_length)
+                    )
+                    self.raw_rows.insert(0, self.first_log_line)
+                    self._arrival_timestamps.insert(0, now)
+                    self.first_log_line = _majority_sample(
+                        rows_with_inconsistent_length
+                    )[0]
+                    parts = self._parse_first_line_columns(self.first_log_line)
+                    self.current_columns = self._make_columns(parts)
+                    self._ensure_arrival_column(self.current_columns)
+                    new_label = self._format_delimiter_label(candidate)
+                    self._flash_status(
+                        f"Switched delimiter to {new_label} ({n_inconsistent} rows failed with {old_label})"
+                    )
+                    self._deferred_update_table(reason="Switching delimiter")
+                    return
             self.notify(
-                f"{len(rows_with_inconsistent_length)} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
+                f"{n_inconsistent} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
                 severity="warning",
             )
 
@@ -1038,14 +1158,18 @@ class NlessBuffer(Static):
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3]  # trim to milliseconds
 
-    def _format_delimiter(self) -> str | None:
-        """Return a human-readable label for the current delimiter."""
-        d = self.delimiter
-        if d is None:
-            return None
+    @staticmethod
+    def _format_delimiter_label(d) -> str:
+        """Return a human-readable label for a delimiter value."""
         if isinstance(d, re.Pattern):
             return f"regex({d.pattern})"
         return {" ": "space", "  ": "space+", "\t": "tab", ",": "csv"}.get(d, d)
+
+    def _format_delimiter(self) -> str | None:
+        """Return a human-readable label for the current delimiter."""
+        if self.delimiter is None:
+            return None
+        return self._format_delimiter_label(self.delimiter)
 
     @staticmethod
     def _parse_duration(text: str) -> float | None:
@@ -1153,6 +1277,7 @@ class NlessBuffer(Static):
 
     def add_logs(self, log_lines: list[str]) -> None:
         needs_deferred = False
+        self._skipped_rows_count = 0
         with self._lock:
             self.locked = True
             try:
@@ -1180,6 +1305,61 @@ class NlessBuffer(Static):
         if needs_deferred:
             self.app.call_from_thread(self._deferred_update_table)
 
+        skipped = self._skipped_rows_count
+        skipped_lines = self._skipped_lines
+        if skipped > 0 and not needs_deferred:
+            self._skipped_rows_count = 0
+            self._skipped_lines = []
+            # Try auto-switch during initial load
+            n_total = len(self.displayed_rows) + skipped
+            if (
+                self.delimiter_inferred
+                and not self._delimiter_suggestion_shown
+                and not self._initial_load_done
+                and skipped >= 3
+                and n_total > 0
+                and skipped / n_total > 0.3
+                and skipped_lines
+            ):
+                majority = _majority_sample(skipped_lines)
+                candidate = infer_delimiter(majority)
+                if candidate and candidate != self.delimiter and candidate != "raw":
+                    old_label = self._format_delimiter_label(self.delimiter)
+                    self.delimiter = candidate
+                    self.delimiter_inferred = True
+                    self._delimiter_suggestion_shown = True
+                    self._parsed_rows = None
+                    self._cached_col_widths = None
+                    # Re-add skipped lines so they get parsed with new delimiter
+                    self.raw_rows.extend(skipped_lines)
+                    now = time.time()
+                    self._arrival_timestamps.extend([now] * len(skipped_lines))
+                    # Old header may not parse with new delimiter — reinsert
+                    # it as data and use a majority-group line as the new header
+                    self.raw_rows.insert(0, self.first_log_line)
+                    self._arrival_timestamps.insert(0, now)
+                    self.first_log_line = majority[0]
+                    parts = self._parse_first_line_columns(self.first_log_line)
+                    self.current_columns = self._make_columns(parts)
+                    self._ensure_arrival_column(self.current_columns)
+                    new_label = self._format_delimiter_label(candidate)
+                    flash_msg = f"Switched delimiter to {new_label} ({skipped} rows failed with {old_label})"
+
+                    def rebuild():
+                        self._flash_status(flash_msg)
+                        self._deferred_update_table(reason="Switching delimiter")
+
+                    if self.app._thread_id == threading.get_ident():
+                        rebuild()
+                    else:
+                        self.app.call_from_thread(rebuild)
+                    return
+            msg = f"{skipped} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
+            if self.app._thread_id == threading.get_ident():
+                self.notify(msg, severity="warning")
+            else:
+                self.app.call_from_thread(self.notify, msg, severity="warning")
+
         pending = self._pending_action
         if pending is not None:
             self._pending_action = None
@@ -1191,7 +1371,8 @@ class NlessBuffer(Static):
 
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
-            self.delimiter = infer_delimiter(log_lines[: min(5, len(log_lines))])
+            sample = _sample_lines(log_lines, max_total=15)
+            self.delimiter = infer_delimiter(sample)
             self.delimiter_inferred = True
 
         if not self.first_row_parsed:
@@ -1267,6 +1448,8 @@ class NlessBuffer(Static):
                         IndexError,
                         TypeError,
                     ):
+                        self._skipped_rows_count += 1
+                        self._skipped_lines.append(line)
                         continue
         else:
             # Process in chunks for progressive display on large inputs
@@ -1349,12 +1532,18 @@ class NlessBuffer(Static):
         _len = len
 
         new_rows = []
+        skipped = 0
+        skipped_lines = []
         for line in new_lines:
             try:
                 cells = parse(line)
             except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
+                skipped += 1
+                skipped_lines.append(line)
                 continue
             if _len(cells) != expected:
+                skipped += 1
+                skipped_lines.append(line)
                 continue
             # Append arrival timestamp (metadata column at end)
             cells.append(formatted_arrival)
@@ -1364,6 +1553,9 @@ class NlessBuffer(Static):
             else:
                 row = [cells[p] for p in col_positions]
             new_rows.append(row)
+
+        self._skipped_rows_count += skipped
+        self._skipped_lines.extend(skipped_lines)
 
         # Track column widths from a sample to avoid O(n*cols) len() calls
         if track_widths and new_rows:
