@@ -72,7 +72,8 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 ## Features
 
-- **Buffers** - mutating actions create a new buffer, letting you jump up and down your analysis history
+- **Buffers** - mutating actions create a new buffer, letting you jump up and down your analysis history (`r` to rename)
+- **Buffer groups** - open multiple files or shell command outputs side-by-side, switch between groups with `{`/`}`, open new files with `O`
 - **Delimiter swapping** - swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
 - **Column delimiters** - split a column into more columns using JSON, regex, or string delimiters with `d`
 - **Filtering** - filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`)
@@ -84,7 +85,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Shell commands** - run a shell command and pipe its output into a new buffer with `!`
 - **Tail mode** - keep the cursor at the bottom as new data arrives with `t`
 - **Output** - write buffer contents to a file or stdout (`W`), copy cell values (`y`)
-- **Themes** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
+- **Themes & keymaps** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support (`T`), configurable keymaps (`K`)
 - **Unparsed lines** - view lines that didn't match the current delimiter with `~`
 
 <details>
@@ -96,6 +97,13 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `H` - select the previous buffer
 - `q` - close the current active buffer, or the program if all buffers are closed
 - `N` - create a new buffer from the original data
+- `r` - rename the current buffer
+
+**Groups**:
+- `}` - switch to the next buffer group
+- `{` - switch to the previous buffer group
+- `R` - rename the current group
+- `O` - open a file in a new group
 
 **Navigation**:
 - `h` - move cursor left
@@ -144,10 +152,11 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Tail Mode**:
 - `t` - toggle tail mode
-- `r` - reset new-line highlights
+- `x` - reset new-line highlights
 
-**Themes**:
+**Appearance**:
 - `T` - open the theme selector
+- `K` - open the keymap selector
 
 **Unparsed Logs**:
 - `~` - view logs that did not match the current delimiter
