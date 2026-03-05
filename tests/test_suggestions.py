@@ -8,9 +8,9 @@ from nless.suggestions import (
 
 
 class TestHistorySuggestionProvider:
-    def test_empty_input_returns_nothing(self):
+    def test_empty_input_returns_history(self):
         provider = HistorySuggestionProvider(["foo", "bar"])
-        assert provider.get_suggestions("") == []
+        assert provider.get_suggestions("") == ["bar", "foo"]
 
     def test_empty_history_returns_nothing(self):
         provider = HistorySuggestionProvider([])
@@ -42,9 +42,11 @@ class TestHistorySuggestionProvider:
 
 
 class TestFilePathSuggestionProvider:
-    def test_empty_input(self):
+    def test_empty_input_lists_cwd(self):
         provider = FilePathSuggestionProvider()
-        assert provider.get_suggestions("") == []
+        results = provider.get_suggestions("")
+        # Should list current directory contents
+        assert len(results) > 0
 
     def test_list_directory(self, tmp_path):
         (tmp_path / "file1.txt").touch()
