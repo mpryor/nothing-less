@@ -47,6 +47,18 @@ def parse_args(argv=None) -> CliArgs:
     parser.add_argument(
         "--sort-by", "-s", help="Column to sort by initially", default=None
     )
+    parser.add_argument(
+        "--theme",
+        "-t",
+        help="Color theme to use (e.g. dracula, nord, monokai)",
+        default=None,
+    )
+    parser.add_argument(
+        "--keymap",
+        "-k",
+        help="Keymap preset to use (e.g. vim, less, emacs)",
+        default=None,
+    )
 
     args = parser.parse_args(argv)
 
@@ -100,6 +112,8 @@ def parse_args(argv=None) -> CliArgs:
         filters=filters,
         unique_keys=unique_keys,
         sort_by=args.sort_by,
+        theme=args.theme,
+        keymap=args.keymap,
     )
     cli_args.filename = args.filename
     return cli_args

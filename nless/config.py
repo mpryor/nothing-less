@@ -22,6 +22,11 @@ def _load_config_json_file(file_name: str, defaults):
 @dataclass
 class NlessConfig:
     show_getting_started: bool = True
+    theme: str = "default"
+    keymap: str = "vim"
+    status_format: str = (
+        "{sort} | {filter} | {search} | {position} {unique}{tailing}{loading}"
+    )
 
 
 def load_input_history():
@@ -29,9 +34,17 @@ def load_input_history():
 
 
 def load_config() -> NlessConfig:
-    return NlessConfig(
-        **_load_config_json_file(CONFIG_FILE, {"show_getting_started": True})
-    )
+    defaults = {
+        "show_getting_started": True,
+        "theme": "default",
+        "keymap": "vim",
+        "status_format": "{sort} | {filter} | {search} | {position} {unique}{tailing}{loading}",
+    }
+    data = _load_config_json_file(CONFIG_FILE, defaults)
+    # Only pass known fields to avoid errors from stale config keys
+    known = set(NlessConfig.__dataclass_fields__)
+    filtered = {k: v for k, v in data.items() if k in known}
+    return NlessConfig(**filtered)
 
 
 def save_config(config: NlessConfig):

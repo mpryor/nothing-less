@@ -9,6 +9,7 @@ from copy import deepcopy
 import pyperclip
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import (
@@ -45,22 +46,49 @@ class NlessBuffer(Static):
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("y", "copy", "Copy cell contents"),
-        ("c", "jump_columns", "Jump to column (by select)"),
-        (">", "move_column_right", "Move column right"),
-        ("<", "move_column_left", "Move column left"),
-        ("s", "sort", "Sort selected column"),
-        ("n", "next_search", "Next search result"),
-        ("p", "previous_search", "Previous search result"),
-        ("*", "search_cursor_word", "Search (all columns) for word under cursor"),
-        ("~", "view_unparsed_logs", "View logs not matching delimiter"),
-        (
+        Binding("q", "quit", "Quit", id="buffer.quit"),
+        Binding("y", "copy", "Copy cell contents", id="buffer.copy"),
+        Binding(
+            "c", "jump_columns", "Jump to column (by select)", id="buffer.jump_columns"
+        ),
+        Binding(
+            ">", "move_column_right", "Move column right", id="buffer.move_column_right"
+        ),
+        Binding(
+            "<", "move_column_left", "Move column left", id="buffer.move_column_left"
+        ),
+        Binding("s", "sort", "Sort selected column", id="buffer.sort"),
+        Binding("n", "next_search", "Next search result", id="buffer.next_search"),
+        Binding(
+            "p",
+            "previous_search",
+            "Previous search result",
+            id="buffer.previous_search",
+        ),
+        Binding(
+            "*",
+            "search_cursor_word",
+            "Search (all columns) for word under cursor",
+            id="buffer.search_cursor_word",
+        ),
+        Binding(
+            "~",
+            "view_unparsed_logs",
+            "View logs not matching delimiter",
+            id="buffer.view_unparsed_logs",
+        ),
+        Binding(
             "t",
             "toggle_tail",
             "Keep cursor at the bottom of the screen even as new logs arrive.",
+            id="buffer.toggle_tail",
         ),
-        ("r", "reset_highlights", "Reset new-line highlights"),
+        Binding(
+            "r",
+            "reset_highlights",
+            "Reset new-line highlights",
+            id="buffer.reset_highlights",
+        ),
     ]
 
     def __init__(
@@ -804,6 +832,9 @@ class NlessBuffer(Static):
             loading_reason=self._loading_reason,
             theme=self._get_theme(),
             spinner_frame=self._spinner_frame,
+            format_str=self.app.config.status_format,
+            keymap_name=self.app.nless_keymap.name,
+            theme_name=self.app.nless_theme.name,
         )
         self.app.query_one("#status_bar", Static).update(text)
 

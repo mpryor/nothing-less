@@ -15,7 +15,7 @@ async def _wait(pilot, app):
     settled = 0
     for _ in range(300):  # 3s max
         await pilot.pause(delay=0.01)
-        if all(not b._is_loading for b in app.buffers):
+        if all(not b._loading_reason for b in app.buffers):
             settled += 1
             if settled >= 5:
                 return
@@ -115,7 +115,7 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ class TestFilter:
             app._perform_filter("Alice", "name")
             await _wait(pilot, app)
 
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +410,7 @@ class TestMarkUnique:
             app.action_mark_unique()
             await _wait(pilot, app)
 
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
     @pytest.mark.asyncio
     async def test_mark_unique_streaming_updates_counts(self, cli_args):
@@ -554,7 +554,7 @@ class TestDeferredGeneration:
 
             # Three presses: asc → desc → clear
             assert buf.sort_column is None
-            assert not buf._is_loading
+            assert not buf._loading_reason
 
 
 # ---------------------------------------------------------------------------

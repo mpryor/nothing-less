@@ -66,8 +66,12 @@ class NlessSelect(Static):
     def compose(self):
         rich_log = RichLog(markup=True, auto_scroll=False)
         display_prompt = self.prompt or "Select a JSON key to add as a column"
+        try:
+            muted = self.app.nless_theme.muted
+        except AttributeError:
+            muted = "#888888"
         rich_log.write(
-            f"[#888888]{display_prompt} - Type to filter, Enter to select, Up/Down to navigate"
+            f"[{muted}]{display_prompt} - Type to filter, Enter to select, Up/Down to navigate"
         )
         for i, (k, v) in enumerate(self.options):
             if i == self.highlight_index:

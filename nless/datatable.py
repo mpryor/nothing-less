@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from rich.text import Text
+from textual.binding import Binding
 from textual.geometry import Region, Size
 from textual.message import Message
 from textual.reactive import var
@@ -10,6 +13,9 @@ from textual.scroll_view import ScrollView
 
 from rich.segment import Segment
 from rich.style import Style
+
+if TYPE_CHECKING:
+    from .theme import NlessTheme
 
 
 @dataclass()
@@ -23,56 +29,19 @@ class Datatable(ScrollView):
         pass
 
     BINDINGS = [
-        ("G", "scroll_bottom", "Scroll to Bottom"),
-        ("g", "scroll_top", "Scroll to Top"),
-        ("ctrl+d", "page_down", "Page Down"),
-        ("ctrl+u", "page_up", "Page up"),
-        ("up,k", "cursor_up", "Up"),
-        ("down,j", "cursor_down", "Down"),
-        ("l,w", "cursor_right", "Right"),
-        ("h,b,B", "cursor_left", "Left"),
-        ("$", "scroll_to_end", "End of Line"),
-        ("0", "scroll_to_beginning", "Start of Line"),
+        Binding("G", "scroll_bottom", "Scroll to Bottom", id="table.scroll_bottom"),
+        Binding("g", "scroll_top", "Scroll to Top", id="table.scroll_top"),
+        Binding("ctrl+d", "page_down", "Page Down", id="table.page_down"),
+        Binding("ctrl+u", "page_up", "Page up", id="table.page_up"),
+        Binding("up,k", "cursor_up", "Up", id="table.cursor_up"),
+        Binding("down,j", "cursor_down", "Down", id="table.cursor_down"),
+        Binding("l,w", "cursor_right", "Right", id="table.cursor_right"),
+        Binding("h,b,B", "cursor_left", "Left", id="table.cursor_left"),
+        Binding("$", "scroll_to_end", "End of Line", id="table.scroll_to_end"),
+        Binding(
+            "0", "scroll_to_beginning", "Start of Line", id="table.scroll_to_beginning"
+        ),
     ]
-
-    STYLE_CURSOR = Style(bgcolor="#0087d7", bold=True, color="#d7ffff")
-    STYLE_HEADER = Style(bold=True, bgcolor="#005f5f", color="#d7ffff")
-    STYLE_FIXED_COLUMN = Style(bgcolor="#111177")
-    STYLE_ZEBRA_ODD_ROW = Style(bgcolor="#222222")
-    STYLE_ZEBRA_EVEN_ROW = Style(bgcolor="#333333")
-    STYLE_ZEBRA_ODD_COL = Style(color="#bbbbbb")
-    STYLE_ZEBRA_EVEN_COL = Style(color="#dddddd")
-
-    # Pre-computed style combinations for render_line():
-    # Key: (is_cursor_cell, is_zebra_row, is_zebra_column)
-    _CELL_STYLES: dict[tuple[bool, bool, bool], Style] = {}
-    # Separator styles: Key: (is_cursor_cell, is_zebra_row)
-    _SEP_STYLES: dict[tuple[bool, bool], Style] = {}
-
-    @classmethod
-    def _build_style_cache(cls) -> None:
-        for is_cursor in (True, False):
-            for is_odd_row in (True, False):
-                cursor_style = cls.STYLE_CURSOR if is_cursor else Style()
-                zebra_style = (
-                    cls.STYLE_CURSOR
-                    if is_cursor
-                    else cls.STYLE_ZEBRA_ODD_ROW
-                    if is_odd_row
-                    else cls.STYLE_ZEBRA_EVEN_ROW
-                )
-                cls._SEP_STYLES[(is_cursor, is_odd_row)] = Style.combine(
-                    [zebra_style, cursor_style]
-                )
-                for is_odd_col in (True, False):
-                    column_style = (
-                        cls.STYLE_ZEBRA_ODD_COL
-                        if is_odd_col and not is_cursor
-                        else cls.STYLE_ZEBRA_EVEN_COL
-                    )
-                    cls._CELL_STYLES[(is_cursor, is_odd_row, is_odd_col)] = (
-                        Style.combine([cursor_style, column_style, zebra_style])
-                    )
 
     cursor_coordinate = var(Coordinate(0, 0))
     col_separator: str = "   "
@@ -93,7 +62,7 @@ class Datatable(ScrollView):
         """Move cursor to end of current row."""
         self.move_cursor(column=len(self.columns) - 1)
 
-    def __init__(self) -> None:
+    def __init__(self, theme: NlessTheme | None = None) -> None:
         super().__init__()
         self.rows: list[list[str]] = []
         self.columns: list[str] = []
@@ -103,8 +72,63 @@ class Datatable(ScrollView):
         self.cursor_column: int = 0
         self.row_count: int = 0
 
-        if not Datatable._CELL_STYLES:
-            Datatable._build_style_cache()
+        self._init_styles(theme)
+
+    def _init_styles(self, theme: NlessTheme | None = None) -> None:
+        """Build instance-level style objects and caches from a theme."""
+        if theme is None:
+            from .theme import BUILTIN_THEMES
+
+            theme = BUILTIN_THEMES["default"]
+
+        self._style_cursor = Style(
+            bgcolor=theme.cursor_bg, bold=True, color=theme.cursor_fg
+        )
+        self._style_header = Style(
+            bold=True, bgcolor=theme.header_bg, color=theme.header_fg
+        )
+        self._style_fixed_column = Style(bgcolor=theme.fixed_column_bg)
+        self._style_zebra_odd_row = Style(bgcolor=theme.row_odd_bg)
+        self._style_zebra_even_row = Style(bgcolor=theme.row_even_bg)
+        self._style_zebra_odd_col = Style(color=theme.col_odd_fg)
+        self._style_zebra_even_col = Style(color=theme.col_even_fg)
+
+        self._cell_styles: dict[tuple[bool, bool, bool], Style] = {}
+        self._sep_styles: dict[tuple[bool, bool], Style] = {}
+        self._build_style_cache()
+
+        # Apply scrollbar colors via Textual CSS properties
+        self.styles.scrollbar_background = theme.scrollbar_bg
+        self.styles.scrollbar_color = theme.scrollbar_fg
+
+    def _build_style_cache(self) -> None:
+        for is_cursor in (True, False):
+            for is_odd_row in (True, False):
+                cursor_style = self._style_cursor if is_cursor else Style()
+                zebra_style = (
+                    self._style_cursor
+                    if is_cursor
+                    else self._style_zebra_odd_row
+                    if is_odd_row
+                    else self._style_zebra_even_row
+                )
+                self._sep_styles[(is_cursor, is_odd_row)] = Style.combine(
+                    [zebra_style, cursor_style]
+                )
+                for is_odd_col in (True, False):
+                    column_style = (
+                        self._style_zebra_odd_col
+                        if is_odd_col and not is_cursor
+                        else self._style_zebra_even_col
+                    )
+                    self._cell_styles[(is_cursor, is_odd_row, is_odd_col)] = (
+                        Style.combine([cursor_style, column_style, zebra_style])
+                    )
+
+    def apply_theme(self, theme: NlessTheme) -> None:
+        """Re-apply a theme: rebuild style caches and refresh."""
+        self._init_styles(theme)
+        self.refresh()
 
     def remove_row(self, index: int) -> None:
         self.rows.pop(index)
@@ -278,7 +302,7 @@ class Datatable(ScrollView):
             [
                 Segment(
                     fixed_columns_str + segment_str[x : x + self.size.width],
-                    self.STYLE_HEADER,
+                    self._style_header,
                 )
             ]
         )
@@ -311,9 +335,9 @@ class Datatable(ScrollView):
                 elif i < self.fixed_columns:
                     is_cursor_cell = i == self.cursor_column and is_cursor_row
                     fixed_column_style = (
-                        self.STYLE_FIXED_COLUMN
+                        self._style_fixed_column
                         if not is_cursor_cell
-                        else self.STYLE_CURSOR
+                        else self._style_cursor
                     )
                     cell_text = Text.from_markup(str(cell))
                     for parsed_text, parsed_style, _ in cell_text.render(console):
@@ -329,10 +353,10 @@ class Datatable(ScrollView):
                 else:
                     is_cursor_cell = i == self.cursor_column and is_cursor_row
 
-                    segment_style = self._CELL_STYLES[
+                    segment_style = self._cell_styles[
                         (is_cursor_cell, is_zebra_row, i % 2 != 0)
                     ]
-                    separator_style = self._SEP_STYLES[(is_cursor_cell, is_zebra_row)]
+                    separator_style = self._sep_styles[(is_cursor_cell, is_zebra_row)]
 
                     trim_len = 0
 

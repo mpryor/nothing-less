@@ -112,11 +112,12 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 |-----|--------|
 | `~` | View lines that did not match the current delimiter |
 
-## Themes
+## Themes & Keymaps
 
 | Key | Action |
 |-----|--------|
 | `T` | Open the theme selector to switch color schemes |
+| `K` | Open the keymap selector to switch keybinding presets |
 
 ## Help
 
