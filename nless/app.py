@@ -183,6 +183,18 @@ class NlessApp(App):
         Binding("r", "rename_buffer", "Rename Buffer", id="app.rename_buffer"),
         Binding("R", "rename_group", "Rename Group", id="app.rename_group"),
         Binding("O", "open_file", "Open File", id="app.open_file"),
+        Binding(
+            "@",
+            "time_window",
+            "Time Window (e.g. 5m, 1h, 30s)",
+            id="app.time_window",
+        ),
+        Binding(
+            "A",
+            "toggle_arrival",
+            "Toggle arrival timestamp column",
+            id="app.toggle_arrival",
+        ),
     ]
 
     def action_open_file(self) -> None:
@@ -273,26 +285,48 @@ class NlessApp(App):
 
                 new_column_name = f"{curr_column_name}{col_ref}"
 
-                new_cursor_x = len(curr_buffer.current_columns)
+                # Insert before trailing ARRIVAL metadata so it stays last
+                arrival_col = next(
+                    (
+                        c
+                        for c in curr_buffer.current_columns
+                        if c.name == MetadataColumn.ARRIVAL.value
+                    ),
+                    None,
+                )
+                new_data_position = (
+                    arrival_col.data_position
+                    if arrival_col
+                    else len(curr_buffer.current_columns)
+                )
+                new_render_position = len(
+                    [c for c in curr_buffer.current_columns if not c.hidden]
+                )
 
                 new_col = Column(
                     name=new_column_name,
                     labels=set(),
                     computed=True,
-                    render_position=new_cursor_x,
-                    data_position=new_cursor_x,
+                    render_position=new_render_position,
+                    data_position=new_data_position,
                     hidden=False,
                     json_ref=f"{curr_column_name}{col_ref}",
                     delimiter="json",
                 )
 
                 curr_buffer.current_columns.append(new_col)
+                # Push ARRIVAL to the end
+                if arrival_col:
+                    arrival_col.data_position = new_data_position + 1
+                    arrival_col.render_position = (
+                        max(c.render_position for c in curr_buffer.current_columns) + 1
+                    )
                 old_row = data_table.cursor_row
 
             curr_buffer._deferred_update_table(
                 restore_position=False,
                 callback=lambda: data_table.move_cursor(
-                    column=new_cursor_x, row=old_row
+                    column=new_render_position, row=old_row
                 ),
                 reason="Adding column",
             )
@@ -637,12 +671,29 @@ class NlessApp(App):
             make_column_fn: Callable(index, name, position) -> Column.
         """
         existing = {c.name for c in buffer.current_columns}
-        base_pos = len(buffer.current_columns)
+        # Insert before trailing metadata (ARRIVAL) so it stays last
+        arrival_col = next(
+            (
+                c
+                for c in buffer.current_columns
+                if c.name == MetadataColumn.ARRIVAL.value
+            ),
+            None,
+        )
+        base_pos = (
+            arrival_col.data_position if arrival_col else len(buffer.current_columns)
+        )
         added = 0
         for i, name in enumerate(column_names):
             if name not in existing:
                 buffer.current_columns.append(make_column_fn(i, name, base_pos + added))
                 added += 1
+        # Push ARRIVAL to the end
+        if arrival_col and added > 0:
+            arrival_col.data_position = base_pos + added
+            arrival_col.render_position = (
+                max(c.render_position for c in buffer.current_columns) + 1
+            )
 
     def handle_column_delimiter_submitted(
         self, event: AutocompleteInput.Submitted
@@ -835,6 +886,8 @@ class NlessApp(App):
             self.handle_rename_group_submitted(event)
         elif event.input.id == "rename_buffer_input":
             self.handle_rename_buffer_submitted(event)
+        elif event.input.id == "time_window_input":
+            self.handle_time_window_submitted(event)
 
     def handle_search_submitted(self, event: AutocompleteInput.Submitted) -> None:
         input_value = event.value
@@ -873,6 +926,125 @@ class NlessApp(App):
         self._create_prompt(
             "Type filter text to match across all columns", "filter_input_any"
         )
+
+    def action_toggle_arrival(self) -> None:
+        """Toggle visibility of the arrival timestamp column, pinned to the left."""
+        buf = self._get_current_buffer()
+        arrival_col = next(
+            (c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value),
+            None,
+        )
+        if arrival_col is None:
+            return
+
+        if arrival_col.hidden:
+            # Show and pin to the left
+            arrival_col.hidden = False
+            arrival_col.pinned = True
+            # Find the first non-pinned render_position to insert before
+            pinned_count = sum(
+                1
+                for c in buf.current_columns
+                if c.pinned and not c.hidden and c.name != MetadataColumn.ARRIVAL.value
+            )
+            # Shift non-pinned columns right by 1
+            for c in buf.current_columns:
+                if (
+                    c.name != MetadataColumn.ARRIVAL.value
+                    and not c.pinned
+                    and c.render_position >= pinned_count
+                ):
+                    c.render_position += 1
+            arrival_col.render_position = pinned_count
+        else:
+            # Hide and unpin
+            old_pos = arrival_col.render_position
+            arrival_col.hidden = True
+            arrival_col.pinned = False
+            arrival_col.render_position = 99999
+            # Close the gap
+            for c in buf.current_columns:
+                if (
+                    c.render_position > old_pos
+                    and c.name != MetadataColumn.ARRIVAL.value
+                ):
+                    c.render_position -= 1
+
+        buf._parsed_rows = None
+        buf._cached_col_widths = None
+        buf._deferred_update_table(reason="Toggling arrival column")
+
+    def action_time_window(self) -> None:
+        """Set a time window to only show rows from the last N minutes/hours/seconds."""
+        curr = self._get_current_buffer()
+        current = self._format_window(curr.time_window, curr.rolling_time_window)
+        hint = f"e.g. 5m, 1h, 30s — append + for rolling (current: {current})"
+        self._create_prompt(
+            f"Enter time window — {hint}",
+            "time_window_input",
+        )
+
+    @staticmethod
+    def _format_window(seconds: float | None, rolling: bool = False) -> str:
+        """Format a time window duration for display."""
+        if not seconds:
+            return "off"
+        parts = []
+        remaining = seconds
+        if remaining >= 86400:
+            d = int(remaining // 86400)
+            parts.append(f"{d}d")
+            remaining %= 86400
+        if remaining >= 3600:
+            h = int(remaining // 3600)
+            parts.append(f"{h}h")
+            remaining %= 3600
+        if remaining >= 60:
+            m = int(remaining // 60)
+            parts.append(f"{m}m")
+            remaining %= 60
+        if remaining > 0 and not parts:
+            parts.append(f"{int(remaining)}s")
+        result = "".join(parts)
+        if rolling:
+            result += " (rolling)"
+        return result
+
+    def handle_time_window_submitted(self, event: AutocompleteInput.Submitted) -> None:
+        value = event.value.strip()
+        event.input.remove()
+        curr_buffer = self._get_current_buffer()
+
+        if not value or value in ("0", "off", "clear", "none"):
+            curr_buffer.time_window = None
+            curr_buffer.rolling_time_window = False
+            curr_buffer._stop_rolling_timer()
+            curr_buffer._parsed_rows = None
+            curr_buffer._cached_col_widths = None
+            curr_buffer._deferred_update_table(reason="Clearing time window")
+            return
+
+        rolling = value.endswith("+")
+        if rolling:
+            value = value.rstrip("+").strip()
+
+        duration = NlessBuffer._parse_duration(value)
+        if duration is None:
+            self.notify(
+                "Invalid duration. Use e.g. 5m, 1h, 30s, 2h30m (+ for rolling)",
+                severity="error",
+            )
+            return
+
+        curr_buffer.time_window = duration
+        curr_buffer.rolling_time_window = rolling
+        curr_buffer._parsed_rows = None
+        curr_buffer._cached_col_widths = None
+        curr_buffer._deferred_update_table(reason="Applying time window")
+        if rolling:
+            curr_buffer._start_rolling_timer()
+        else:
+            curr_buffer._stop_rolling_timer()
 
     def handle_filter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         filter_value = event.value
@@ -1086,6 +1258,7 @@ class NlessApp(App):
                 curr_buffer.current_columns = NlessBuffer._make_columns(
                     list(delimiter.groupindex.keys())
                 )
+                NlessBuffer._ensure_arrival_column(curr_buffer.current_columns)
                 if prev_delimiter != "raw" and not isinstance(
                     prev_delimiter, re.Pattern
                 ):
@@ -1108,6 +1281,7 @@ class NlessApp(App):
                     curr_buffer.current_columns = NlessBuffer._make_columns(
                         list(new_header)
                     )
+                    NlessBuffer._ensure_arrival_column(curr_buffer.current_columns)
                     should_update = True
 
         if should_update:
@@ -1123,8 +1297,10 @@ class NlessApp(App):
             if not acquired:
                 return
             if input_value.lower() == "all":
+                metadata_names = {mc.value for mc in MetadataColumn}
                 for col in curr_buffer.current_columns:
-                    col.hidden = False
+                    if col.name not in metadata_names or col.pinned:
+                        col.hidden = False
             else:
                 column_name_filters = [name.strip() for name in input_value.split("|")]
                 column_name_filter_regexes = [

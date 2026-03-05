@@ -11,9 +11,7 @@ if TYPE_CHECKING:
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-DEFAULT_STATUS_FORMAT = (
-    "{sort} | {filter} | {search} | {position} | {unique}{tailing}{loading}"
-)
+DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{tailing}{loading}"
 
 
 def build_status_text(
@@ -36,6 +34,7 @@ def build_status_text(
     format_str: str | None = None,
     keymap_name: str = "vim",
     theme_name: str = "default",
+    time_window: str | None = None,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -90,6 +89,10 @@ def build_status_text(
         column_names = ",".join(unique_column_names)
         column_text = f"[bold]Unique[/bold]: {column_names} "
 
+    time_window_text = ""
+    if time_window:
+        time_window_text = f"[bold]Window[/bold]: {time_window} "
+
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
         loading_color = theme.markup("status_loading", f"{spinner} {loading_reason}")
@@ -110,6 +113,7 @@ def build_status_text(
         "col": str(current_col),
         "cols": str(total_cols),
         "unique": column_text,
+        "time_window": time_window_text,
         "tailing": tailing_text,
         "loading": loading_text,
         "keymap": keymap_name,
