@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 import json
+from pathlib import Path
 
 HISTORY_FILE = "~/.config/nless/history.json"
 CONFIG_FILE = "~/.config/nless/config.json"
@@ -9,7 +10,7 @@ CONFIG_FILE = "~/.config/nless/config.json"
 def _load_config_json_file(file_name: str, defaults):
     os.makedirs(os.path.dirname(os.path.expanduser(file_name)), exist_ok=True)
     if not os.path.exists(os.path.expanduser(file_name)):
-        open(os.path.expanduser(file_name), "w").close()
+        Path(os.path.expanduser(file_name)).touch()
     with open(os.path.expanduser(file_name), "r") as f:
         try:
             config = json.load(f)

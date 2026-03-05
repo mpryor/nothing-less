@@ -56,6 +56,8 @@ class NlessSelect(Static):
         self._write_options()
 
     def on_input_submitted(self, event: Input.Submitted):
+        if not self.filtered_options:
+            return
         self.post_message(
             Select.Changed(self, self.filtered_options[self.highlight_index][1])
         )
@@ -63,8 +65,9 @@ class NlessSelect(Static):
 
     def compose(self):
         rich_log = RichLog(markup=True, auto_scroll=False)
+        display_prompt = self.prompt or "Select a JSON key to add as a column"
         rich_log.write(
-            "[#888888]Select a JSON key to add as a column - Type to filter, Enter to select, Up/Down to navigate"
+            f"[#888888]{display_prompt} - Type to filter, Enter to select, Up/Down to navigate"
         )
         for i, (k, v) in enumerate(self.options):
             if i == self.highlight_index:

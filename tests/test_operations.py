@@ -5,6 +5,7 @@ import re
 import pytest
 
 from nless.app import NlessApp
+from nless.dataprocessing import strip_markup
 from nless.datatable import Datatable
 from nless.types import CliArgs, MetadataColumn
 
@@ -441,10 +442,7 @@ class TestMarkUnique:
 
             # Get initial count for NYC (should be 2)
             initial_rows = {
-                new_buf._get_cell_value_without_markup(
-                    r[1]
-                ): new_buf._get_cell_value_without_markup(r[0])
-                for r in new_buf.displayed_rows
+                strip_markup(r[1]): strip_markup(r[0]) for r in new_buf.displayed_rows
             }
             assert initial_rows["NYC"] == "2"
 
@@ -452,10 +450,7 @@ class TestMarkUnique:
             stream.notify(["NYC,300"])
             await _wait(pilot, app)
             rows_after_1 = {
-                new_buf._get_cell_value_without_markup(
-                    r[1]
-                ): new_buf._get_cell_value_without_markup(r[0])
-                for r in new_buf.displayed_rows
+                strip_markup(r[1]): strip_markup(r[0]) for r in new_buf.displayed_rows
             }
             assert rows_after_1["NYC"] == "3", (
                 f"After 1st stream: NYC should be 3, got {rows_after_1['NYC']}"
@@ -464,10 +459,7 @@ class TestMarkUnique:
             stream.notify(["NYC,400"])
             await _wait(pilot, app)
             rows_after_2 = {
-                new_buf._get_cell_value_without_markup(
-                    r[1]
-                ): new_buf._get_cell_value_without_markup(r[0])
-                for r in new_buf.displayed_rows
+                strip_markup(r[1]): strip_markup(r[0]) for r in new_buf.displayed_rows
             }
             assert rows_after_2["NYC"] == "4", (
                 f"After 2nd stream: NYC should be 4, got {rows_after_2['NYC']}"
@@ -476,10 +468,7 @@ class TestMarkUnique:
             stream.notify(["SF,60"])
             await _wait(pilot, app)
             rows_after_3 = {
-                new_buf._get_cell_value_without_markup(
-                    r[1]
-                ): new_buf._get_cell_value_without_markup(r[0])
-                for r in new_buf.displayed_rows
+                strip_markup(r[1]): strip_markup(r[0]) for r in new_buf.displayed_rows
             }
             assert rows_after_3["SF"] == "2", (
                 f"After 3rd stream: SF should be 2, got {rows_after_3['SF']}"
@@ -676,6 +665,61 @@ class TestDelimiterChange:
             col_names = [c.name for c in buf.current_columns]
             assert "name" in col_names
             assert "age" in col_names
+
+    @pytest.mark.asyncio
+    async def test_regex_named_groups_delimiter(self, cli_args):
+        raw_args = CliArgs(delimiter="raw", filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=raw_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["host=web1 level=INFO", "host=web2 level=ERROR"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app,
+                pilot,
+                "action_delimiter",
+                "delimiter_input",
+                r"(?P<host>\S+)\s+(?P<level>\S+)",
+            )
+            await _wait(pilot, app)
+
+            assert isinstance(buf.delimiter, re.Pattern)
+            col_names = [c.name for c in buf.current_columns]
+            assert col_names == ["host", "level"]
+
+    @pytest.mark.asyncio
+    async def test_standard_to_raw_reinserts_header(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30", "Bob,25"])
+            await _wait(pilot, app)
+
+            raw_count_before = len(buf.raw_rows)
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "raw"
+            )
+            await _wait(pilot, app)
+
+            # Header "name,age" should be reinserted as data
+            assert len(buf.raw_rows) == raw_count_before + 1
+
+    @pytest.mark.asyncio
+    async def test_tab_escape_delimiter(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a\tb\tc", "1\t2\t3"])
+            await _wait(pilot, app)
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "\\t"
+            )
+            await _wait(pilot, app)
+
+            assert buf.delimiter == "\t"
 
 
 # ---------------------------------------------------------------------------
@@ -932,10 +976,7 @@ class TestJsonHeader:
             # After deferred update, the new column should have extracted values
             new_col = buf.current_columns[-1]
             new_col_idx = new_col.render_position
-            values = [
-                buf._get_cell_value_without_markup(r[new_col_idx])
-                for r in buf.displayed_rows
-            ]
+            values = [strip_markup(r[new_col_idx]) for r in buf.displayed_rows]
             assert "red" in values
             assert "blue" in values
 
