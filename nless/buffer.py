@@ -121,7 +121,13 @@ class NlessBuffer(Static):
         self._sort_keys: list = []
         # Tracks how far into raw_rows has been rendered
         self._last_flushed_idx = 0
-        self._is_loading = False
+        # Cache of parsed cells to avoid re-parsing on sort/search
+        self._parsed_rows: list[list[str]] | None = None
+        # Cache of column widths to skip O(N×V) recomputation on sort
+        self._cached_col_widths: list[int] | None = None
+        self._loading_reason: str | None = None
+        self._spinner_frame: int = 0
+        self._spinner_timer = None
         self._has_nested_delimiters = False
         self._update_generation = 0
         self._needs_deferred_update = False
@@ -197,14 +203,36 @@ class NlessBuffer(Static):
         new_buffer.raw_rows = new_buffer._filter_lines(raw_rows_snapshot)
         return new_buffer
 
+    def _get_theme(self):
+        """Return the current theme from the app, or the default."""
+        try:
+            return self.app.nless_theme
+        except AttributeError:
+            from .theme import BUILTIN_THEMES
+
+            return BUILTIN_THEMES["default"]
+
+    def _highlight_markup(self, text: str) -> str:
+        """Wrap text in the current theme's highlight color markup."""
+        try:
+            open_tag, close_tag = self._highlight_tags
+        except AttributeError:
+            color = self._get_theme().highlight
+            self._highlight_tags = (f"[{color}]", f"[/{color}]")
+            open_tag, close_tag = self._highlight_tags
+        return f"{open_tag}{text}{close_tag}"
+
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
         with Vertical():
-            table = NlessDataTable()
+            theme = self._get_theme()
+            table = NlessDataTable(theme=theme)
             yield table
 
     def on_mount(self) -> None:
         self.mounted = True
+        if self._loading_reason:
+            self._start_spinner()
 
     def on_datatable_cell_highlighted(
         self, event: NlessDataTable.CellHighlighted
@@ -246,10 +274,13 @@ class NlessBuffer(Static):
             options=column_options,
             classes="dock-bottom",
             prompt="Type a column to jump to",
+            id="column_jump_select",
         )
         self.mount(select)
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        if event.control.id and event.control.id != "column_jump_select":
+            return  # Not ours — let it bubble to the app
         col_index = event.value
         event.control.remove()
         data_table = self.query_one(NlessDataTable)
@@ -295,7 +326,8 @@ class NlessBuffer(Static):
             new_position = selected_column.render_position
 
         self._deferred_update_table(
-            callback=lambda: data_table.move_cursor(column=new_position)
+            callback=lambda: data_table.move_cursor(column=new_position),
+            reason="Moving column",
         )
 
     def action_move_column_left(self) -> None:
@@ -308,13 +340,12 @@ class NlessBuffer(Static):
         self.is_tailing = not self.is_tailing
         self._update_status_bar()
 
-    _GREEN_RE = re.compile(r"\[#00ff00\](.*?)\[/#00ff00\]")
-
     def action_reset_highlights(self) -> None:
-        """Remove green new-line highlights from all displayed rows."""
+        """Remove new-line highlights from all displayed rows."""
         data_table = self.query_one(NlessDataTable)
+        highlight_re = self._get_theme().highlight_re
         for row_idx, row in enumerate(self.displayed_rows):
-            new_row = [self._GREEN_RE.sub(r"\1", cell) for cell in row]
+            new_row = [highlight_re.sub(r"\1", cell) for cell in row]
             self.displayed_rows[row_idx] = new_row
             data_table.rows[row_idx] = new_row
         data_table.refresh()
@@ -357,7 +388,9 @@ class NlessBuffer(Static):
             if self.search_matches:
                 self._navigate_search(1)  # Jump to first match
 
-        self._deferred_update_table(restore_position=False, callback=_after_search)
+        self._deferred_update_table(
+            restore_position=False, callback=_after_search, reason="Searching"
+        )
 
     def action_sort(self) -> None:
         with self._try_lock("sort") as acquired:
@@ -397,7 +430,7 @@ class NlessBuffer(Static):
                     col.labels.discard("▲")
                     col.labels.discard("▼")
 
-        self._deferred_update_table()
+        self._deferred_update_table(reason="Sorting")
 
     def _get_visible_column_labels(self) -> list[str]:
         labels = []
@@ -411,24 +444,43 @@ class NlessBuffer(Static):
     ) -> tuple[list[list[str]], list[str]]:
         """Parse raw rows, filter by current filters, return (matching, mismatched).
 
+        Uses a parsed-row cache to avoid re-parsing on sort/search operations.
         Also shrinks raw_rows to only keep matching lines so that subsequent
         _update_table() calls (sort, search, etc.) scan fewer rows.
         """
+        # Use cached parsed rows if available (sort/search don't need re-parse)
+        if self._parsed_rows is not None and len(self._parsed_rows) == len(
+            self.raw_rows
+        ):
+            parsed = self._parsed_rows
+        else:
+            parsed = None
+
+        # Fast path: cache valid + no filters → all rows pass, skip the loop
+        if parsed is not None and not self.current_filters:
+            return list(parsed), []
+
         filtered_rows = []
         rows_with_inconsistent_length = []
         kept_raw = []
-        for row_str in self.raw_rows:
-            try:
-                cells = split_line(row_str, self.delimiter, self.current_columns)
-            except (json.JSONDecodeError, csv.Error, ValueError):
-                continue
-            if len(cells) != expected_cell_count:
-                rows_with_inconsistent_length.append(row_str)
-                continue
+        kept_parsed = []
+        for i, row_str in enumerate(self.raw_rows):
+            if parsed is not None:
+                cells = parsed[i]
+            else:
+                try:
+                    cells = split_line(row_str, self.delimiter, self.current_columns)
+                except (json.JSONDecodeError, csv.Error, ValueError):
+                    continue
+                if len(cells) != expected_cell_count:
+                    rows_with_inconsistent_length.append(row_str)
+                    continue
             if self._matches_all_filters(cells, adjust_for_count=True):
                 filtered_rows.append(cells)
                 kept_raw.append(row_str)
+                kept_parsed.append(cells)
         self.raw_rows = kept_raw
+        self._parsed_rows = kept_parsed
         return filtered_rows, rows_with_inconsistent_length
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
@@ -477,21 +529,37 @@ class NlessBuffer(Static):
             except (TypeError, IndexError):
                 pass
 
+    def _search_match_style(self) -> str:
+        """Return the Rich style string for search match highlighting."""
+        theme = self._get_theme()
+        return f"{theme.search_match_fg} on {theme.search_match_bg}"
+
     def _highlight_search_matches(
         self, rows: list[list[str]], fixed_columns: int, row_offset: int = 0
     ) -> list[list[str]]:
         """Apply search highlighting to rows and populate search_matches."""
         result, new_matches = highlight_search_matches(
-            rows, self.search_term, fixed_columns, row_offset
+            rows,
+            self.search_term,
+            fixed_columns,
+            row_offset,
+            search_match_style=self._search_match_style(),
         )
         self.search_matches.extend(Coordinate(r, c) for r, c in new_matches)
         return result
 
-    def _deferred_update_table(self, restore_position=True, callback=None):
+    def _deferred_update_table(
+        self, restore_position=True, callback=None, reason="Loading"
+    ):
         """Run data processing on a bg thread, then apply to widgets on main thread."""
         self._update_generation += 1
         gen = self._update_generation
-        self._is_loading = True
+        self._loading_reason = reason
+        # Invalidate caches for structural changes (not sort/search)
+        if reason not in ("Sorting", "Searching", "Applying theme"):
+            self._parsed_rows = None
+            self._cached_col_widths = None
+        self._start_spinner()
         self._update_status_bar()
 
         # Snapshot cursor/scroll from widgets before going off-thread.
@@ -537,16 +605,22 @@ class NlessBuffer(Static):
                         key = self._build_composite_key(row)
                         self._dedup_key_to_row_idx[key] = idx
 
-                # Populate _sort_keys for incremental inserts
+                # Populate _sort_keys for incremental inserts.
+                # _sort_keys is always ascending for bisect. Rows are already
+                # sorted by _sort_rows, so extract in order (O(N)) instead of
+                # re-sorting (O(N log N)). If sort_reverse, reverse the list.
                 if self.sort_column is not None:
                     sort_col_idx = self._get_col_idx_by_name(
                         self.sort_column, render_position=False
                     )
                     if sort_col_idx is not None:
-                        self._sort_keys = sorted(
+                        keys = [
                             coerce_sort_key(strip_markup(str(r[sort_col_idx])))
                             for r in deduped_rows
-                        )
+                        ]
+                        if self.sort_reverse:
+                            keys.reverse()
+                        self._sort_keys = keys
 
                 aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
                 styled_rows = self._highlight_search_matches(
@@ -565,22 +639,32 @@ class NlessBuffer(Static):
                     for i, row in enumerate(styled_rows):
                         key = self._build_composite_key(row, render_position=True)
                         if key in green_keys:
-                            styled_rows[i] = [f"[#00ff00]{c}[/#00ff00]" for c in row]
+                            styled_rows[i] = [self._highlight_markup(c) for c in row]
                     self._green_lines = None
 
                 self._last_flushed_idx = len(self.raw_rows)
 
             # Precompute column widths on the bg thread so the main thread
             # can use add_rows_precomputed (just extends + refresh).
-            col_widths = [len(c) for c in column_labels]
-            for row in styled_rows:
-                for i, cell_str in enumerate(row):
-                    if "[" in cell_str:
-                        str_len = Text.from_markup(cell_str).cell_len
-                    else:
-                        str_len = len(cell_str)
-                    if str_len > col_widths[i]:
-                        col_widths[i] = str_len
+            # Reuse cached widths on sort-only rebuilds (no search → no
+            # markup changes → widths are stable).
+            if (
+                self._cached_col_widths is not None
+                and not self.search_term
+                and len(self._cached_col_widths) == len(column_labels)
+            ):
+                col_widths = self._cached_col_widths
+            else:
+                col_widths = [len(c) for c in column_labels]
+                for row in styled_rows:
+                    for i, cell_str in enumerate(row):
+                        if "[" in cell_str:
+                            str_len = Text.from_markup(cell_str).cell_len
+                        else:
+                            str_len = len(cell_str)
+                        if str_len > col_widths[i]:
+                            col_widths[i] = str_len
+                self._cached_col_widths = col_widths
 
             return {
                 "styled_rows": styled_rows,
@@ -614,7 +698,8 @@ class NlessBuffer(Static):
                     restore_position=restore_position, callback=callback
                 )
             else:
-                self._is_loading = False
+                self._loading_reason = None
+                self._stop_spinner()
                 self._update_status_bar()
                 if restore_position:
                     self._restore_position(
@@ -654,6 +739,7 @@ class NlessBuffer(Static):
         self.count_by_column_key = defaultdict(lambda: 0)
         self._dedup_key_to_row_idx = {}
         self._sort_keys = []
+        self._cached_col_widths = None
 
         filtered_rows, rows_with_inconsistent_length = self._filter_rows(
             expected_cell_count
@@ -715,9 +801,52 @@ class NlessBuffer(Static):
             current_col=data_table.cursor_column + 1,
             is_tailing=self.is_tailing,
             unique_column_names=self.unique_column_names,
-            is_loading=self._is_loading,
+            loading_reason=self._loading_reason,
+            theme=self._get_theme(),
+            spinner_frame=self._spinner_frame,
         )
         self.app.query_one("#status_bar", Static).update(text)
+
+    def _start_spinner(self) -> None:
+        """Start the status bar spinner animation (must run on main thread)."""
+        if self._spinner_timer is not None:
+            return
+        self._spinner_frame = 0
+        try:
+            self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+        except Exception:
+            pass  # Not mounted yet
+
+    def _stop_spinner(self) -> None:
+        """Stop the status bar spinner animation (must run on main thread)."""
+        if self._spinner_timer is not None:
+            try:
+                self._spinner_timer.stop()
+            except Exception:
+                pass
+            self._spinner_timer = None
+
+    def _request_spinner_start(self) -> None:
+        """Thread-safe: schedule spinner start on the main thread."""
+        try:
+            self.app.call_from_thread(self._start_spinner)
+        except Exception:
+            pass
+
+    def _request_spinner_stop(self) -> None:
+        """Thread-safe: schedule spinner stop on the main thread."""
+        try:
+            self.app.call_from_thread(self._stop_spinner)
+        except Exception:
+            pass
+
+    def _tick_spinner(self) -> None:
+        """Advance the spinner frame and refresh the status bar."""
+        self._spinner_frame += 1
+        if self._loading_reason:
+            self._update_status_bar()
+        else:
+            self._stop_spinner()
 
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
@@ -801,7 +930,8 @@ class NlessBuffer(Static):
                 needs_deferred = self._needs_deferred_update
             finally:
                 if not needs_deferred:
-                    self._is_loading = False
+                    self._loading_reason = None
+                    self._request_spinner_stop()
                     try:
                         self._update_status_bar()
                     except Exception:
@@ -859,19 +989,22 @@ class NlessBuffer(Static):
         is_large_batch = len(filtered) > 50000
 
         if self.sort_column is not None or self.unique_column_names:
-            if self._is_loading:
+            if self._loading_reason:
                 # A deferred update is in flight — just extend raw_rows (done above).
                 # The in-flight update will chain another when it finishes.
                 pass
             elif len(filtered) > 1000:
-                self._is_loading = True
+                self._loading_reason = self._loading_reason or "Loading"
+                self._request_spinner_start()
                 self._update_status_bar()
                 self._needs_deferred_update = True
             elif pivot_revealed:
                 # Track new lines so the rebuild can highlight them green
                 self._green_lines = set(filtered)
                 self.call_after_refresh(
-                    lambda: self._deferred_update_table(restore_position=False)
+                    lambda: self._deferred_update_table(
+                        restore_position=False, reason="Rebuilding"
+                    )
                 )
             else:
                 for line in filtered:
@@ -890,7 +1023,8 @@ class NlessBuffer(Static):
             # Process in chunks for progressive display on large inputs
             CHUNK = 50000
             if is_large_batch:
-                self._is_loading = True
+                self._loading_reason = self._loading_reason or "Loading"
+                self._request_spinner_start()
             try:
                 for i in range(0, len(filtered), CHUNK):
                     self._add_rows_incremental(filtered[i : i + CHUNK])
@@ -993,7 +1127,7 @@ class NlessBuffer(Static):
 
         # Highlight new streaming rows green (skip initial load)
         if self.displayed_rows:
-            styled = [[f"[#00ff00]{c}[/#00ff00]" for c in row] for row in styled]
+            styled = [[self._highlight_markup(c) for c in row] for row in styled]
 
         self.displayed_rows.extend(styled)
         data_table.add_rows_precomputed(styled)
@@ -1065,7 +1199,7 @@ class NlessBuffer(Static):
                     cell = self.count_by_column_key[new_key]
                 else:
                     cell = strip_markup(cell)
-                new_cells.append(f"[#00ff00]{cell}[/#00ff00]")
+                new_cells.append(self._highlight_markup(str(cell)))
             return new_cells, row_idx, self.displayed_rows[row_idx]
 
         self.count_by_column_key[new_key] = 1
@@ -1138,7 +1272,7 @@ class NlessBuffer(Static):
 
         # Highlight new/updated rows green (dedup updates already have green from _handle_dedup_for_line)
         if not is_dedup_update and self.displayed_rows:
-            cells = [f"[#00ff00]{c}[/#00ff00]" for c in cells]
+            cells = [self._highlight_markup(c) for c in cells]
 
         if old_index is not None:
             self._update_dedup_indices_after_removal(old_index)

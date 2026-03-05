@@ -1,18 +1,20 @@
 """Performance regression tests.
 
-Each test uses 50K rows to catch accidental O(n^2) regressions while staying
-fast enough for CI.  Thresholds are derived from measured baselines (max of 3
-runs) with a MULTIPLIER applied to absorb CI jitter, subject to a FLOOR so
-that very fast operations (sub-100ms) aren't flaky under load.
+Each test uses 50K rows (some use 100K) to catch accidental O(n^2) regressions
+while staying fast enough for CI.  Thresholds are derived from measured
+baselines (max of 3 runs) with a MULTIPLIER applied to absorb CI jitter,
+subject to a FLOOR so that very fast operations (sub-100ms) aren't flaky
+under load.
 
 Baselines were measured on the development machine (2026-03-03):
 
-    load       0.30s
-    sort       0.44s
-    filter     0.41s
-    unique     0.53s
-    copy       0.001s
-    add_rows   0.027s
+    load            0.30s   (50K rows)
+    sort            0.44s   (50K rows)
+    filter          0.41s   (50K rows)
+    unique          0.53s   (50K rows)
+    copy            0.001s  (50K rows)
+    add_rows        0.027s  (50K rows)
+    sort_100k       0.65s   (100K rows)
 
 Run only perf tests:   pytest -m perf
 Skip perf tests:       pytest -m "not perf"
@@ -27,6 +29,7 @@ from nless.datatable import Datatable
 from nless.types import CliArgs
 
 N_ROWS = 50_000
+N_ROWS_100K = 100_000
 N_COLS = 5
 
 # Measured baselines (max of 3 runs, seconds).
@@ -37,6 +40,7 @@ _BASELINES = {
     "unique": 0.53,
     "copy": 0.001,
     "add_rows": 0.027,
+    "sort_100k": 0.65,
 }
 
 # Multiplier applied to baselines to set thresholds.  2x is tight enough to
@@ -63,6 +67,15 @@ def _generate_csv_lines(n_rows: int, n_cols: int) -> list[str]:
     return [header, *rows]
 
 
+def _generate_csv_lines_numeric(n_rows: int, n_cols: int) -> list[str]:
+    """Generate CSV lines with numeric values suitable for sort benchmarking."""
+    header = ",".join(f"col{c}" for c in range(n_cols))
+    rows = [
+        ",".join(str((r * 7 + c) % 99991) for c in range(n_cols)) for r in range(n_rows)
+    ]
+    return [header, *rows]
+
+
 def _generate_csv_lines_with_repeats(
     n_rows: int, n_cols: int, unique_col0_values: int
 ) -> list[str]:
@@ -82,7 +95,7 @@ async def _wait_perf(pilot, app, timeout: float = 30.0):
     settled = 0
     while time.monotonic() < deadline:
         await pilot.pause(delay=0.05)
-        if all(not b._is_loading for b in app.buffers):
+        if all(not b._loading_reason for b in app.buffers):
             settled += 1
             if settled >= 5:
                 return
@@ -224,3 +237,23 @@ async def test_datatable_add_rows_50k():
         elapsed = time.monotonic() - t0
 
     _assert_perf("add_rows", elapsed)
+
+
+@pytest.mark.perf
+@pytest.mark.asyncio
+async def test_sort_100k(cli_args):
+    """Sort 100K numeric rows — validates sort pipeline optimizations."""
+    lines = _generate_csv_lines_numeric(N_ROWS_100K, N_COLS)
+    app = NlessApp(cli_args=cli_args, starting_stream=None)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.buffers[0].add_logs(lines)
+        await _wait_perf(pilot, app)
+
+        buf = app.buffers[0]
+        t0 = time.monotonic()
+        buf.action_sort()
+        await _wait_perf(pilot, app)
+        elapsed = time.monotonic() - t0
+
+    _assert_perf("sort_100k", elapsed)
