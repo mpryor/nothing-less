@@ -365,7 +365,13 @@ class NlessBuffer(Static):
             self.notify("All logs match the current delimiter.", severity="information")
             return
 
-        self.app._create_unparsed_buffer(unparsed_rows)
+        self.app._create_unparsed_buffer(
+            unparsed_rows,
+            source_delimiter=self.delimiter,
+            source_columns=self.current_columns,
+            source_expected=expected_cell_count,
+            line_stream=self.line_stream,
+        )
 
     def action_jump_columns(self) -> None:
         """Show columns by user input."""
