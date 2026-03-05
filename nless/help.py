@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import os
+
+from rich.columns import Columns
+from rich.markup import escape
+from rich.table import Table
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Static
+from textual.screen import ModalScreen
+from textual.widgets import Static, TabbedContent, TabPane, Tabs
+
+from nless.config import CONFIG_FILE, NlessConfig
+from nless.theme import NlessTheme, BUILTIN_THEMES
 
 
 def _format_key(key_str: str) -> str:
@@ -19,33 +27,33 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
     (
         "Buffers",
         [
-            (None, "1-9", "Select the buffer at the corresponding index"),
-            ("app.show_tab_next", "L", "Next Buffer"),
-            ("app.show_tab_previous", "H", "Previous Buffer"),
-            ("app.close_active_buffer", "q", "Close Active Buffer (or quit if last)"),
-            ("app.add_buffer", "N", "New Buffer"),
+            (None, "1-9", "Switch to buffer"),
+            ("app.show_tab_next", "L", "Next buffer"),
+            ("app.show_tab_previous", "H", "Previous buffer"),
+            ("app.close_active_buffer", "q", "Close buffer or quit"),
+            ("app.add_buffer", "N", "New buffer"),
         ],
     ),
     (
         "Navigation",
         [
-            ("table.cursor_left", "h / b / B", "Move cursor left"),
-            ("table.cursor_right", "l / w", "Move cursor right"),
-            ("table.cursor_down", "j", "Move cursor down"),
-            ("table.cursor_up", "k", "Move cursor up"),
-            ("table.scroll_to_beginning", "0", "Jump to first column"),
-            ("table.scroll_to_end", "$", "Jump to final column"),
-            ("table.scroll_top", "g", "Jump to first row"),
-            ("table.scroll_bottom", "G", "Jump to final row"),
+            ("table.cursor_left", "h / b / B", "Left"),
+            ("table.cursor_right", "l / w", "Right"),
+            ("table.cursor_down", "j", "Down"),
+            ("table.cursor_up", "k", "Up"),
+            ("table.scroll_to_beginning", "0", "First column"),
+            ("table.scroll_to_end", "$", "Last column"),
+            ("table.scroll_top", "g", "First row"),
+            ("table.scroll_bottom", "G", "Last row"),
             ("table.page_up", "ctrl+u", "Page up"),
             ("table.page_down", "ctrl+d", "Page down"),
-            ("buffer.jump_columns", "c", "Jump to column (by select)"),
+            ("buffer.jump_columns", "c", "Jump to column"),
         ],
     ),
     (
         "Column Visibility",
         [
-            ("app.filter_columns", "C", "Filter Columns (by prompt)"),
+            ("app.filter_columns", "C", "Show/hide columns"),
             ("buffer.move_column_right", ">", "Move column right"),
             ("buffer.move_column_left", "<", "Move column left"),
         ],
@@ -53,85 +61,73 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
     (
         "Pivoting",
         [
-            ("app.mark_unique", "U", "Mark column as composite key for grouping"),
-            (None, "enter", "Dive into data behind a pivot"),
+            ("app.mark_unique", "U", "Mark column as key"),
+            (None, "enter", "Drill into pivot"),
         ],
     ),
     (
         "Filtering",
         [
-            ("app.filter", "f", "Filter selected column (by prompt)"),
-            (
-                "app.filter_cursor_word",
-                "F",
-                "Filter selected column by word under cursor",
-            ),
-            ("app.exclude_filter", "e", "Exclude from selected column (by prompt)"),
-            (
-                "app.exclude_filter_cursor_word",
-                "E",
-                "Exclude selected column by word under cursor",
-            ),
-            ("app.filter_any", "|", "Filter any column (by prompt)"),
-            ("app.search_to_filter", "&", "Apply current search as filter"),
+            ("app.filter", "f", "Filter column"),
+            ("app.filter_cursor_word", "F", "Filter by cursor word"),
+            ("app.exclude_filter", "e", "Exclude from column"),
+            ("app.exclude_filter_cursor_word", "E", "Exclude by cursor word"),
+            ("app.filter_any", "|", "Filter all columns"),
+            ("app.search_to_filter", "&", "Search to filter"),
         ],
     ),
     (
         "Searching",
         [
-            ("app.search", "/", "Search (all columns, by prompt)"),
-            (
-                "buffer.search_cursor_word",
-                "*",
-                "Search all columns for word under cursor",
-            ),
-            ("buffer.next_search", "n", "Next search result"),
-            ("buffer.previous_search", "p", "Previous search result"),
+            ("app.search", "/", "Search"),
+            ("buffer.search_cursor_word", "*", "Search cursor word"),
+            ("buffer.next_search", "n", "Next match"),
+            ("buffer.previous_search", "p", "Previous match"),
         ],
     ),
     (
         "Sorting",
         [
-            ("buffer.sort", "s", "Sort selected column"),
+            ("buffer.sort", "s", "Sort column"),
         ],
     ),
     (
         "Output",
         [
-            ("app.write_to_file", "W", "Write current view to file"),
-            ("buffer.copy", "y", "Copy cell contents"),
+            ("app.write_to_file", "W", "Write to file"),
+            ("buffer.copy", "y", "Copy cell"),
         ],
     ),
     (
         "Shell Commands",
         [
-            ("app.run_command", "!", "Run Shell Command (by prompt)"),
+            ("app.run_command", "!", "Run shell command"),
         ],
     ),
     (
         "Delimiter / File Parsing",
         [
-            ("app.delimiter", "D", "Change Delimiter"),
-            ("app.column_delimiter", "d", "Change Column Delimiter"),
+            ("app.delimiter", "D", "Change delimiter"),
+            ("app.column_delimiter", "d", "Split column"),
         ],
     ),
     (
         "JSON",
         [
-            ("app.json_header", "J", "Select new header from JSON in cell"),
+            ("app.json_header", "J", "Extract JSON key"),
         ],
     ),
     (
         "Tail Mode",
         [
             ("buffer.toggle_tail", "t", "Toggle tail mode"),
-            ("buffer.reset_highlights", "r", "Reset new-line highlights"),
+            ("buffer.reset_highlights", "r", "Reset highlights"),
         ],
     ),
     (
         "Unparsed Logs",
         [
-            ("buffer.view_unparsed_logs", "~", "View logs not matching delimiter"),
+            ("buffer.view_unparsed_logs", "~", "View unparsed logs"),
         ],
     ),
     (
@@ -144,7 +140,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
     (
         "Help",
         [
-            ("app.help", "?", "Show this help screen"),
+            ("app.help", "?", "Show help"),
         ],
     ),
 ]
@@ -176,30 +172,105 @@ class HelpScroll(VerticalScroll):
     ]
 
 
-class HelpScreen(Screen):
-    """A widget to display keybindings help."""
+class HelpScreen(ModalScreen):
+    """A screen displaying keybindings and config in separate tabs."""
 
-    BINDINGS = [("q", "app.pop_screen", "Close Help")]
+    BINDINGS = [
+        ("q", "app.pop_screen", "Close Help"),
+        Binding("l", "next_tab", "Next tab", show=False),
+        Binding("h", "previous_tab", "Previous tab", show=False),
+    ]
 
     def __init__(
         self,
         keymap_name: str = "vim",
         keymap_bindings: dict[str, str] | None = None,
+        theme: NlessTheme | None = None,
+        config: NlessConfig | None = None,
     ) -> None:
         super().__init__()
         self.keymap_name = keymap_name
         self.keymap_bindings = keymap_bindings or {}
+        self.help_theme = theme or BUILTIN_THEMES["default"]
+        self.config = config
 
     def on_mount(self) -> None:
         if self.keymap_bindings:
             self.set_keymap(self.keymap_bindings)
+        self._focus_active_scroll()
 
-    def compose(self) -> ComposeResult:
-        help_text = f"[bold]Keybindings[/bold]  (keymap: {self.keymap_name})\n"
-        for category, bindings in KEYBINDING_CATEGORIES:
-            help_text += f"\n[bold underline]{category}[/bold underline]\n"
+    def on_tabbed_content_tab_activated(self) -> None:
+        self._focus_active_scroll()
+
+    def _focus_active_scroll(self) -> None:
+        """Focus the HelpScroll inside the active tab pane."""
+        tc = self.query_one(TabbedContent)
+        pane = tc.get_pane(tc.active)
+        pane.query_one(HelpScroll).focus()
+
+    def action_next_tab(self) -> None:
+        self.query_one(Tabs).action_next_tab()
+
+    def action_previous_tab(self) -> None:
+        self.query_one(Tabs).action_previous_tab()
+
+    def _build_column_table(
+        self,
+        categories: list[tuple[str, list[tuple[str | None, str, str]]]],
+        t: NlessTheme,
+    ) -> Table:
+        """Build a Rich Table for one side of the two-column help layout."""
+        table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+        table.add_column(justify="right", width=12, style=t.highlight, no_wrap=True)
+        table.add_column()
+        for i, (category, bindings) in enumerate(categories):
+            table.add_row("", f"[bold {t.accent}]{category}[/bold {t.accent}]")
             for binding_id, default_key, description in bindings:
                 key = _resolve_key(binding_id, default_key, self.keymap_bindings)
-                help_text += f"  {key:<12} {description}\n"
-        yield HelpScroll(Static(help_text))
-        yield Static("[bold]Press 'q' to close this help.[/bold]", id="help-footer")
+                table.add_row(key, description)
+            if i < len(categories) - 1:
+                table.add_row("", "")
+        return table
+
+    def _build_config_table(self, t: NlessTheme) -> Table:
+        """Build a Rich Table showing current config values."""
+        table = Table(show_header=True, box=None, pad_edge=False, padding=(0, 2))
+        table.add_column("Setting", style=t.highlight, no_wrap=True)
+        table.add_column("Value")
+        if self.config:
+            table.add_row("theme", self.config.theme)
+            table.add_row("keymap", self.config.keymap)
+            table.add_row("status_format", escape(self.config.status_format))
+            table.add_row(
+                "show_getting_started",
+                str(self.config.show_getting_started).lower(),
+            )
+        return table
+
+    def compose(self) -> ComposeResult:
+        t = self.help_theme
+
+        left_categories = KEYBINDING_CATEGORIES[:5]
+        right_categories = KEYBINDING_CATEGORIES[5:]
+
+        left_table = self._build_column_table(left_categories, t)
+        right_table = self._build_column_table(right_categories, t)
+
+        columns = Columns([left_table, right_table], padding=(0, 3), equal=True)
+
+        keybindings_title = Static(
+            f"  [{t.muted}]keymap: {self.keymap_name}[/{t.muted}]"
+        )
+
+        with TabbedContent():
+            with TabPane("Keybindings"):
+                yield HelpScroll(keybindings_title, Static(columns))
+            if self.config:
+                config_path = os.path.expanduser(CONFIG_FILE)
+                config_title = Static(f"  [{t.muted}]{config_path}[/{t.muted}]")
+                with TabPane("Config"):
+                    yield HelpScroll(config_title, Static(self._build_config_table(t)))
+
+        yield Static(
+            f"[{t.muted}]q to close · h/l to switch tabs[/{t.muted}]", id="help-footer"
+        )
