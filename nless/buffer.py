@@ -534,23 +534,29 @@ class NlessBuffer(Static):
         kept_raw = []
         kept_parsed = []
         kept_timestamps = []
+        unparseable_raw = []
+        unparseable_timestamps = []
         for i, row_str in enumerate(self.raw_rows):
+            ts = (
+                self._arrival_timestamps[i]
+                if i < len(self._arrival_timestamps)
+                else time.time()
+            )
             if parsed is not None:
                 cells = parsed[i]
             else:
                 try:
                     cells = split_line(row_str, self.delimiter, self.current_columns)
                 except (json.JSONDecodeError, csv.Error, ValueError):
+                    unparseable_raw.append(row_str)
+                    unparseable_timestamps.append(ts)
                     continue
                 if len(cells) != expected_cell_count:
                     rows_with_inconsistent_length.append(row_str)
+                    unparseable_raw.append(row_str)
+                    unparseable_timestamps.append(ts)
                     continue
                 # Append arrival timestamp to parsed cells
-                ts = (
-                    self._arrival_timestamps[i]
-                    if i < len(self._arrival_timestamps)
-                    else time.time()
-                )
                 cells.append(self._format_arrival(ts))
             if self._matches_all_filters(cells, adjust_for_count=True):
                 filtered_rows.append(cells)
@@ -558,9 +564,11 @@ class NlessBuffer(Static):
                 kept_parsed.append(cells)
                 if i < len(self._arrival_timestamps):
                     kept_timestamps.append(self._arrival_timestamps[i])
-        self.raw_rows = kept_raw
+        # Preserve rows that couldn't parse with the current delimiter —
+        # they may parse correctly after a delimiter change.
+        self.raw_rows = kept_raw + unparseable_raw
         self._parsed_rows = kept_parsed
-        self._arrival_timestamps = kept_timestamps
+        self._arrival_timestamps = kept_timestamps + unparseable_timestamps
         return filtered_rows, rows_with_inconsistent_length
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
@@ -910,6 +918,7 @@ class NlessBuffer(Static):
             )
             if self.time_window
             else None,
+            delimiter=self._format_delimiter(),
         )
         self.app.query_one("#status_bar", Static).update(text)
 
@@ -1028,6 +1037,15 @@ class NlessBuffer(Static):
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3]  # trim to milliseconds
+
+    def _format_delimiter(self) -> str | None:
+        """Return a human-readable label for the current delimiter."""
+        d = self.delimiter
+        if d is None:
+            return None
+        if isinstance(d, re.Pattern):
+            return f"regex({d.pattern})"
+        return {" ": "space", "  ": "space+", "\t": "tab", ",": "csv"}.get(d, d)
 
     @staticmethod
     def _parse_duration(text: str) -> float | None:
