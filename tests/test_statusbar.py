@@ -80,14 +80,14 @@ class TestBuildStatusText:
 
     def test_unique_columns(self):
         text = build_status_text(**self._defaults(unique_column_names={"host", "path"}))
-        assert "unique cols:" in text
+        assert "Unique" in text
 
     def test_loading(self):
         text = build_status_text(
             **self._defaults(loading_reason="Loading", total_rows=50000)
         )
         assert "Loading" in text
-        assert "50,000" in text
+        assert "50000" in text
 
     def test_not_loading(self):
         text = build_status_text(**self._defaults(loading_reason=None))

@@ -184,6 +184,7 @@ class TestShellCommandLineStream:
             add_lines_func=lambda lines: received.extend(lines),
             is_ready_func=lambda: True,
         )
+        stream.start()
         # Give the background thread time to run
         time.sleep(0.5)
         assert any("hello" in line for line in received)
