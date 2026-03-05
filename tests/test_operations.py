@@ -1539,19 +1539,27 @@ class TestTimeWindow:
 
     @pytest.mark.asyncio
     async def test_time_window_via_action(self, cli_args):
-        """The @ action should set the time window on the buffer."""
+        """The @ action without '+' should apply once then clear time_window."""
+        import time
+
         app = NlessApp(cli_args=cli_args, starting_stream=None)
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
-            _load(buf, ["a,b", "1,2"])
+            _load(buf, ["a,b", "1,2", "3,4", "5,6"])
             await _wait(pilot, app)
 
+            # Backdate the first row
+            buf._arrival_timestamps[0] = time.time() - 7200
+
             await _submit_prompt(
-                app, pilot, "action_time_window", "time_window_input", "30m"
+                app, pilot, "action_time_window", "time_window_input", "1h"
             )
             await _wait(pilot, app)
 
-            assert buf.time_window == 1800.0
+            # Filter was applied (old row dropped)
+            assert len(buf.displayed_rows) == 2
+            # One-shot: time_window cleared after apply
+            assert buf.time_window is None
 
     @pytest.mark.asyncio
     async def test_time_window_off_via_action(self, cli_args):
@@ -1573,6 +1581,30 @@ class TestTimeWindow:
             assert buf.time_window is None
 
     @pytest.mark.asyncio
+    async def test_one_shot_window_not_reapplied_on_sort(self, cli_args):
+        """After a one-shot time window, sorting should not re-filter rows."""
+        import time
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b", "1,2", "3,4", "5,6"])
+            await _wait(pilot, app)
+
+            buf._arrival_timestamps[0] = time.time() - 7200
+
+            await _submit_prompt(
+                app, pilot, "action_time_window", "time_window_input", "1h"
+            )
+            await _wait(pilot, app)
+            assert len(buf.displayed_rows) == 2
+
+            # Now sort — should not re-apply the time window
+            buf.action_sort()
+            await _wait(pilot, app)
+            assert len(buf.displayed_rows) == 2
+
+    @pytest.mark.asyncio
     async def test_rolling_window_via_action(self, cli_args):
         """Appending '+' should enable rolling mode."""
         app = NlessApp(cli_args=cli_args, starting_stream=None)
@@ -1592,7 +1624,7 @@ class TestTimeWindow:
 
     @pytest.mark.asyncio
     async def test_non_rolling_window_no_timer(self, cli_args):
-        """Without '+', rolling should be off and no timer started."""
+        """Without '+', one-shot clears time_window and has no timer."""
         app = NlessApp(cli_args=cli_args, starting_stream=None)
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
@@ -1604,7 +1636,8 @@ class TestTimeWindow:
             )
             await _wait(pilot, app)
 
-            assert buf.time_window == 300.0
+            # One-shot: time_window cleared after apply
+            assert buf.time_window is None
             assert buf.rolling_time_window is False
             assert buf._rolling_timer is None
 

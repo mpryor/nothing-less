@@ -202,14 +202,24 @@ class Datatable(ScrollView):
         self.scroll_to_region(
             region=Region(
                 x=total_width,
-                y=self.cursor_row if self.cursor_row == 0 else self.cursor_row + 1,
+                y=self.cursor_row,
                 width=1,
-                height=1,
+                height=2,
             ),
             animate=animate if animate else False,
         )
         self.refresh()
         self.post_message(Datatable.CellHighlighted())
+
+    def action_page_up(self) -> None:
+        page = self.size.height - 1  # -1 for header
+        new_row = max(0, self.cursor_row - page)
+        self.move_cursor(row=new_row)
+
+    def action_page_down(self) -> None:
+        page = self.size.height - 1
+        new_row = min(len(self.rows) - 1, self.cursor_row + page)
+        self.move_cursor(row=new_row)
 
     def action_cursor_up(self) -> None:
         if self.cursor_row > 0:

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from threading import Thread
 
 from textual.binding import Binding
@@ -1040,11 +1041,35 @@ class NlessApp(App):
         curr_buffer.rolling_time_window = rolling
         curr_buffer._parsed_rows = None
         curr_buffer._cached_col_widths = None
-        curr_buffer._deferred_update_table(reason="Applying time window")
         if rolling:
+            curr_buffer._deferred_update_table(reason="Applying time window")
             curr_buffer._start_rolling_timer()
         else:
             curr_buffer._stop_rolling_timer()
+
+            # One-shot: prune raw_rows permanently then clear time_window
+            # so subsequent rebuilds (sort, filter) don't re-evaluate
+            def _finalize_one_shot():
+                cutoff = time.time() - duration
+                kept = [
+                    (row, ts)
+                    for row, ts in zip(
+                        curr_buffer.raw_rows, curr_buffer._arrival_timestamps
+                    )
+                    if ts >= cutoff
+                ]
+                if kept:
+                    curr_buffer.raw_rows, curr_buffer._arrival_timestamps = [
+                        list(x) for x in zip(*kept)
+                    ]
+                else:
+                    curr_buffer.raw_rows = []
+                    curr_buffer._arrival_timestamps = []
+                curr_buffer.time_window = None
+
+            curr_buffer._deferred_update_table(
+                reason="Applying time window", callback=_finalize_one_shot
+            )
 
     def handle_filter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         filter_value = event.value
