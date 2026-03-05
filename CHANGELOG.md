@@ -1,198 +1,152 @@
 # Changelog
+
 ## 1.2.0 (2026-03-05)
 
-### Feat
+### Features
 
-- buffer groups with animated stream icons, group bar styling, and docs updates
-- loading indicators, status bar flash, group icons, and UX fixes
-- add open file keybinding, smart autocomplete, and stdin source detection
-- add config viewer tab to help screen and autocomplete suggestions
-- add configurable keymaps, status bar format, and theming system
+- **Buffer groups** — open multiple files or shell commands in separate groups, switch with `{`/`}`
+- **Open file** — press `O` to open a file from within the app with path autocomplete
+- **Configurable keymaps** — ship with vim, less, and emacs presets; custom keymaps via `~/.config/nless/keymaps/`; switch with `K`
+- **Theming system** — 10 built-in themes with custom theme support via `~/.config/nless/themes/`; switch with `T`
+- **Customizable status bar** — format string with Rich markup and theme color variables
+- **Config viewer** — press `?` and navigate to the Config tab to see current settings
+- **Stream status icons** — animated `⏵` for running commands, `✓` on completion, `📄` for files
+- **Loading indicators** — spinner and progress feedback for heavy operations (filtering, sorting)
 
-### Fix
+### Performance
 
-- resize handling, status bar spacing, and UX improvements
+- Optimize sort pipeline for 100K+ rows
 
-### Refactor
+### Fixes
 
-- extract data processing, operations, status bar, and unparsed logs into separate modules
-
-### Perf
-
-- optimize sort pipeline for 100K+ rows
-
-## 1.1.2 (2026-03-04)
+- Fix resize handling and status bar spacing
+- Fix shell command stream race condition causing doubled lines
 
 ### Refactor
 
-- extract data processing, operations, status bar, and unparsed logs into separate modules
+- Extract data processing, operations, status bar, and unparsed logs into separate modules
 
 ## 1.1.1 (2026-03-04)
 
-### Fix
+### Fixes
 
-- auto-detect JSON delimiter for JSONL and JSON array input
+- Auto-detect JSON delimiter for JSONL and JSON array input
 
 ## 1.1.0 (2026-03-04)
 
-### Feat
+### Features
 
-- add pivot focused view, reset highlights keybind, exclude filters, and docs updates
+- **Pivot focused view** — pivoting now hides non-key columns for a cleaner summary; columns reappear when new data streams in
+- **Exclude filters** — press `e`/`E` to exclude rows matching a value (inverse of `f`/`F`)
+- **Reset highlights** — press `x` to clear new-line highlighting after reviewing streamed data
+- **Documentation site** — full docs at [mpryor.github.io/nothing-less](https://mpryor.github.io/nothing-less/)
 
 ## 1.0.1 (2026-03-04)
 
-### Fix
+### Fixes
 
-- fix an issue with more recent versions of textual
+- Fix compatibility with newer versions of Textual
 
 ## 1.0.0 (2026-03-03)
 
-### BREAKING CHANGE
-
-- initial stable release with all MVP features
-
-### Feat
-
-- release 1.0.0
-- release 1.0.0!
-- test release change
+Initial stable release with all MVP features.
 
 ## 0.7.0 (2026-03-03)
 
-### Feat
+### Performance
 
-- major performance enhancements, details in description (#22)
+- Move data processing and column-width computation off the main thread
+- Non-blocking heavy operations with loading indicator
+- Filter early on buffer copy and subscribe without replay
+- Add automated performance regression tests
 
 ## 0.6.0 (2025-10-08)
 
-### Feat
+### Features
 
-- numeric sort (#21)
+- Numeric-aware sorting — columns with numbers sort numerically instead of lexicographically
 
 ## 0.5.3 (2025-10-07)
 
-### Fix
+### Fixes
 
-- fixes the initialization bug for real this time
+- Fix config file initialization when the file is empty
 
 ## 0.5.2 (2025-10-07)
 
-### Fix
+### Fixes
 
-- bug with initializing empty config file
+- Fix crash when initializing an empty config file
 
 ## 0.5.1 (2025-10-03)
 
-### Fix
+### Fixes
 
-- external command streaming
+- Fix external command (`!`) streaming not delivering output
 
 ## 0.5.0 (2025-10-02)
 
-### Feat
+### Features
 
-- permanently dismiss getting started screen with Ctrl+c (#19)
+- Permanently dismiss the getting started screen with `Ctrl+c`
 
 ## 0.4.0 (2025-10-02)
 
-### Feat
+### Features
 
-- don't add prev index to buffer name when using the `!` run_comm… (#18)
+- Shell command buffers (`!`) use the command as the buffer name instead of appending an index
 
 ## 0.3.0 (2025-10-02)
 
-### Feat
+### Features
 
-- add ability to yank a cell with `y` keybinding (#17)
+- Copy cell contents to clipboard with `y`
 
 ## 0.2.7 (2025-10-02)
 
-### Fix
+### Fixes
 
-- getting-started-screen rendering - overflow scrolling, and spacing (#16)
-
-## 0.2.6 (2025-10-02)
-
-### Fix
-
-- github release tagging to match cz tagging pattern
-
-## 0.2.5 (2025-10-02)
-
-### Fix
-
-- markdown output in workflow
-- changelog message for GH release
-
-## 0.2.4 (2025-10-02)
-
-### Fix
-
-- remove v from changelog version
-
-## 0.2.3 (2025-10-02)
-
-### Fix
-
-- remove env vars for twine
-
-## 0.2.2 (2025-10-02)
-
-### Fix
-
-- add environment
-
-## 0.2.1 (2025-10-02)
-
-### Fix
-
-- python version in GH workflow
+- Fix getting started screen rendering — overflow scrolling and spacing
 
 ## 0.2.0 (2025-10-02)
 
-### Feat
+### Features
 
-- run external commands with ! (#15)
-- add github workflow
-- adds ruff pre-commit hooks for formatting and linting
-- added a new select widget, NlessSelect, which offers type-based completion and arrow selection
-
-### Fix
-
-- cz adds, commits, and tags for us
-- run git status for debugging
-- move git config earlier in the flow
-- testing cz
+- Run external shell commands with `!` and pipe output into a new buffer
+- Add CI/CD pipeline with GitHub Actions
+- Add ruff pre-commit hooks for formatting and linting
+- Add `NlessSelect` widget with type-based completion and arrow selection
 
 ## 0.1.12 (2025-09-30)
 
-### Feat
+### Features
 
-- added a new select widget, NlessSelect, which offers type-based completion (#14)
+- Add `NlessSelect` filterable dropdown widget
 
 ## 0.1.11 (2025-09-29)
 
-### Feat
+### Features
 
-- CLI flags for delimiter, unique, filters, and sort (#13)
+- CLI flags: `--delimiter`/`-d`, `--unique`/`-u`, `--filters`/`-f`, `--sort-by`/`-s`
 
 ## 0.1.10 (2025-09-25)
 
-### Feat
+### Features
 
-- arbitrary column delimiters (#12)
+- Column delimiters — split a column into sub-columns with `d` using JSON, regex, or string delimiters
 
 ## 0.1.9
-- Fix bug with duplicate column indexes
-## 0.1.8 - duplicate of 0.1.7 for pypi release
+
+### Fixes
+
+- Fix duplicate column indexes causing data position errors
+
 ## 0.1.7
-- JSON support
-  - `D` delimiter supports `json`, now:
-    - will convert json object log lines into columns
-    - will parse full json files
-  - column delimiters with `d` supporting json
-  - `J` command to select json fields as columns
-- Ctrl-d and Ctrl-u for paging (`d` moved to column delimiter command)
-- `--version` command
-- Better automatic pane naming
-- Pressing numeric keys (1-9) focuses corresponding "buffer"
+
+### Features
+
+- **JSON support** — `D` delimiter supports `json` for object log lines and full JSON files; column delimiter `d` supports JSON; `J` to extract JSON fields as columns
+- Page up/down with `ctrl+u`/`ctrl+d` (`d` moved to column delimiter)
+- `--version` flag
+- Improved automatic buffer naming
+- Select buffers by number with `1`–`9`
