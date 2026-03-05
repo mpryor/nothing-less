@@ -78,14 +78,23 @@ class NlessApp(App):
         self.groups: list[BufferGroup] = [
             BufferGroup(
                 group_id=1,
-                name=os.path.basename(cli_args.filename)
-                if cli_args.filename
-                else get_stdin_source() or "stdin",
+                name=self._initial_group_name(cli_args),
                 buffers=[init_buffer],
                 starting_stream=starting_stream,
             )
         ]
         self.curr_group_idx = 0
+
+    @staticmethod
+    def _initial_group_name(cli_args: CliArgs) -> str:
+        if cli_args.filename:
+            return f"📄 {os.path.basename(cli_args.filename)}"
+        source = get_stdin_source()
+        if source is None:
+            return "stdin"
+        if source.startswith("/"):
+            return f"📄 {source}"
+        return f"❯ {source}"
 
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
@@ -195,7 +204,7 @@ class NlessApp(App):
                 cli_args=self.cli_args,
                 line_stream=line_stream,
             )
-            await self.add_group(f"!{command}", new_buffer, stream=line_stream)
+            await self.add_group(f"❯ {command}", new_buffer, stream=line_stream)
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
 
@@ -222,7 +231,9 @@ class NlessApp(App):
             )
             t = Thread(target=line_stream.run, daemon=True)
             t.start()
-            await self.add_group(os.path.basename(path), new_buffer, stream=line_stream)
+            await self.add_group(
+                f"📄 {os.path.basename(path)}", new_buffer, stream=line_stream
+            )
         except (OSError, FileNotFoundError) as e:
             self.notify(f"Error opening file: {e}", severity="error")
 
@@ -379,14 +390,21 @@ class NlessApp(App):
         return container.query_one(TabbedContent)
 
     def _copy_buffer_async(
-        self, setup_fn, buffer_name, after_add_fn=None, add_prev_index=True
+        self,
+        setup_fn,
+        buffer_name,
+        after_add_fn=None,
+        add_prev_index=True,
+        reason="Loading",
+        done_reason="Loaded",
     ):
         """Run copy() + setup on a background thread, then add_buffer on main thread."""
         curr_buffer = self._get_current_buffer()
         source_group_idx = self.curr_group_idx
-        source_buffer_idx = self.curr_buffer_idx
         new_pane_id = self._get_new_pane_id()
-        curr_buffer._loading_reason = "Copying buffer"
+        source_row_count = len(curr_buffer.displayed_rows)
+        reason = f"{reason} {source_row_count:,} rows"
+        curr_buffer._loading_reason = reason
         curr_buffer._start_spinner()
         curr_buffer._update_status_bar()
 
@@ -414,11 +432,12 @@ class NlessApp(App):
                 def _on_ready():
                     if after_add_fn:
                         after_add_fn(new_buffer)
-                    # Notify if the user navigated away while the task was running.
-                    if (
-                        self.curr_group_idx != source_group_idx
-                        or self.curr_buffer_idx != source_buffer_idx
-                    ):
+                    result_rows = len(new_buffer.displayed_rows)
+                    new_buffer._flash_status(
+                        f"{done_reason} {source_row_count:,} → {result_rows:,} rows"
+                    )
+                    # Notify if the user isn't viewing the newly created buffer.
+                    if self._get_current_buffer() is not new_buffer:
                         group_name = self.groups[source_group_idx].name
                         self.notify(
                             f"Buffer ready: {buffer_name} ({group_name})",
@@ -430,6 +449,7 @@ class NlessApp(App):
                     name=buffer_name,
                     add_prev_index=add_prev_index,
                     on_ready=_on_ready,
+                    reason=reason,
                 )
 
             self.call_from_thread(_finish)
@@ -484,7 +504,13 @@ class NlessApp(App):
                 lambda: new_buffer.query_one(NlessDataTable).move_cursor(column=pos),
             )
 
-        self._copy_buffer_async(setup, buffer_name, after_add_fn=after_add)
+        self._copy_buffer_async(
+            setup,
+            buffer_name,
+            after_add_fn=after_add,
+            reason="Pivoting",
+            done_reason="Pivoted",
+        )
 
     def action_delimiter(self) -> None:
         """Change the delimiter used for parsing."""
@@ -511,7 +537,9 @@ class NlessApp(App):
                 Filter(column=None, pattern=search_pattern)
             )
 
-        self._copy_buffer_async(setup, buffer_name)
+        self._copy_buffer_async(
+            setup, buffer_name, reason="Filtering", done_reason="Filtered"
+        )
 
     def action_search(self) -> None:
         """Bring up search input to highlight matching text."""
@@ -574,7 +602,9 @@ class NlessApp(App):
                         handle_mark_unique(new_buffer, column)
                     new_buffer.current_filters.extend(filters)
 
-                self._copy_buffer_async(setup, buffer_name)
+                self._copy_buffer_async(
+                    setup, buffer_name, reason="Filtering", done_reason="Filtered"
+                )
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
@@ -769,12 +799,10 @@ class NlessApp(App):
                     )
                 )
 
-        t = Thread(target=_write_and_notify)
+        t = Thread(target=_write_and_notify, daemon=True)
         t.start()
         if output_path == "-":
             self.exit()
-        else:
-            t.join()
 
     async def on_autocomplete_input_submitted(
         self, event: AutocompleteInput.Submitted
@@ -922,7 +950,13 @@ class NlessApp(App):
                     severity="information",
                 )
 
-        self._copy_buffer_async(setup, new_buf_name, after_add_fn=after_add)
+        self._copy_buffer_async(
+            setup,
+            new_buf_name,
+            after_add_fn=after_add,
+            reason="Filtering",
+            done_reason="Filtered",
+        )
 
     @staticmethod
     def _should_reinsert_header_as_data(
@@ -1196,6 +1230,7 @@ class NlessApp(App):
         cursor_coordinate: Coordinate,
         offset: Offset,
         on_ready=None,
+        reason="Loading",
     ) -> None:
         tabbed_content = self._get_active_tabbed_content()
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
@@ -1205,7 +1240,11 @@ class NlessApp(App):
             # Buffer not yet composed; retry after next refresh
             self.call_after_refresh(
                 lambda: self.refresh_buffer_and_focus(
-                    new_buffer, cursor_coordinate, offset, on_ready=on_ready
+                    new_buffer,
+                    cursor_coordinate,
+                    offset,
+                    on_ready=on_ready,
+                    reason=reason,
                 )
             )
             return
@@ -1223,7 +1262,7 @@ class NlessApp(App):
                 on_ready()
 
         new_buffer._deferred_update_table(
-            restore_position=False, callback=_restore_position, reason="Loading"
+            restore_position=False, callback=_restore_position, reason=reason
         )
 
     def add_buffer(
@@ -1232,6 +1271,7 @@ class NlessApp(App):
         name: str,
         add_prev_index: bool = True,
         on_ready=None,
+        reason="Loading",
     ) -> None:
         curr_data_table = self._get_current_buffer().query_one(NlessDataTable)
 
@@ -1251,6 +1291,7 @@ class NlessApp(App):
                 curr_data_table.cursor_coordinate,
                 curr_data_table.scroll_offset,
                 on_ready=on_ready,
+                reason=reason,
             )
         )
 
