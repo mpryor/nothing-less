@@ -792,31 +792,13 @@ class NlessBuffer(Static):
                             col_widths[i] = str_len
                 self._cached_col_widths = col_widths
 
-            suggested_delimiter = None
-            majority = None
-            n_inconsistent = len(rows_with_inconsistent_length)
-            n_total = len(filtered_rows) + n_inconsistent
-            if self._should_auto_switch_delimiter(n_inconsistent, n_total):
-                majority = _majority_sample(rows_with_inconsistent_length)
-                candidate = infer_delimiter(majority)
-                if candidate and candidate != self.delimiter and candidate != "raw":
-                    suggested_delimiter = candidate
-                    # Pre-add bad rows back for re-parsing with new delimiter
-                    # (safe here — _filter_rows already mutates raw_rows)
-                    now = time.time()
-                    self.raw_rows.extend(rows_with_inconsistent_length)
-                    self._arrival_timestamps.extend(
-                        [now] * len(rows_with_inconsistent_length)
-                    )
-
             return {
                 "styled_rows": styled_rows,
                 "column_labels": column_labels,
                 "column_widths": col_widths,
                 "fixed_columns": fixed_columns,
-                "inconsistent_count": n_inconsistent,
-                "suggested_delimiter": suggested_delimiter,
-                "majority_sample": majority,
+                "inconsistent_rows": rows_with_inconsistent_length,
+                "n_filtered": len(filtered_rows),
             }
 
         def _apply_to_widgets(result):
@@ -831,26 +813,16 @@ class NlessBuffer(Static):
             self.displayed_rows = result["styled_rows"]
             data_table.add_rows_precomputed(result["styled_rows"])
 
-            if result["inconsistent_count"] > 0:
-                suggested = result.get("suggested_delimiter")
-                count = result["inconsistent_count"]
-                if suggested:
-                    # bad_lines already re-added in _process_data
-                    msg = self._apply_auto_switch_delimiter(
-                        suggested,
-                        [],
-                        result["majority_sample"],
-                        count,
-                    )
+            bad_lines = result["inconsistent_rows"]
+            if bad_lines:
+                n_total = result["n_filtered"] + len(bad_lines)
+                msg = self._try_auto_switch_delimiter(
+                    bad_lines, len(bad_lines), n_total
+                )
+                if msg:
                     self._flash_status(msg)
                     self._deferred_update_table(reason="Switching delimiter")
                     return
-                elif not self._mismatch_warning_shown:
-                    self._mismatch_warning_shown = True
-                    self.notify(
-                        f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
-                        severity="warning",
-                    )
 
             # Check if more data arrived while we were processing
             if len(self.raw_rows) > self._last_flushed_idx:
@@ -926,28 +898,16 @@ class NlessBuffer(Static):
             aligned_rows, data_table.fixed_columns
         )
 
-        if len(rows_with_inconsistent_length) > 0:
+        if rows_with_inconsistent_length:
             n_inconsistent = len(rows_with_inconsistent_length)
             n_total = len(filtered_rows) + n_inconsistent
-            if self._should_auto_switch_delimiter(n_inconsistent, n_total):
-                majority = _majority_sample(rows_with_inconsistent_length)
-                candidate = infer_delimiter(majority)
-                if candidate and candidate != self.delimiter and candidate != "raw":
-                    msg = self._apply_auto_switch_delimiter(
-                        candidate,
-                        rows_with_inconsistent_length,
-                        majority,
-                        n_inconsistent,
-                    )
-                    self._flash_status(msg)
-                    self._deferred_update_table(reason="Switching delimiter")
-                    return
-            if not self._mismatch_warning_shown:
-                self._mismatch_warning_shown = True
-                self.notify(
-                    f"{n_inconsistent} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
-                    severity="warning",
-                )
+            msg = self._try_auto_switch_delimiter(
+                rows_with_inconsistent_length, n_inconsistent, n_total
+            )
+            if msg:
+                self._flash_status(msg)
+                self._deferred_update_table(reason="Switching delimiter")
+                return
 
         self.displayed_rows = styled_rows
         data_table.add_rows(styled_rows)
@@ -1138,6 +1098,42 @@ class NlessBuffer(Static):
             return None
         return self._format_delimiter_label(self.delimiter)
 
+    def _reset_delimiter_state(self) -> None:
+        """Reset all delimiter-related flags and counters."""
+        self.delimiter_inferred = False
+        self._delimiter_suggestion_shown = False
+        self._mismatch_warning_shown = False
+        self._total_skipped = 0
+
+    def _warn_mismatch_once(self, count: int) -> None:
+        """Show the mismatch warning at most once per delimiter."""
+        if self._mismatch_warning_shown:
+            return
+        self._mismatch_warning_shown = True
+        msg = f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
+        if self.app._thread_id == threading.get_ident():
+            self.notify(msg, severity="warning")
+        else:
+            self.app.call_from_thread(self.notify, msg, severity="warning")
+
+    def _try_auto_switch_delimiter(
+        self, bad_lines: list[str], n_bad: int, n_total: int
+    ) -> str | None:
+        """Attempt to auto-switch delimiter based on mismatched rows.
+
+        Returns a flash message string if switched, None otherwise.
+        Also calls _warn_mismatch_once if not switching.
+        """
+        if not self._should_auto_switch_delimiter(n_bad, n_total):
+            self._warn_mismatch_once(n_bad)
+            return None
+        majority = _majority_sample(bad_lines)
+        candidate = infer_delimiter(majority)
+        if not candidate or candidate == self.delimiter or candidate == "raw":
+            self._warn_mismatch_once(n_bad)
+            return None
+        return self._apply_auto_switch_delimiter(candidate, bad_lines, majority, n_bad)
+
     def _should_auto_switch_delimiter(self, n_bad: int, n_total: int) -> bool:
         """Check whether auto-switch conditions are met."""
         return (
@@ -1161,6 +1157,7 @@ class NlessBuffer(Static):
         self.delimiter = candidate
         self.delimiter_inferred = True
         self._delimiter_suggestion_shown = True
+        self._mismatch_warning_shown = False
         self._total_skipped = 0
         self._parsed_rows = None
         self._cached_col_widths = None
@@ -1319,30 +1316,18 @@ class NlessBuffer(Static):
         if skipped > 0 and not needs_deferred:
             self._skipped_lines = []
             n_total = len(self.displayed_rows) + skipped
-            if skipped_lines and self._should_auto_switch_delimiter(skipped, n_total):
-                majority = _majority_sample(skipped_lines)
-                candidate = infer_delimiter(majority)
-                if candidate and candidate != self.delimiter and candidate != "raw":
-                    flash_msg = self._apply_auto_switch_delimiter(
-                        candidate, skipped_lines, majority, skipped
-                    )
+            flash_msg = self._try_auto_switch_delimiter(skipped_lines, skipped, n_total)
+            if flash_msg:
 
-                    def rebuild():
-                        self._flash_status(flash_msg)
-                        self._deferred_update_table(reason="Switching delimiter")
+                def rebuild():
+                    self._flash_status(flash_msg)
+                    self._deferred_update_table(reason="Switching delimiter")
 
-                    if self.app._thread_id == threading.get_ident():
-                        rebuild()
-                    else:
-                        self.app.call_from_thread(rebuild)
-                    return
-            if not self._mismatch_warning_shown:
-                self._mismatch_warning_shown = True
-                msg = f"{skipped} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
                 if self.app._thread_id == threading.get_ident():
-                    self.notify(msg, severity="warning")
+                    rebuild()
                 else:
-                    self.app.call_from_thread(self.notify, msg, severity="warning")
+                    self.app.call_from_thread(rebuild)
+                return
 
         pending = self._pending_action
         if pending is not None:
@@ -1543,7 +1528,9 @@ class NlessBuffer(Static):
             new_rows.append(row)
 
         self._total_skipped += skipped_count
-        self._skipped_lines.extend(skipped_lines)
+        remaining = 200 - len(self._skipped_lines)
+        if remaining > 0:
+            self._skipped_lines.extend(skipped_lines[:remaining])
 
         # Track column widths from a sample to avoid O(n*cols) len() calls
         if track_widths and new_rows:

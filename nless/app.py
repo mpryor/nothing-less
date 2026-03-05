@@ -1307,10 +1307,7 @@ class NlessApp(App):
             curr_buffer.unique_column_names = set()
             prev_delimiter = curr_buffer.delimiter
 
-            curr_buffer.delimiter_inferred = False
-            curr_buffer._delimiter_suggestion_shown = False
-            curr_buffer._mismatch_warning_shown = False
-            curr_buffer._total_skipped = 0
+            curr_buffer._reset_delimiter_state()
             delimiter = self._parse_delimiter_input(delimiter_input)
 
             # If it's a regex with named groups, apply directly
