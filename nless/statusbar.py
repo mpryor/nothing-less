@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 DEFAULT_STATUS_FORMAT = (
-    "{sort} | {filter} | {search} | {position} {unique}{tailing}{loading}"
+    "{sort} | {filter} | {search} | {position} | {unique}{tailing}{loading}"
 )
 
 
@@ -30,6 +30,7 @@ def build_status_text(
     is_tailing: bool,
     unique_column_names: set[str],
     loading_reason: str | None,
+    flash_message: str | None = None,
     theme: NlessTheme | None = None,
     spinner_frame: int = 0,
     format_str: str | None = None,
@@ -67,7 +68,10 @@ def build_status_text(
         filter_text = f"{filter_prefix}: " + ", ".join(filter_descriptions)
 
     if search_term is not None:
-        search_text = f"{search_prefix}: '{search_term.pattern}' ({current_match_index + 1} / {search_matches_count} matches)"
+        if loading_reason == "Searching":
+            search_text = f"{search_prefix}: '{search_term.pattern}'"
+        else:
+            search_text = f"{search_prefix}: '{search_term.pattern}' ({current_match_index + 1} / {search_matches_count} matches)"
     else:
         search_text = ""
 
@@ -84,14 +88,15 @@ def build_status_text(
     column_text = ""
     if len(unique_column_names):
         column_names = ",".join(unique_column_names)
-        column_text = f"| unique cols: ({column_names}) "
+        column_text = f"[bold]Unique[/bold]: {column_names} "
 
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
-        loading_color = theme.markup(
-            "status_loading", f"{spinner} {loading_reason} ({total_rows:,} rows)"
-        )
+        loading_color = theme.markup("status_loading", f"{spinner} {loading_reason}")
         loading_text = f"| [bold]{loading_color}[/bold] "
+    elif flash_message:
+        flash_color = theme.markup("status_loading", flash_message)
+        loading_text = f"| [green]✔[/green] {flash_color} "
     else:
         loading_text = ""
 

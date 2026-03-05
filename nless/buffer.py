@@ -153,7 +153,10 @@ class NlessBuffer(Static):
         self._parsed_rows: list[list[str]] | None = None
         # Cache of column widths to skip O(N×V) recomputation on sort
         self._cached_col_widths: list[int] | None = None
+        self._initial_load_done = False
         self._loading_reason: str | None = None
+        self._flash_message: str | None = None
+        self._flash_timer = None
         self._spinner_frame: int = 0
         self._spinner_timer = None
         self._has_nested_delimiters = False
@@ -226,6 +229,7 @@ class NlessBuffer(Static):
                     lambda: new_buffer.mounted,
                 )
             new_buffer._rebuild_column_caches()
+            new_buffer._initial_load_done = True
 
         # Expensive filtering runs outside the lock on the snapshot.
         new_buffer.raw_rows = new_buffer._filter_lines(raw_rows_snapshot)
@@ -261,6 +265,11 @@ class NlessBuffer(Static):
         self.mounted = True
         if self._loading_reason:
             self._start_spinner()
+        if not self._initial_load_done:
+            self.set_timer(1.0, self._mark_initial_load_done)
+
+    def _mark_initial_load_done(self) -> None:
+        self._initial_load_done = True
 
     def on_datatable_cell_highlighted(
         self, event: NlessDataTable.CellHighlighted
@@ -726,6 +735,7 @@ class NlessBuffer(Static):
                     restore_position=restore_position, callback=callback
                 )
             else:
+                loaded_reason = self._loading_reason
                 self._loading_reason = None
                 self._stop_spinner()
                 self._update_status_bar()
@@ -733,6 +743,16 @@ class NlessBuffer(Static):
                     self._restore_position(
                         data_table, cursor_x, cursor_y, scroll_x, scroll_y
                     )
+                if loaded_reason:
+                    row_count = len(self.displayed_rows)
+                    if row_count > 0:
+                        _past = {
+                            "Sorting": "Sorted",
+                            "Searching": "Searched",
+                            "Rebuilding": "Rebuilt",
+                        }
+                        done = _past.get(loaded_reason, "Loaded")
+                        self._flash_status(f"{done} {row_count:,} rows")
                 if callback:
                     callback()
 
@@ -830,6 +850,7 @@ class NlessBuffer(Static):
             is_tailing=self.is_tailing,
             unique_column_names=self.unique_column_names,
             loading_reason=self._loading_reason,
+            flash_message=self._flash_message,
             theme=self._get_theme(),
             spinner_frame=self._spinner_frame,
             format_str=self.app.config.status_format,
@@ -837,6 +858,19 @@ class NlessBuffer(Static):
             theme_name=self.app.nless_theme.name,
         )
         self.app.query_one("#status_bar", Static).update(text)
+
+    def _flash_status(self, message: str, duration: float = 3.0) -> None:
+        """Show a temporary message in the status bar, auto-clearing after *duration* seconds."""
+        if self._flash_timer is not None:
+            self._flash_timer.stop()
+        self._flash_message = message
+        self._update_status_bar()
+        self._flash_timer = self.set_timer(duration, self._clear_flash)
+
+    def _clear_flash(self) -> None:
+        self._flash_message = None
+        self._flash_timer = None
+        self._update_status_bar()
 
     def _start_spinner(self) -> None:
         """Start the status bar spinner animation (must run on main thread)."""
@@ -961,10 +995,18 @@ class NlessBuffer(Static):
                 needs_deferred = self._needs_deferred_update
             finally:
                 if not needs_deferred:
+                    had_loading = self._loading_reason is not None
                     self._loading_reason = None
                     self._request_spinner_stop()
                     try:
                         self._update_status_bar()
+                        if had_loading:
+                            row_count = len(self.displayed_rows)
+                            if row_count > 0:
+                                self.app.call_from_thread(
+                                    self._flash_status,
+                                    f"Loaded {row_count:,} rows",
+                                )
                     except Exception:
                         pass
                 self.locked = False
@@ -1053,7 +1095,7 @@ class NlessBuffer(Static):
         else:
             # Process in chunks for progressive display on large inputs
             CHUNK = 50000
-            had_rows = bool(self.displayed_rows)
+            had_rows = self._initial_load_done and bool(self.displayed_rows)
             if is_large_batch:
                 self._loading_reason = self._loading_reason or "Loading"
                 self._request_spinner_start()
