@@ -1233,42 +1233,54 @@ class NlessApp(App):
             return ["log"], False
 
         if delimiter == "json":
+            # Try first_log_line as JSON header
             try:
                 return list(json.loads(curr_buffer.first_log_line).keys()), False
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                # attempt to read all logs as one json payload
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+            # When coming from raw/regex, first_log_line isn't a data row —
+            # try the first raw_row instead
+            if (
+                prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern)
+            ) and curr_buffer.raw_rows:
                 try:
-                    all_logs = ""
-                    if prev_delimiter != "raw" and not isinstance(
-                        prev_delimiter, re.Pattern
-                    ):
-                        all_logs = curr_buffer.first_log_line + "\n"
-                    all_logs += "\n".join(curr_buffer.raw_rows)
-                    buffer_json = json.loads(all_logs)
-                    if (
-                        isinstance(buffer_json, list)
-                        and len(buffer_json) > 0
-                        and isinstance(buffer_json[0], dict)
-                    ):
-                        header = list(buffer_json[0].keys())
-                        curr_buffer.raw_rows = [
-                            json.dumps(item) for item in buffer_json
-                        ]
-                    elif isinstance(buffer_json, dict):
-                        header = list(buffer_json.keys())
-                        curr_buffer.raw_rows = [json.dumps(buffer_json)]
-                    else:
-                        curr_buffer.notify(
-                            f"Failed to parse JSON logs: {e}", severity="error"
-                        )
-                        return None
-                    curr_buffer.first_log_line = curr_buffer.raw_rows[0]
-                    return header, True
-                except (json.JSONDecodeError, KeyError, TypeError) as e2:
+                    header = list(json.loads(curr_buffer.raw_rows[0]).keys())
+                    curr_buffer.first_log_line = curr_buffer.raw_rows.pop(0)
+                    return header, False
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass
+
+            # Fallback: try to read all logs as one JSON payload
+            try:
+                all_logs = ""
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    all_logs = curr_buffer.first_log_line + "\n"
+                all_logs += "\n".join(curr_buffer.raw_rows)
+                buffer_json = json.loads(all_logs)
+                if (
+                    isinstance(buffer_json, list)
+                    and len(buffer_json) > 0
+                    and isinstance(buffer_json[0], dict)
+                ):
+                    header = list(buffer_json[0].keys())
+                    curr_buffer.raw_rows = [json.dumps(item) for item in buffer_json]
+                elif isinstance(buffer_json, dict):
+                    header = list(buffer_json.keys())
+                    curr_buffer.raw_rows = [json.dumps(buffer_json)]
+                else:
                     curr_buffer.notify(
-                        f"Failed to parse JSON logs: {e2}", severity="error"
+                        "Failed to parse JSON logs: no valid JSON found",
+                        severity="error",
                     )
                     return None
+                curr_buffer.first_log_line = curr_buffer.raw_rows[0]
+                return header, True
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                curr_buffer.notify(f"Failed to parse JSON logs: {e}", severity="error")
+                return None
 
         if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
             header = split_line(
