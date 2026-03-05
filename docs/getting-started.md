@@ -52,6 +52,8 @@ Once data is loaded, press `?` to view all keybindings.
 | `--exclude-filters` | `-x` | Initial exclude filter(s), same format as `-f`. Can be repeated. |
 | `--unique` | `-u` | Initial unique key(s). Can be repeated. |
 | `--sort-by` | `-s` | Column to sort by initially, format: `column=asc` or `column=desc` |
+| `--theme` | `-t` | Color theme to use (e.g. `dracula`, `nord`, `monokai`) |
+| `--keymap` | `-k` | Keymap preset to use (e.g. `vim`, `less`, `emacs`) |
 
 ### Examples
 
