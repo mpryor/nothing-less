@@ -1,4 +1,26 @@
 # Changelog
+## 1.2.0 (2026-03-05)
+
+### Feat
+
+- buffer groups with animated stream icons, group bar styling, and docs updates
+- loading indicators, status bar flash, group icons, and UX fixes
+- add open file keybinding, smart autocomplete, and stdin source detection
+- add config viewer tab to help screen and autocomplete suggestions
+- add configurable keymaps, status bar format, and theming system
+
+### Fix
+
+- resize handling, status bar spacing, and UX improvements
+
+### Refactor
+
+- extract data processing, operations, status bar, and unparsed logs into separate modules
+
+### Perf
+
+- optimize sort pipeline for 100K+ rows
+
 ## 1.1.2 (2026-03-04)
 
 ### Refactor
