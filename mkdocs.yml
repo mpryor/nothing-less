@@ -23,9 +23,8 @@ theme:
         name: Switch to dark mode
   features:
     - navigation.instant
-    - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.sections
+    - toc.integrate
     - content.code.copy
     - search.highlight
     - search.suggest

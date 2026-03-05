@@ -11,9 +11,22 @@
   --md-accent-fg-color: #00c853;
 }
 
+.md-header {
+  height: 2.8rem;
+}
+
+.md-header__inner {
+  padding-top: 0.1rem;
+  padding-bottom: 0.1rem;
+}
+
 .md-header__button.md-logo img {
-  height: 3rem;
+  height: 2.2rem;
   width: auto;
+}
+
+.md-header__button.md-logo {
+  padding: 0.1rem;
 }
 
 .md-header__topic .md-ellipsis {
@@ -32,8 +45,16 @@
   color: #76ff03 !important;
 }
 
+.md-nav--primary > .md-nav__title {
+  display: none;
+}
+
 .md-header {
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+.md-main__inner {
+  margin-top: 0;
 }
