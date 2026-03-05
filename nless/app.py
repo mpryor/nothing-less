@@ -1308,6 +1308,7 @@ class NlessApp(App):
             prev_delimiter = curr_buffer.delimiter
 
             curr_buffer.delimiter_inferred = False
+            curr_buffer._delimiter_suggestion_shown = False
             delimiter = self._parse_delimiter_input(delimiter_input)
 
             # If it's a regex with named groups, apply directly
