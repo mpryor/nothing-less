@@ -25,6 +25,7 @@
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
 - **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
+- **Themes** — 10 built-in color themes (Dracula, Nord, Gruvbox, and more) plus custom theme support
 
 ## Demos
 
