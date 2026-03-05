@@ -24,6 +24,11 @@ from nless.autocomplete import AutocompleteInput
 from nless.buffer import NlessBuffer
 from nless.operations import handle_mark_unique, write_buffer
 from nless.gettingstarted import GettingStartedScreen
+from nless.suggestions import (
+    FilePathSuggestionProvider,
+    HistorySuggestionProvider,
+    ShellCommandSuggestionProvider,
+)
 
 from .config import NlessConfig, load_config, load_input_history, save_config
 from .dataprocessing import strip_markup
@@ -149,7 +154,7 @@ class NlessApp(App):
             "Type shell command (e.g. tail -f /var/log/syslog)", "run_command_input"
         )
 
-    def handle_run_command_submitted(self, event: Input.Submitted) -> None:
+    def handle_run_command_submitted(self, event: AutocompleteInput.Submitted) -> None:
         event.control.remove()
         command = event.value.strip()
         try:
@@ -406,11 +411,19 @@ class NlessApp(App):
         self._create_prompt("Type search term and press Enter", "search_input")
 
     def _create_prompt(self, placeholder, id):
+        history = [h["val"] for h in self.input_history if h["id"] == id]
+        if id == "write_to_file_input":
+            provider = FilePathSuggestionProvider()
+        elif id == "run_command_input":
+            provider = ShellCommandSuggestionProvider(history)
+        else:
+            provider = HistorySuggestionProvider(history)
         input = AutocompleteInput(
             placeholder=placeholder,
             id=id,
             classes="bottom-input",
-            history=[h["val"] for h in self.input_history if h["id"] == id],
+            history=history,
+            provider=provider,
             on_add=lambda val: self.input_history.append({"id": id, "val": val}),
             on_remove=lambda val: self.input_history.remove({"id": id, "val": val}),
         )
@@ -457,9 +470,12 @@ class NlessApp(App):
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
-        if event.key == "escape" and (
-            isinstance(self.focused, Input) or isinstance(self.focused, Select)
-        ):
+        if event.key == "escape" and isinstance(self.focused, Input):
+            if isinstance(self.focused.parent, AutocompleteInput):
+                self.focused.parent.remove()
+            else:
+                self.focused.remove()
+        elif event.key == "escape" and isinstance(self.focused, Select):
             self.focused.remove()
 
         current_buffer = self._get_current_buffer()
@@ -486,7 +502,9 @@ class NlessApp(App):
                 buffer.current_columns.append(make_column_fn(i, name, base_pos + added))
                 added += 1
 
-    def handle_column_delimiter_submitted(self, event: Input.Submitted) -> None:
+    def handle_column_delimiter_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
         event.input.remove()
         new_col_delimiter = event.value
 
@@ -619,7 +637,9 @@ class NlessApp(App):
         if should_update:
             current_buffer._deferred_update_table(reason="Splitting column")
 
-    def handle_write_to_file_submitted(self, event: Input.Submitted) -> None:
+    def handle_write_to_file_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
         output_path = event.value
         event.input.remove()
         current_buffer = self._get_current_buffer()
@@ -648,7 +668,9 @@ class NlessApp(App):
         else:
             t.join()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_autocomplete_input_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
         if event.input.id == "search_input":
             self.handle_search_submitted(event)
         elif event.input.id in (
@@ -669,7 +691,7 @@ class NlessApp(App):
         elif event.input.id == "run_command_input":
             self.handle_run_command_submitted(event)
 
-    def handle_search_submitted(self, event: Input.Submitted) -> None:
+    def handle_search_submitted(self, event: AutocompleteInput.Submitted) -> None:
         input_value = event.value
         event.input.remove()
         current_buffer = self._get_current_buffer()
@@ -694,7 +716,7 @@ class NlessApp(App):
             "Type filter text to match across all columns", "filter_input_any"
         )
 
-    def handle_filter_submitted(self, event: Input.Submitted) -> None:
+    def handle_filter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         filter_value = event.value
         event.input.remove()
         curr_buffer = self._get_current_buffer()
@@ -878,7 +900,7 @@ class NlessApp(App):
             curr_buffer.current_columns,
         ), False
 
-    def handle_delimiter_submitted(self, event: Input.Submitted) -> None:
+    def handle_delimiter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         curr_buffer = self._get_current_buffer()
         event.input.remove()
         should_update = False
@@ -927,7 +949,9 @@ class NlessApp(App):
         if should_update:
             curr_buffer._deferred_update_table(reason="Changing delimiter")
 
-    def handle_column_filter_submitted(self, event: Input.Submitted) -> None:
+    def handle_column_filter_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
         curr_buffer = self._get_current_buffer()
         input_value = event.value
         event.input.remove()
@@ -1197,6 +1221,8 @@ class NlessApp(App):
             HelpScreen(
                 keymap_name=self.nless_keymap.name,
                 keymap_bindings=self.nless_keymap.bindings,
+                theme=self.nless_theme,
+                config=self.config,
             )
         )
 

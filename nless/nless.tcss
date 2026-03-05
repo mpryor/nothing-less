@@ -10,9 +10,20 @@
     width: 100%;
 }
 
-.bottom-input {
+AutocompleteInput.bottom-input {
     dock: bottom;
-    height: 3;
+    height: auto;
+    width: 100%;
+}
+
+AutocompleteInput.bottom-input RichLog {
+    display: none;
+    height: 10;
+    border: solid green;
+}
+
+AutocompleteInput.bottom-input RichLog.visible {
+    display: block;
 }
 
 .dock-bottom {
@@ -68,4 +79,10 @@ Markdown {
 
 #getting_started {
     overflow: auto;
+}
+
+#help-footer {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
 }
