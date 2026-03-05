@@ -74,3 +74,26 @@ Input (stdin/file/command) → StdinLineStream (async, threaded)
 - Ruff for linting and formatting
 - Poetry for dependency management
 - Textual CSS in `nless/nless.tcss`
+
+## Roadmap & Project Management
+
+The GitHub repo tracks all planned work:
+
+- **Project board**: [nless Roadmap](https://github.com/users/mpryor/projects/2) (linked to this repo)
+- **Issues**: All feature requests and bugs are tracked as GitHub issues with labels (`priority: critical/high/medium/low`, `area: *`)
+- **Milestones**: Issues are organized into release milestones:
+  - `v1.2 — Foundation` — Core infrastructure (bug fixes, raw pager, arrival timestamp, pipe support, column pinning)
+  - `v1.3 — Analysis & Streaming` — Data analysis and log tooling (highlights, log formats, aggregations, multi-stream, saved views)
+  - `v1.4 — Extensibility & UX` — Config profiles, session persistence, alerting, mouse support
+  - `v2.0 — Platform` — nless as a framework (multi-pane, data editing, joins)
+
+### "What's next?" workflow
+
+When asked "what's next?", follow this process:
+
+1. Run `gh project item-list 2 --owner mpryor --format json` to check the project board for items marked "In Progress"
+2. If something is in progress, resume that work
+3. If nothing is in progress, find the current milestone via `gh api repos/mpryor/nothing-less/milestones --jq '.[] | select(.open_issues > 0) | {title, open_issues}' | head -5`
+4. List issues in that milestone sorted by priority: `gh issue list --milestone "<milestone>" --label "priority: critical" --state open` (then high, medium, low)
+5. Pick the highest priority open issue that has no unresolved dependencies
+6. Move it to "In Progress" on the project board and begin work

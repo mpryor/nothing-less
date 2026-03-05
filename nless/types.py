@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+class RowLengthMismatchError(Exception):
+    pass
+
+
 class MetadataColumn(Enum):
     COUNT = "count"
 
