@@ -208,6 +208,8 @@ class NlessBuffer(Static):
         self._needs_deferred_update = False
         self._skipped_lines: list[str] = []
         self._delimiter_suggestion_shown = False
+        self._mismatch_warning_shown = False
+        self._total_skipped = 0
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -843,7 +845,8 @@ class NlessBuffer(Static):
                     self._flash_status(msg)
                     self._deferred_update_table(reason="Switching delimiter")
                     return
-                else:
+                elif not self._mismatch_warning_shown:
+                    self._mismatch_warning_shown = True
                     self.notify(
                         f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
                         severity="warning",
@@ -939,10 +942,12 @@ class NlessBuffer(Static):
                     self._flash_status(msg)
                     self._deferred_update_table(reason="Switching delimiter")
                     return
-            self.notify(
-                f"{n_inconsistent} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
-                severity="warning",
-            )
+            if not self._mismatch_warning_shown:
+                self._mismatch_warning_shown = True
+                self.notify(
+                    f"{n_inconsistent} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing.",
+                    severity="warning",
+                )
 
         self.displayed_rows = styled_rows
         data_table.add_rows(styled_rows)
@@ -1000,6 +1005,7 @@ class NlessBuffer(Static):
             if self.time_window
             else None,
             delimiter=self._format_delimiter(),
+            skipped_rows=self._total_skipped,
         )
         self.app.query_one("#status_bar", Static).update(text)
 
@@ -1155,6 +1161,7 @@ class NlessBuffer(Static):
         self.delimiter = candidate
         self.delimiter_inferred = True
         self._delimiter_suggestion_shown = True
+        self._total_skipped = 0
         self._parsed_rows = None
         self._cached_col_widths = None
         # Re-add bad lines so they get parsed with the new delimiter
@@ -1329,11 +1336,13 @@ class NlessBuffer(Static):
                     else:
                         self.app.call_from_thread(rebuild)
                     return
-            msg = f"{skipped} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
-            if self.app._thread_id == threading.get_ident():
-                self.notify(msg, severity="warning")
-            else:
-                self.app.call_from_thread(self.notify, msg, severity="warning")
+            if not self._mismatch_warning_shown:
+                self._mismatch_warning_shown = True
+                msg = f"{skipped} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
+                if self.app._thread_id == threading.get_ident():
+                    self.notify(msg, severity="warning")
+                else:
+                    self.app.call_from_thread(self.notify, msg, severity="warning")
 
         pending = self._pending_action
         if pending is not None:
@@ -1423,6 +1432,7 @@ class NlessBuffer(Static):
                         IndexError,
                         TypeError,
                     ):
+                        self._total_skipped += 1
                         if len(self._skipped_lines) < 200:
                             self._skipped_lines.append(line)
                         continue
@@ -1509,14 +1519,17 @@ class NlessBuffer(Static):
         _MAX_SKIPPED_SAMPLE = 200
         new_rows = []
         skipped_lines = []
+        skipped_count = 0
         for line in new_lines:
             try:
                 cells = parse(line)
             except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
+                skipped_count += 1
                 if _len(skipped_lines) < _MAX_SKIPPED_SAMPLE:
                     skipped_lines.append(line)
                 continue
             if _len(cells) != expected:
+                skipped_count += 1
                 if _len(skipped_lines) < _MAX_SKIPPED_SAMPLE:
                     skipped_lines.append(line)
                 continue
@@ -1529,6 +1542,7 @@ class NlessBuffer(Static):
                 row = [cells[p] for p in col_positions]
             new_rows.append(row)
 
+        self._total_skipped += skipped_count
         self._skipped_lines.extend(skipped_lines)
 
         # Track column widths from a sample to avoid O(n*cols) len() calls
