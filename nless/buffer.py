@@ -209,6 +209,9 @@ class NlessBuffer(Static):
         self._delimiter_suggestion_shown = False
         self._mismatch_warning_shown = False
         self._total_skipped = 0
+        # When set, rejects lines that parse with an ancestor buffer's delimiter.
+        # Used by chained ~ (view unparsed) buffers.
+        self._source_parse_filter: Callable[[str], bool] | None = None
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -339,9 +342,30 @@ class NlessBuffer(Static):
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
+    @staticmethod
+    def _make_parse_filter(
+        delimiter, columns: list, expected: int, parent_filter=None
+    ) -> Callable[[str], bool]:
+        """Build a filter that returns True if a line parses with this delimiter.
+
+        When chained (parent_filter is set), also returns True if the parent
+        accepts the line — so lines that parsed at any ancestor level are rejected.
+        """
+
+        def accepts(line: str) -> bool:
+            if parent_filter and parent_filter(line):
+                return True
+            try:
+                cells = split_line(line, delimiter, columns)
+            except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
+                return False
+            return len(cells) == expected
+
+        return accepts
+
     def action_view_unparsed_logs(self) -> None:
         """Create a new raw buffer containing logs that don't match the current delimiter."""
-        if self.delimiter == "raw":
+        if self.delimiter == "raw" and not self._source_parse_filter:
             self.notify(
                 "Delimiter is 'raw', all logs are being shown.", severity="information"
             )
@@ -351,15 +375,16 @@ class NlessBuffer(Static):
         expected_cell_count = len(
             [c for c in self.current_columns if c.name not in metadata]
         )
-        unparsed_rows = []
-        for row in self.raw_rows:
-            try:
-                cells = split_line(row, self.delimiter, self.current_columns)
-            except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
-                unparsed_rows.append(row)
-                continue
-            if len(cells) != expected_cell_count:
-                unparsed_rows.append(row)
+
+        # Build a filter that rejects lines parseable by this buffer OR any ancestor
+        parse_filter = self._make_parse_filter(
+            self.delimiter,
+            self.current_columns,
+            expected_cell_count,
+            self._source_parse_filter,
+        )
+
+        unparsed_rows = [row for row in self.raw_rows if not parse_filter(row)]
 
         if not unparsed_rows:
             self.notify("All logs match the current delimiter.", severity="information")
@@ -367,9 +392,7 @@ class NlessBuffer(Static):
 
         self.app._create_unparsed_buffer(
             unparsed_rows,
-            source_delimiter=self.delimiter,
-            source_columns=self.current_columns,
-            source_expected=expected_cell_count,
+            source_parse_filter=parse_filter,
             line_stream=self.line_stream,
         )
 
