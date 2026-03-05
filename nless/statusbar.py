@@ -126,13 +126,19 @@ def build_status_text(
     # Strip empty Rich markup pairs left by empty variables, e.g.
     # "[#ffd866][/#ffd866]" when {sort} is "".
     result = re.sub(r"\[([^\]/]+)\]\s*\[/\1\]", "", result)
+    # Normalize runs of whitespace so separator cleanup sees consistent input.
+    result = re.sub(r"  +", " ", result)
 
     # Clean up artifacts from empty variables: collapse repeated separators
     # and strip leading/trailing separators with optional surrounding markup.
     # This handles both plain "|" and markup-wrapped separators like
     # "[#727072]|[/#727072]".
     _sep = r"(?:\[[\w#/]+\])?\|(?:\[[\w#/]+\])?"
-    result = re.sub(rf"(\s*{_sep}\s*){{2,}}", r"\1", result)
+    result = re.sub(
+        rf"(\s*{_sep}\s*){{2,}}",
+        lambda m: " " + re.search(_sep, m.group()).group() + " ",
+        result,
+    )
     result = re.sub(rf"^\s*{_sep}\s*", "", result)
     result = re.sub(rf"\s*{_sep}\s*$", "", result)
     return result.strip()

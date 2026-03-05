@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Static
@@ -162,6 +163,19 @@ def _resolve_key(
     return default_key
 
 
+class HelpScroll(VerticalScroll):
+    """VerticalScroll with cursor-movement bindings for the help screen."""
+
+    BINDINGS = [
+        Binding("down,j", "scroll_down", "Down", id="table.cursor_down"),
+        Binding("up,k", "scroll_up", "Up", id="table.cursor_up"),
+        Binding("ctrl+d", "page_down", "Page Down", id="table.page_down"),
+        Binding("ctrl+u", "page_up", "Page Up", id="table.page_up"),
+        Binding("G", "scroll_end", "Bottom", id="table.scroll_bottom"),
+        Binding("g", "scroll_home", "Top", id="table.scroll_top"),
+    ]
+
+
 class HelpScreen(Screen):
     """A widget to display keybindings help."""
 
@@ -176,6 +190,10 @@ class HelpScreen(Screen):
         self.keymap_name = keymap_name
         self.keymap_bindings = keymap_bindings or {}
 
+    def on_mount(self) -> None:
+        if self.keymap_bindings:
+            self.set_keymap(self.keymap_bindings)
+
     def compose(self) -> ComposeResult:
         help_text = f"[bold]Keybindings[/bold]  (keymap: {self.keymap_name})\n"
         for category, bindings in KEYBINDING_CATEGORIES:
@@ -183,5 +201,5 @@ class HelpScreen(Screen):
             for binding_id, default_key, description in bindings:
                 key = _resolve_key(binding_id, default_key, self.keymap_bindings)
                 help_text += f"  {key:<12} {description}\n"
-        yield VerticalScroll(Static(help_text))
+        yield HelpScroll(Static(help_text))
         yield Static("[bold]Press 'q' to close this help.[/bold]", id="help-footer")

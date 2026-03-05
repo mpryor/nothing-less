@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from textual import events
 from textual.binding import Binding
 from textual.geometry import Region, Size
 from textual.message import Message
@@ -124,6 +125,16 @@ class Datatable(ScrollView):
                     self._cell_styles[(is_cursor, is_odd_row, is_odd_col)] = (
                         Style.combine([cursor_style, column_style, zebra_style])
                     )
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Clamp scroll offset and re-render on terminal resize."""
+        max_x = max(0, self.virtual_size.width - self.size.width)
+        max_y = max(0, self.virtual_size.height - self.size.height)
+        clamped_x = min(self.scroll_offset.x, max_x)
+        clamped_y = min(self.scroll_offset.y, max_y)
+        if clamped_x != self.scroll_offset.x or clamped_y != self.scroll_offset.y:
+            self.scroll_to(clamped_x, clamped_y, animate=False)
+        self.refresh()
 
     def apply_theme(self, theme: NlessTheme) -> None:
         """Re-apply a theme: rebuild style caches and refresh."""

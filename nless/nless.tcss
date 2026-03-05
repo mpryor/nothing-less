@@ -1,3 +1,9 @@
+#title_bar {
+    dock: top;
+    height: 1;
+    width: 100%;
+}
+
 #bottom-container {
     height:auto;
     dock:bottom;

@@ -29,12 +29,16 @@ class NlessSelect(Static):
 
     def on_key(self, event):
         if event.key == "down":
-            self.highlight_index = min(
-                self.highlight_index + 1, len(self.filtered_options) - 1
-            )
+            if self.highlight_index < len(self.filtered_options) - 1:
+                self.highlight_index += 1
+            else:
+                self.highlight_index = 0
             self._write_options()
         elif event.key == "up":
-            self.highlight_index = max(self.highlight_index - 1, 0)
+            if self.highlight_index > 0:
+                self.highlight_index -= 1
+            else:
+                self.highlight_index = len(self.filtered_options) - 1
             self._write_options()
         elif event.key == "escape":
             self.remove()
