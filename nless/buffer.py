@@ -351,7 +351,11 @@ class NlessBuffer(Static):
         unparsed_rows = []
         expected_cell_count = len([c for c in self.current_columns if not c.hidden])
         for row in self.raw_rows:
-            cells = split_line(row, self.delimiter, self.current_columns)
+            try:
+                cells = split_line(row, self.delimiter, self.current_columns)
+            except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
+                unparsed_rows.append(row)
+                continue
             if len(cells) != expected_cell_count:
                 unparsed_rows.append(row)
 
