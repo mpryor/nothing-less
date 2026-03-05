@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{tailing}{loading}"
+DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{tailing}{loading}"
 
 
 def build_status_text(
@@ -36,6 +36,7 @@ def build_status_text(
     theme_name: str = "default",
     time_window: str | None = None,
     delimiter: str | None = None,
+    skipped_rows: int = 0,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -98,6 +99,10 @@ def build_status_text(
     if delimiter:
         delimiter_text = f"[bold]Delim[/bold]: {delimiter} "
 
+    skipped_text = ""
+    if skipped_rows > 0:
+        skipped_text = f"[bold]Skipped[/bold]: {skipped_rows:,} "
+
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
         loading_color = theme.markup("status_loading", f"{spinner} {loading_reason}")
@@ -120,6 +125,7 @@ def build_status_text(
         "unique": column_text,
         "time_window": time_window_text,
         "delimiter": delimiter_text,
+        "skipped": skipped_text,
         "tailing": tailing_text,
         "loading": loading_text,
         "keymap": keymap_name,
