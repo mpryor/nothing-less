@@ -84,6 +84,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Shell commands** - run a shell command and pipe its output into a new buffer with `!`
 - **Tail mode** - keep the cursor at the bottom as new data arrives with `t`
 - **Output** - write buffer contents to a file or stdout (`W`), copy cell values (`y`)
+- **Themes** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
 - **Unparsed lines** - view lines that didn't match the current delimiter with `~`
 
 <details>
@@ -144,6 +145,9 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 **Tail Mode**:
 - `t` - toggle tail mode
 - `r` - reset new-line highlights
+
+**Themes**:
+- `T` - open the theme selector
 
 **Unparsed Logs**:
 - `~` - view logs that did not match the current delimiter

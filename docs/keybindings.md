@@ -104,13 +104,19 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `t` | Toggle tail mode — keep the cursor at the bottom as new data arrives |
-| `r` | Reset new-line highlights — clear the green highlighting on streamed rows |
+| `r` | Reset new-line highlights — clear the highlighting on streamed rows |
 
 ## Unparsed Logs
 
 | Key | Action |
 |-----|--------|
 | `~` | View lines that did not match the current delimiter |
+
+## Themes
+
+| Key | Action |
+|-----|--------|
+| `T` | Open the theme selector to switch color schemes |
 
 ## Help
 
