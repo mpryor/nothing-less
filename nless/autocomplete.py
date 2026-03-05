@@ -52,6 +52,9 @@ class AutocompleteInput(Static):
 
     def on_mount(self):
         self.query_one(Input).focus()
+        suggestions = self.provider.get_suggestions("")
+        if suggestions:
+            self._show_dropdown(suggestions)
 
     @property
     def _input(self) -> Input:
@@ -67,7 +70,7 @@ class AutocompleteInput(Static):
 
     def _show_dropdown(self, suggestions: list[str]) -> None:
         self._suggestions = suggestions
-        self._highlight_index = 0
+        self._highlight_index = -1
         self._dropdown_visible = True
         self._render_dropdown()
         self.query_one(RichLog).add_class("visible")
@@ -89,7 +92,7 @@ class AutocompleteInput(Static):
                 rich_log.write(f"[reverse]{item}[/reverse]")
             else:
                 rich_log.write(f"[{muted}]{item}[/{muted}]")
-        if self._suggestions:
+        if self._suggestions and self._highlight_index >= 0:
             rich_log.scroll_to(y=self._highlight_index)
 
     def _accept_suggestion(self) -> None:
@@ -109,8 +112,8 @@ class AutocompleteInput(Static):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
-        if self._dropdown_visible:
-            self._hide_dropdown()
+        if self._dropdown_visible and self._highlight_index >= 0:
+            self._accept_suggestion()
         # History bookkeeping
         value = self._input.value
         if value != "":
@@ -127,15 +130,17 @@ class AutocompleteInput(Static):
                 if self._highlight_index < len(self._suggestions) - 1:
                     self._highlight_index += 1
                 else:
-                    self._highlight_index = 0
+                    self._highlight_index = -1
                 self._render_dropdown()
             elif event.key == "up":
                 event.stop()
                 event.prevent_default()
-                if self._highlight_index > 0:
+                if self._highlight_index == -1:
+                    self._highlight_index = len(self._suggestions) - 1
+                elif self._highlight_index > 0:
                     self._highlight_index -= 1
                 else:
-                    self._highlight_index = len(self._suggestions) - 1
+                    self._highlight_index = -1
                 self._render_dropdown()
             elif event.key == "tab":
                 event.stop()
