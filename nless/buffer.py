@@ -342,57 +342,67 @@ class NlessBuffer(Static):
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
-    @staticmethod
-    def _make_parse_filter(
-        delimiter, columns: list, expected: int, parent_filter=None
-    ) -> Callable[[str], bool]:
-        """Build a filter that returns True if a line parses with this delimiter.
+    def _make_shown_filter(self) -> Callable[[str], bool]:
+        """Build a filter that returns True if a line would be shown in this buffer.
 
-        When chained (parent_filter is set), also returns True if the parent
-        accepts the line — so lines that parsed at any ancestor level are rejected.
+        A line is "shown" if it parses with the delimiter, has the right column
+        count, and passes all content filters.  When chained via _source_parse_filter,
+        a line is also considered shown if any ancestor buffer would show it.
         """
+        delimiter = self.delimiter
+        columns = list(self.current_columns)
+        metadata = {mc.value for mc in MetadataColumn}
+        expected = len([c for c in columns if c.name not in metadata])
+        filters = list(self.current_filters)
+        col_lookup = dict(self._col_data_idx)
+        parent = self._source_parse_filter
 
-        def accepts(line: str) -> bool:
-            if parent_filter and parent_filter(line):
+        def shown(line: str) -> bool:
+            if parent and parent(line):
                 return True
             try:
                 cells = split_line(line, delimiter, columns)
             except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
                 return False
-            return len(cells) == expected
+            if len(cells) != expected:
+                return False
+            if not filters:
+                return True
+            # Append a dummy arrival timestamp for filter column alignment
+            cells.append("")
+            return matches_all_filters(
+                cells, filters, lambda name, _rp=False: col_lookup.get(name)
+            )
 
-        return accepts
+        return shown
 
     def action_view_unparsed_logs(self) -> None:
-        """Create a new raw buffer containing logs that don't match the current delimiter."""
-        if self.delimiter == "raw" and not self._source_parse_filter:
-            self.notify(
-                "Delimiter is 'raw', all logs are being shown.", severity="information"
-            )
+        """Create a new buffer containing all logs not shown in this (or ancestor) buffers."""
+        if (
+            self.delimiter == "raw"
+            and not self._source_parse_filter
+            and not self.current_filters
+        ):
+            self.notify("All logs are being shown.", severity="information")
             return
 
-        metadata = {mc.value for mc in MetadataColumn}
-        expected_cell_count = len(
-            [c for c in self.current_columns if c.name not in metadata]
-        )
+        shown_filter = self._make_shown_filter()
 
-        # Build a filter that rejects lines parseable by this buffer OR any ancestor
-        parse_filter = self._make_parse_filter(
-            self.delimiter,
-            self.current_columns,
-            expected_cell_count,
-            self._source_parse_filter,
-        )
+        # Use the line stream's full history if available, otherwise fall back to raw_rows
+        if self.line_stream:
+            all_lines = self.line_stream.lines
+        else:
+            all_lines = self.raw_rows
 
-        unparsed_rows = [row for row in self.raw_rows if not parse_filter(row)]
+        excluded_rows = [line for line in all_lines if not shown_filter(line)]
 
-        if not unparsed_rows:
-            self.notify("All logs match the current delimiter.", severity="information")
+        if not excluded_rows:
+            self.notify("All logs are being shown.", severity="information")
             return
 
         self.app._create_unparsed_buffer(
-            unparsed_rows,
-            source_parse_filter=parse_filter,
+            excluded_rows,
+            source_parse_filter=shown_filter,
             line_stream=self.line_stream,
         )
 
