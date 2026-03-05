@@ -29,6 +29,7 @@ theme:
     - content.code.copy
     - search.highlight
     - search.suggest
+    - navigation.footer
 
 nav:
   - Home: index.md
