@@ -40,7 +40,6 @@ from .dataprocessing import (
 from .operations import handle_mark_unique
 from .statusbar import build_status_text
 from .types import CliArgs, Column, Filter, MetadataColumn, RowLengthMismatchError
-from .unparsedlogsscreen import UnparsedLogsScreen
 
 
 def _sample_lines(lines: list[str], max_total: int = 15) -> list[str]:
@@ -341,15 +340,18 @@ class NlessBuffer(Static):
         self._update_status_bar()
 
     def action_view_unparsed_logs(self) -> None:
-        """View logs that do not match the current delimiter."""
+        """Create a new raw buffer containing logs that don't match the current delimiter."""
         if self.delimiter == "raw":
             self.notify(
                 "Delimiter is 'raw', all logs are being shown.", severity="information"
             )
             return
 
+        metadata = {mc.value for mc in MetadataColumn}
+        expected_cell_count = len(
+            [c for c in self.current_columns if c.name not in metadata]
+        )
         unparsed_rows = []
-        expected_cell_count = len([c for c in self.current_columns if not c.hidden])
         for row in self.raw_rows:
             try:
                 cells = split_line(row, self.delimiter, self.current_columns)
@@ -359,13 +361,11 @@ class NlessBuffer(Static):
             if len(cells) != expected_cell_count:
                 unparsed_rows.append(row)
 
-        if len(unparsed_rows) == 0:
+        if not unparsed_rows:
             self.notify("All logs match the current delimiter.", severity="information")
             return
 
-        delimiter = self.delimiter
-
-        self.app.push_screen(UnparsedLogsScreen(unparsed_rows, delimiter))
+        self.app._create_unparsed_buffer(unparsed_rows)
 
     def action_jump_columns(self) -> None:
         """Show columns by user input."""
