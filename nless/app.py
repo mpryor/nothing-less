@@ -1529,6 +1529,23 @@ class NlessApp(App):
             restore_position=False, callback=_restore_position, reason=reason
         )
 
+    def _create_unparsed_buffer(self, unparsed_rows: list[str]) -> None:
+        """Create a new raw-delimiter buffer from lines that didn't parse."""
+        new_pane_id = self._get_new_pane_id()
+        new_buffer = NlessBuffer(pane_id=new_pane_id, cli_args=None)
+        new_buffer.delimiter = "raw"
+        new_buffer.delimiter_inferred = False
+        new_buffer.first_log_line = unparsed_rows[0]
+        new_buffer.first_row_parsed = True
+        new_buffer.current_columns = NlessBuffer._make_columns(["log"])
+        NlessBuffer._ensure_arrival_column(new_buffer.current_columns)
+        new_buffer._rebuild_column_caches()
+        new_buffer.raw_rows = unparsed_rows
+        now = time.time()
+        new_buffer._arrival_timestamps = [now] * len(unparsed_rows)
+        new_buffer._initial_load_done = True
+        self.add_buffer(new_buffer, "~unparsed", reason="Unparsed logs")
+
     def add_buffer(
         self,
         new_buffer: NlessBuffer,
