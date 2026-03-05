@@ -293,7 +293,7 @@ nless auto-detects the double-space-aligned format. If it doesn't, press `D` and
 
 ## 7. Live Streaming
 
-nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen. Once you've reviewed the new data, press `r` to clear the green highlights and reset everything to normal.
+nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen. Once you've reviewed the new data, press `x` to clear the green highlights and reset everything to normal.
 
 ### Streaming from a pipe
 
@@ -309,7 +309,7 @@ Or try it locally:
 ping localhost | nless
 ```
 
-New lines appear at the bottom highlighted in green. Press `t` to enable **tail mode** — the cursor stays pinned to the bottom so you always see the latest data as it arrives. When the green highlighting becomes distracting, press `r` to reset it — the next batch of new lines will be highlighted fresh.
+New lines appear at the bottom highlighted in green. Press `t` to enable **tail mode** — the cursor stays pinned to the bottom so you always see the latest data as it arrives. When the green highlighting becomes distracting, press `x` to reset it — the next batch of new lines will be highlighted fresh.
 
 ### Streaming with `!` shell commands
 
@@ -322,10 +322,10 @@ You can also launch streaming commands from inside nless without leaving the app
     tail -f /var/log/syslog
     ```
 
-3. A new buffer opens and lines stream in, highlighted in green as they arrive
+3. A new buffer group opens (indicated by `⏵` in the group name) and lines stream in, highlighted in green as they arrive
 4. Press `t` to enable tail mode and follow the output
-5. Press `r` to reset the green highlights once you've seen the new data
-6. Press `L` / `H` or `1`–`9` to switch back to your original data
+5. Press `x` to reset the green highlights once you've seen the new data
+6. Press `}` / `{` to switch between buffer groups, or `L` / `H` to switch buffers within a group
 
 ### Monitoring a live log with structure
 
@@ -344,7 +344,7 @@ tail -f /var/log/nginx/access.log | nless
 
 3. All existing and future lines are parsed into columns
 4. Press `t` for tail mode — new lines continue arriving, now structured and highlighted in green
-5. Press `r` to clear the highlights, then press `c` and select `status`, press `f` and type `^5` to filter to 5xx errors in real-time
+5. Press `x` to clear the highlights, then press `c` and select `status`, press `f` and type `^5` to filter to 5xx errors in real-time
 
 ### Watching Kubernetes pods
 
@@ -354,7 +354,7 @@ kubectl get pods -A -w | nless -d '  '
 
 1. The initial pod list loads as normal text
 2. As pods change state, new lines stream in highlighted in green
-3. Press `r` to reset highlights after reviewing the changes
+3. Press `x` to reset highlights after reviewing the changes
 4. Press `c` and select `STATUS`, then press `U` to pivot by status — the view focuses on just `STATUS` and `count`
 5. When a new line arrives, all columns reappear automatically with updated counts, and the new row is highlighted in green
 6. Press `t` to tail and watch changes as they happen
@@ -366,8 +366,18 @@ You can open several streaming commands in separate buffers:
 1. Start with: `kubectl get pods -w | nless`
 2. Press `!` and type `kubectl get events -w` — a second buffer opens with the event stream
 3. Press `!` and type `tail -f /var/log/app.log` — a third buffer opens
-4. Switch between buffers with `1`, `2`, `3` or `L` / `H`
-5. Each buffer streams independently, with new lines highlighted in green — press `r` in any buffer to reset its highlights
+4. Each `!` command opens in its own buffer group — switch between groups with `}` / `{`
+5. Each group streams independently, with new lines highlighted in green — press `x` in any buffer to reset its highlights
+
+### Opening additional files with `O`
+
+You can open more files without leaving nless:
+
+1. Start with: `nless orders.csv`
+2. Press `O` and type the path to another file (autocomplete suggests files in the current directory)
+3. A new buffer group opens (indicated by `📄` in the group name)
+4. Press `}` / `{` to switch between groups
+5. Press `R` to rename a group for easy identification
 
 ### Streaming JSON logs
 

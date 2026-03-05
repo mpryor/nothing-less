@@ -185,6 +185,23 @@ class HelpScroll(VerticalScroll):
 class HelpScreen(ModalScreen):
     """A screen displaying keybindings and config in separate tabs."""
 
+    DEFAULT_CSS = """
+    #help-screen {
+        background: $surface;
+        border: solid $primary;
+        padding: 1;
+        margin: 1;
+        height: 80%;
+        width: 80%;
+        align: center middle;
+    }
+    #help-footer {
+        dock: bottom;
+        height: 1;
+        padding: 0 1;
+    }
+    """
+
     BINDINGS = [
         ("q", "app.pop_screen", "Close Help"),
         Binding("l", "next_tab", "Next tab", show=False),

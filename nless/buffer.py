@@ -16,6 +16,7 @@ from textual.widgets import (
     Select,
     Static,
 )
+from textual import work
 
 from .delimiter import infer_delimiter, split_line
 from .input import LineStream
@@ -756,11 +757,12 @@ class NlessBuffer(Static):
                 if callback:
                     callback()
 
-        def _bg_work():
-            result = _process_data()
-            self.app.call_from_thread(lambda: _apply_to_widgets(result))
+        self._run_deferred_update(_process_data, _apply_to_widgets)
 
-        threading.Thread(target=_bg_work, daemon=True).start()
+    @work(thread=True, exclusive=True, group="data-processing")
+    def _run_deferred_update(self, _process_data, _apply_to_widgets):
+        result = _process_data()
+        self.app.call_from_thread(lambda: _apply_to_widgets(result))
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""

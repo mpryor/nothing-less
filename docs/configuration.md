@@ -11,7 +11,7 @@ nless stores configuration and history files in `~/.config/nless/`.
 | `show_getting_started` | `bool` | `true` | Show the getting started modal on first launch |
 | `theme` | `string` | `"default"` | Color theme name (built-in or custom) |
 | `keymap` | `string` | `"vim"` | Keymap preset name (built-in or custom) |
-| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} {unique}{tailing}{loading}"` | Status bar format string |
+| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} \| {unique}{tailing}{loading}"` | Status bar format string |
 
 Example:
 
@@ -131,9 +131,9 @@ The status bar format can be customized using a format string with named variabl
 | `{rows}` | `1000` |
 | `{col}` | `3` |
 | `{cols}` | `10` |
-| `{unique}` | `\| unique cols: (col1,col2)` or empty |
+| `{unique}` | `Unique: col1,col2` or empty |
 | `{tailing}` | `\| Tailing` (themed) or empty |
-| `{loading}` | `\| ⠋ Loading (1,000 rows)` (themed) or empty |
+| `{loading}` | `\| ⠋ Filtering 1,000 rows` or `\| ✔ Filtered 1,000 → 500 rows` (themed) or empty |
 | `{keymap}` | `vim` |
 | `{theme}` | `dracula` |
 | `{<color_slot>}` | Any theme color slot (e.g. `{accent}`, `{muted}`, `{cursor_bg}`, `{header_fg}`, etc.) |
@@ -144,7 +144,7 @@ Rich markup is supported. Use theme color variables inside markup tags to get co
 
 ```json
 {
-    "status_format": "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{position}[/{cursor_fg}] {unique}{tailing}{loading}"
+    "status_format": "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{unique}[/{cursor_fg}]{tailing}{loading}"
 }
 ```
 

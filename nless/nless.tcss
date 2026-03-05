@@ -27,42 +27,8 @@
     width: 100%;
 }
 
-AutocompleteInput.bottom-input {
-    dock: bottom;
-    height: auto;
-    width: 100%;
-}
-
-AutocompleteInput.bottom-input RichLog {
-    display: none;
-    height: 10;
-    border: solid green;
-}
-
-AutocompleteInput.bottom-input RichLog.visible {
-    display: block;
-}
-
 .dock-bottom {
     dock: bottom;
-}
-
-GettingStartedScreen {
-    align: center middle;
-}
-
-#help-screen {
-    background: $surface;
-    border: solid $primary;
-    padding: 1;
-    margin: 1;
-    height: 80%;
-    width: 80%;
-    align: center middle;
-}
-
-SelectScreen {
-    align: center middle;
 }
 
 .centered {
@@ -92,14 +58,4 @@ Markdown {
 
 .overflow {
     width: 100vw;
-}
-
-#getting_started {
-    overflow: auto;
-}
-
-#help-footer {
-    dock: bottom;
-    height: 1;
-    padding: 0 1;
 }

@@ -11,6 +11,16 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `H` | Select the previous buffer |
 | `q` | Close the current active buffer, or quit if all buffers are closed |
 | `N` | Create a new buffer from the original data |
+| `r` | Rename the current buffer |
+
+## Groups
+
+| Key | Action |
+|-----|--------|
+| `}` | Switch to the next buffer group |
+| `{` | Switch to the previous buffer group |
+| `R` | Rename the current group |
+| `O` | Open a file in a new buffer group |
 
 ## Navigation
 
@@ -104,7 +114,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `t` | Toggle tail mode — keep the cursor at the bottom as new data arrives |
-| `r` | Reset new-line highlights — clear the highlighting on streamed rows |
+| `x` | Reset new-line highlights — clear the highlighting on streamed rows |
 
 ## Unparsed Logs
 

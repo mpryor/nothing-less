@@ -22,6 +22,7 @@
 - **Tabular data toolkit** — filter, sort, search, pivot, and reshape data on the fly
 - **JSON & log parsing** — convert unstructured data streams into tabular data
 - **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
+- **Buffer groups** — open additional files or run shell commands into separate buffer groups, switch between them with `{`/`}`
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
 - **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data

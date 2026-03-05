@@ -9,6 +9,22 @@ from nless.suggestions import HistorySuggestionProvider, SuggestionProvider
 class AutocompleteInput(Static):
     """An Input widget with autocomplete dropdown functionality."""
 
+    DEFAULT_CSS = """
+    AutocompleteInput.bottom-input {
+        dock: bottom;
+        height: auto;
+        width: 100%;
+    }
+    AutocompleteInput.bottom-input RichLog {
+        display: none;
+        height: 10;
+        border: solid green;
+    }
+    AutocompleteInput.bottom-input RichLog.visible {
+        display: block;
+    }
+    """
+
     class Submitted(Message):
         """Posted when the user submits the input (Enter with dropdown hidden)."""
 
