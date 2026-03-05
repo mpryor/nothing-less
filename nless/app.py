@@ -1529,7 +1529,14 @@ class NlessApp(App):
             restore_position=False, callback=_restore_position, reason=reason
         )
 
-    def _create_unparsed_buffer(self, unparsed_rows: list[str]) -> None:
+    def _create_unparsed_buffer(
+        self,
+        unparsed_rows: list[str],
+        source_delimiter,
+        source_columns: list,
+        source_expected: int,
+        line_stream=None,
+    ) -> None:
         """Create a new raw-delimiter buffer from lines that didn't parse."""
         new_pane_id = self._get_new_pane_id()
         new_buffer = NlessBuffer(pane_id=new_pane_id, cli_args=None)
@@ -1544,6 +1551,37 @@ class NlessApp(App):
         now = time.time()
         new_buffer._arrival_timestamps = [now] * len(unparsed_rows)
         new_buffer._initial_load_done = True
+
+        if line_stream:
+            delim = source_delimiter
+            cols = source_columns
+            expected = source_expected
+
+            def unparsed_filter(lines: list[str]) -> None:
+                rejected = []
+                for line in lines:
+                    try:
+                        cells = split_line(line, delim, cols)
+                    except (
+                        json.JSONDecodeError,
+                        csv.Error,
+                        ValueError,
+                        StopIteration,
+                    ):
+                        rejected.append(line)
+                        continue
+                    if len(cells) != expected:
+                        rejected.append(line)
+                if rejected:
+                    new_buffer.add_logs(rejected)
+
+            line_stream.subscribe_future_only(
+                new_buffer,
+                unparsed_filter,
+                lambda: new_buffer.mounted,
+            )
+            new_buffer.line_stream = line_stream
+
         self.add_buffer(new_buffer, "~unparsed", reason="Unparsed logs")
 
     def add_buffer(
