@@ -193,6 +193,16 @@ class NlessBuffer(
         # Used by chained ~ (view unparsed) buffers.
         self._source_parse_filter: Callable[[str], bool] | None = None
 
+        # Back pressure tracking
+        self._bp_timer = None
+        self._bp_total_received: int = 0
+        self._bp_rows_ingested: int = 0
+        self._bp_last_sample_time: float = 0.0
+        self._bp_throughput: float = 0.0
+        self._bp_tip_shown: bool = False
+        self._bp_lag_rows: int = 0
+        self._bp_pipe_info: tuple[int, int | None] | None = None
+
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
         data_table = self.query_one(NlessDataTable)
@@ -363,6 +373,15 @@ class NlessBuffer(
             self.set_timer(1.0, self._mark_initial_load_done)
         if self.rolling_time_window and self.time_window:
             self._start_rolling_timer()
+        if self.line_stream and not self.line_stream.done:
+            is_pipe = True
+            if hasattr(self.line_stream, "is_streaming"):
+                try:
+                    is_pipe = self.line_stream.is_streaming()
+                except (OSError, Exception):
+                    is_pipe = False
+            if is_pipe:
+                self._start_bp_timer()
 
     def _mark_initial_load_done(self) -> None:
         self._initial_load_done = True
@@ -1030,6 +1049,9 @@ class NlessBuffer(
             else None,
             delimiter=self._format_delimiter(),
             skipped_rows=self._total_skipped,
+            lag_rows=self._bp_lag_rows,
+            throughput=self._bp_throughput,
+            pipe_pressure=self._bp_pipe_info,
         )
         self.app.query_one("#status_bar", Static).update(text)
 
@@ -1098,6 +1120,77 @@ class NlessBuffer(
             self._update_status_bar()
         else:
             self._stop_spinner()
+
+    # -- Back pressure monitoring ------------------------------------------
+
+    def _start_bp_timer(self) -> None:
+        """Start the back pressure sampling timer (main thread)."""
+        if self._bp_timer is not None:
+            return
+        try:
+            self._bp_timer = self.set_interval(0.5, self._tick_bp)
+        except (RuntimeError, Exception):
+            pass
+
+    def _stop_bp_timer(self) -> None:
+        """Stop the back pressure sampling timer."""
+        if self._bp_timer is not None:
+            try:
+                self._bp_timer.stop()
+            except (RuntimeError, Exception):
+                pass
+            self._bp_timer = None
+
+    def _tick_bp(self) -> None:
+        """Sample throughput and lag, store on self for status bar to read."""
+        now = time.monotonic()
+        if self._bp_last_sample_time > 0:
+            dt = now - self._bp_last_sample_time
+            if dt > 0:
+                instant_rate = self._bp_rows_ingested / dt
+                self._bp_throughput = 0.3 * instant_rate + 0.7 * self._bp_throughput
+        self._bp_rows_ingested = 0
+        self._bp_last_sample_time = now
+
+        # OS pipe buffer
+        if self.line_stream and hasattr(self.line_stream, "pipe_pressure"):
+            self._bp_pipe_info = self.line_stream.pipe_pressure()
+        else:
+            self._bp_pipe_info = None
+
+        # Lines read from stdin but not yet passed through add_logs
+        if self.line_stream:
+            pipeline_lag = max(0, len(self.line_stream.lines) - self._bp_total_received)
+        else:
+            pipeline_lag = 0
+
+        # During deferred rebuilds, displayed_rows is stale — show the gap
+        if self._loading_reason and self._spinner_timer is not None:
+            rebuild_lag = max(0, len(self.raw_rows) - len(self.displayed_rows))
+        else:
+            rebuild_lag = 0
+
+        self._bp_lag_rows = pipeline_lag + rebuild_lag
+
+        # One-time tailing tip
+        if self._bp_lag_rows > 50_000 and not self._bp_tip_shown:
+            self._bp_tip_shown = True
+            self._flash_status("Tip: press `t` to enable tailing mode")
+
+        # Stop timer when stream is done, no rebuild in flight, and caught up
+        stream_done = self.line_stream and self.line_stream.done
+        if stream_done and self._bp_lag_rows == 0 and not self._loading_reason:
+            self._stop_bp_timer()
+            self._bp_throughput = 0.0
+            self._bp_lag_rows = 0
+            self._bp_pipe_info = None
+            self._bp_last_sample_time = 0.0
+
+        # Only trigger a status bar update when the spinner isn't already
+        # driving updates and the buffer lock isn't held (avoids racing
+        # with deferred table rebuilds).
+        if self._spinner_timer is None and not self.locked:
+            self._update_status_bar()
 
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False

@@ -53,6 +53,7 @@ class StreamingMixin:
         self._skipped_lines = []
         with self._lock:
             self.locked = True
+            self._bp_rows_ingested += len(log_lines)
             try:
                 self._needs_deferred_update = False
                 self._add_logs_inner(log_lines)
@@ -100,6 +101,8 @@ class StreamingMixin:
                 else:
                     self.app.call_from_thread(rebuild)
                 return
+
+        self._bp_total_received += len(log_lines)
 
         pending = self._pending_action
         if pending is not None:
@@ -325,8 +328,8 @@ class StreamingMixin:
                     if cl > column_widths[i]:
                         column_widths[i] = cl
 
-        self._last_flushed_idx = len(self.raw_rows)
         if not new_rows:
+            self._last_flushed_idx = len(self.raw_rows)
             return
 
         if self.search_term:
@@ -344,6 +347,7 @@ class StreamingMixin:
 
         self.displayed_rows.extend(styled)
         data_table.add_rows_precomputed(styled)
+        self._last_flushed_idx = len(self.raw_rows)
 
         if self.is_tailing:
             data_table.action_scroll_bottom()

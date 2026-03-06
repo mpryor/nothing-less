@@ -1,8 +1,10 @@
 """Tests for status bar text building."""
 
 import re
+from unittest.mock import MagicMock, patch
 
-from nless.statusbar import build_status_text
+from nless.input import StdinLineStream
+from nless.statusbar import _format_pipe, _format_rate, build_status_text
 from nless.theme import NlessTheme
 from nless.types import Filter
 
@@ -193,3 +195,158 @@ class TestCustomStatusFormat:
         # Sort and filter are empty, so their markup and separators should be gone
         assert "#ff0000" not in text
         assert "1/100" in text
+
+
+class TestFormatRate:
+    def test_below_1000(self):
+        assert _format_rate(999) == "~999/s"
+
+    def test_at_1000(self):
+        assert _format_rate(1000) == "~1.0K/s"
+
+    def test_below_million(self):
+        assert _format_rate(125_000) == "~125.0K/s"
+
+    def test_at_million(self):
+        assert _format_rate(1_000_000) == "~1.0M/s"
+
+    def test_above_million(self):
+        assert _format_rate(1_200_000) == "~1.2M/s"
+
+    def test_zero(self):
+        assert _format_rate(0) == "~0/s"
+
+
+class TestFormatPipe:
+    def test_with_capacity(self):
+        result = _format_pipe((32768, 65536))
+        assert result == "pipe: 32KB/64KB"
+
+    def test_without_capacity(self):
+        result = _format_pipe((32768, None))
+        assert result == "pipe: 32KB"
+
+    def test_small_bytes(self):
+        result = _format_pipe((512, 65536))
+        assert result == "pipe: 512B/64KB"
+
+    def test_zero_capacity(self):
+        result = _format_pipe((1024, 0))
+        assert result == "pipe: 1KB"
+
+
+class TestBackPressureStatus:
+    def _defaults(self, **overrides):
+        defaults = dict(
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            search_term=None,
+            search_matches_count=0,
+            current_match_index=-1,
+            total_rows=100,
+            total_cols=5,
+            current_row=1,
+            current_col=1,
+            is_tailing=False,
+            unique_column_names=set(),
+            loading_reason="Loading",
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_no_lag_shows_plain_loading(self):
+        text = build_status_text(**self._defaults(), lag_rows=0)
+        assert "Loading" in text
+        assert "rows behind" not in text
+
+    def test_small_lag_hidden(self):
+        text = build_status_text(**self._defaults(), lag_rows=999)
+        assert "rows behind" not in text
+
+    def test_lag_above_threshold_shown(self):
+        text = build_status_text(**self._defaults(), lag_rows=2301, throughput=50000)
+        assert "2,301 rows behind" in text
+        assert "~50.0K/s" in text
+
+    def test_pipe_pressure_shown_above_50_pct(self):
+        text = build_status_text(
+            **self._defaults(),
+            lag_rows=5000,
+            pipe_pressure=(40960, 65536),
+        )
+        assert "pipe: 40KB/64KB" in text
+
+    def test_pipe_pressure_hidden_below_50_pct(self):
+        text = build_status_text(
+            **self._defaults(),
+            lag_rows=5000,
+            pipe_pressure=(10000, 65536),
+        )
+        assert "pipe:" not in text
+
+    def test_pipe_no_capacity_always_shown(self):
+        text = build_status_text(
+            **self._defaults(),
+            lag_rows=5000,
+            pipe_pressure=(1024, None),
+        )
+        assert "pipe: 1KB" in text
+
+    def test_template_variables_exposed(self):
+        text = build_status_text(
+            **self._defaults(),
+            lag_rows=5000,
+            throughput=10000,
+            pipe_pressure=(40960, 65536),  # >50% so pipe is shown
+            format_str="{lag} {throughput} {pipe}",
+        )
+        assert "5,000 rows behind" in text
+        assert "~10.0K/s" in text
+        assert "pipe:" in text
+
+    def test_no_lag_no_loading_empty_variables(self):
+        text = build_status_text(
+            **self._defaults(loading_reason=None),
+            format_str="{lag} {throughput} {pipe}",
+        )
+        # All empty when not loading
+        assert "rows behind" not in text
+        assert "/s" not in text
+        assert "pipe:" not in text
+
+
+class TestPipePressure:
+    @patch("nless.input.fcntl.ioctl")
+    @patch("nless.input.fcntl.fcntl")
+    def test_returns_tuple(self, mock_fcntl, mock_ioctl):
+        def fill_buf(fd, req, buf):
+            buf[0] = 4096
+
+        mock_ioctl.side_effect = fill_buf
+        mock_fcntl.return_value = 65536
+
+        stream = MagicMock(spec=StdinLineStream)
+        stream.new_fd = 3
+        result = StdinLineStream.pipe_pressure(stream)
+        assert result == (4096, 65536)
+
+    @patch("nless.input.fcntl.ioctl", side_effect=OSError)
+    def test_returns_none_on_error(self, _mock):
+        stream = MagicMock(spec=StdinLineStream)
+        stream.new_fd = 3
+        result = StdinLineStream.pipe_pressure(stream)
+        assert result is None
+
+    @patch("nless.input.fcntl.ioctl")
+    @patch("nless.input.fcntl.fcntl", side_effect=OSError)
+    def test_no_capacity_on_macos(self, mock_fcntl, mock_ioctl):
+        def fill_buf(fd, req, buf):
+            buf[0] = 2048
+
+        mock_ioctl.side_effect = fill_buf
+
+        stream = MagicMock(spec=StdinLineStream)
+        stream.new_fd = 3
+        result = StdinLineStream.pipe_pressure(stream)
+        assert result == (2048, None)
