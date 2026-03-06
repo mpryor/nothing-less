@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **CLI arguments** — `--tail`, `--time-window`/`-w`, and `--columns`/`-c` flags for startup configuration
+- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Excluded lines** — press `~` to view rows that failed to parse or were removed by filters, with chained accumulation across ancestor buffers
+- **Auto-switch delimiter** — automatically re-infers delimiter when many rows fail to parse during initial load
+- **Buffer rename** — press `r` to rename the current buffer
+- **Group rename** — press `R` to rename the current buffer group
+
+### Fixes
+
+- Fix cache mutation in `_partition_rows`/`_dedup_rows` corrupting parsed row cache on subsequent rebuilds
+- Fix `displayed_rows.remove()` by value removing wrong row when duplicates exist
+- Fix missing bounds check on regex `col_ref_index` in nested delimiter splitting
+- Fix unclosed `/dev/tty` file handle when reading piped stdin
+- Fix unclosed file handles in `StdinLineStream`
+- Fix race condition with stale group index in `_copy_buffer_async`
+- Fix `ValueError` from `list.remove()` in input history when entry not present
+- Fix `_arrival_timestamps`/`raw_rows` array misalignment during delimiter switch
+- Fix group bar timer not stopped on app exit
+- Fix regex recompiled on every `_update_panes` call
+
+### Refactor
+
+- Extract `NlessApp` into mixins: `app_columns.py`, `app_filters.py`, `app_groups.py`
+- Extract `NlessBuffer` into mixins: `buffer_columns.py`, `buffer_delimiter.py`, `buffer_search.py`, `buffer_streaming.py`, `buffer_timewindow.py`
+
 ## 1.2.0 (2026-03-05)
 
 ### Features

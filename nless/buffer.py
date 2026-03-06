@@ -611,6 +611,7 @@ class NlessBuffer(
         kept_timestamps = []
         unparseable_raw = []
         unparseable_timestamps = []
+        needs_copy = parsed is not None and bool(self.unique_column_names)
         for i, row_str in enumerate(self.raw_rows):
             ts = (
                 self._arrival_timestamps[i]
@@ -618,9 +619,9 @@ class NlessBuffer(
                 else time.time()
             )
             if parsed is not None:
-                # Copy to avoid mutating the cache when dedup inserts a
-                # count column later.
-                cells = list(parsed[i])
+                # Copy when dedup is active to avoid mutating the cache
+                # when _dedup_rows prepends a count column.
+                cells = list(parsed[i]) if needs_copy else parsed[i]
             else:
                 try:
                     cells = split_line(row_str, self.delimiter, self.current_columns)

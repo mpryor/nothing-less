@@ -1,6 +1,6 @@
 # Contributing to This Project
 ## Dependencies
-- This project contains a `~/.tool-versions` to manage Python versions.
+- This project contains a `.tool-versions` to manage Python versions.
 - Make sure you have the correct Python version installed. You can use `mise` to manage multiple Python versions.
 
 ## Poetry

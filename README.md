@@ -98,6 +98,13 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `H` - select the previous buffer
 - `q` - close the current active buffer, or the program if all buffers are closed
 - `N` - create a new buffer from the original data
+- `r` - rename the current buffer
+
+**Groups**:
+- `}` - switch to the next buffer group
+- `{` - switch to the previous buffer group
+- `R` - rename the current group
+- `O` - open a file in a new buffer group
 
 **Navigation**:
 - `h` - move cursor left
@@ -148,10 +155,11 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Tail Mode**:
 - `t` - toggle tail mode
-- `r` - reset new-line highlights
+- `x` - reset new-line highlights
 
-**Themes**:
+**Themes & Keymaps**:
 - `T` - open the theme selector
+- `K` - open the keymap selector
 
 **Excluded Lines**:
 - `~` - view excluded lines (parse failures + filtered rows), with chained accumulation
