@@ -78,6 +78,48 @@ class TestParseArgs:
         assert cli_args.keymap is None
 
 
+class TestTailFlag:
+    def test_tail_flag(self):
+        cli_args = parse_args(["--tail"])
+        assert cli_args.tail is True
+
+    def test_tail_default_false(self):
+        cli_args = parse_args([])
+        assert cli_args.tail is False
+
+
+class TestTimeWindowFlag:
+    def test_time_window_flag(self):
+        cli_args = parse_args(["--time-window", "5m"])
+        assert cli_args.time_window == "5m"
+
+    def test_time_window_short_flag(self):
+        cli_args = parse_args(["-w", "1h"])
+        assert cli_args.time_window == "1h"
+
+    def test_time_window_rolling(self):
+        cli_args = parse_args(["-w", "5m+"])
+        assert cli_args.time_window == "5m+"
+
+    def test_time_window_default_none(self):
+        cli_args = parse_args([])
+        assert cli_args.time_window is None
+
+
+class TestColumnsFlag:
+    def test_columns_flag(self):
+        cli_args = parse_args(["--columns", "name|status"])
+        assert cli_args.columns == "name|status"
+
+    def test_columns_short_flag(self):
+        cli_args = parse_args(["-c", "name"])
+        assert cli_args.columns == "name"
+
+    def test_columns_default_none(self):
+        cli_args = parse_args([])
+        assert cli_args.columns is None
+
+
 class TestExcludeFilterArgs:
     def test_exclude_filter_valid(self):
         cli_args = parse_args(["-x", "city=NYC"])
