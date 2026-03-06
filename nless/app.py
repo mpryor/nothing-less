@@ -433,10 +433,11 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
     def action_delimiter(self) -> None:
         """Change the delimiter used for parsing."""
+        history = [h["val"] for h in self.input_history if h["id"] == "delimiter_input"]
         self._create_prompt(
             "Type delimiter character (e.g. ',', '\\t', ' ', '|') or 'raw' for no parsing",
             "delimiter_input",
-            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS),
+            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS, history=history),
         )
 
     def action_search_to_filter(self) -> None:

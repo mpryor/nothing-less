@@ -4,6 +4,7 @@ from nless.suggestions import (
     FilePathSuggestionProvider,
     HistorySuggestionProvider,
     ShellCommandSuggestionProvider,
+    StaticSuggestionProvider,
 )
 
 
@@ -39,6 +40,52 @@ class TestHistorySuggestionProvider:
     def test_no_match(self):
         provider = HistorySuggestionProvider(["alpha", "beta"])
         assert provider.get_suggestions("xyz") == []
+
+
+class TestStaticSuggestionProvider:
+    def test_empty_input_shows_all(self):
+        provider = StaticSuggestionProvider(["csv", "tsv", "raw"])
+        assert provider.get_suggestions("") == ["csv", "tsv", "raw"]
+
+    def test_history_before_options(self):
+        provider = StaticSuggestionProvider(
+            ["csv", "tsv", "raw"], history=["tsv", "raw"]
+        )
+        result = provider.get_suggestions("")
+        # History items (not in static set) come first, then static options
+        # tsv and raw are in static set so they stay in options only
+        assert result == ["csv", "tsv", "raw"]
+
+    def test_history_unique_items_prepended(self):
+        provider = StaticSuggestionProvider(
+            ["csv", "tsv"], history=["custom1", "custom2"]
+        )
+        result = provider.get_suggestions("")
+        assert result[:2] == ["custom2", "custom1"]
+        assert "csv" in result
+        assert "tsv" in result
+
+    def test_history_deduped_most_recent_first(self):
+        provider = StaticSuggestionProvider(["csv"], history=["a", "b", "a", "c"])
+        # reversed: c, a, b, a → dict.fromkeys keeps first: c, a, b
+        assert provider.history == ["c", "a", "b"]
+
+    def test_prefix_match(self):
+        provider = StaticSuggestionProvider(["csv", "tsv", "raw"], history=["custom"])
+        result = provider.get_suggestions("c")
+        assert "csv" in result
+        assert "custom" in result
+
+    def test_substring_match(self):
+        provider = StaticSuggestionProvider(["csv", "tsv", "raw"])
+        result = provider.get_suggestions("sv")
+        assert result == ["csv", "tsv"]
+
+    def test_max_results(self):
+        options = [f"opt{i}" for i in range(25)]
+        provider = StaticSuggestionProvider(options)
+        result = provider.get_suggestions("")
+        assert len(result) == 20
 
 
 class TestFilePathSuggestionProvider:
