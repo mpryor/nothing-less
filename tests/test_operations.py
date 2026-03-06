@@ -1834,6 +1834,26 @@ class TestRawPagerMode:
             pager.move_cursor(row=0)
             assert pager.cursor_row == 0
 
+    @pytest.mark.asyncio
+    async def test_raw_mode_brackets_escaped(self):
+        """Lines with Rich markup-like brackets should display safely."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ['f"[/{color}]"', "normal line", "[bold]not markup"])
+            await _wait(pilot, app)
+
+            pager = buf.query_one(RawPager)
+            assert len(pager.rows) == 3
+            # Brackets should be escaped so Rich doesn't interpret them
+            assert "\\[" in pager.rows[0][0]
+            assert "\\[" in pager.rows[2][0]
+
 
 # ---------------------------------------------------------------------------
 # Write buffer to file
