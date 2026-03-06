@@ -31,13 +31,18 @@ class RawPager(Datatable):
     def __init__(self, theme: NlessTheme | None = None) -> None:
         super().__init__(theme)
         self._max_line_width = 0
+        # Single dummy column so parent code that indexes column_widths works.
+        self.columns = [""]
+        self.column_widths = [0]
 
-    # -- Column interface (no-ops for raw mode) ----------------------------
+    # -- Column interface -----------------------------------------------------
 
     def add_columns(self, columns: list[str]) -> None:
-        pass
+        # Keep the single dummy column; just ensure column_widths exists.
+        self.columns = [""]
+        self.column_widths = [0]
 
-    # -- Row management (track max line width) -----------------------------
+    # -- Row management -------------------------------------------------------
 
     def _track_line_widths(self, rows: list[list[str]]) -> None:
         for row in rows:
@@ -50,9 +55,13 @@ class RawPager(Datatable):
                 w = len(line.expandtabs(TAB_WIDTH))
             if w > self._max_line_width:
                 self._max_line_width = w
+        # Keep the dummy column_widths in sync so parent code works.
+        self.column_widths = [self._max_line_width]
 
     def _update_virtual_size(self) -> None:
-        self.virtual_size = Size(self._max_line_width, len(self.rows))
+        # +1 so render_line row 0 is reserved for the (empty) header slot,
+        # matching the parent Datatable's scrolling model.
+        self.virtual_size = Size(self._max_line_width, len(self.rows) + 1)
 
     def add_rows(self, rows_data: list[list[str]]) -> None:
         self._track_line_widths(rows_data)
@@ -88,10 +97,12 @@ class RawPager(Datatable):
         self.rows = []
         self.row_count = 0
         self._max_line_width = 0
+        self.columns = [""]
+        self.column_widths = [0]
         self.virtual_size = Size(0, 0)
         self.refresh()
 
-    # -- Cursor / navigation -----------------------------------------------
+    # -- Cursor / navigation --------------------------------------------------
 
     def move_cursor(
         self,
@@ -110,10 +121,11 @@ class RawPager(Datatable):
 
         self.cursor_coordinate = Coordinate(self.cursor_row, 0)
 
+        # +1 because row 0 in the scroll model is the empty header slot.
         self.scroll_to_region(
             region=Region(
                 x=self.scroll_offset.x,
-                y=self.cursor_row,
+                y=self.cursor_row + 1,
                 width=1,
                 height=2,
             ),
@@ -121,6 +133,16 @@ class RawPager(Datatable):
         )
         self.refresh()
         self.post_message(Datatable.CellHighlighted())
+
+    def action_page_up(self) -> None:
+        page = self.size.height
+        new_row = max(0, self.cursor_row - page)
+        self.move_cursor(row=new_row)
+
+    def action_page_down(self) -> None:
+        page = self.size.height
+        new_row = min(len(self.rows) - 1, self.cursor_row + page)
+        self.move_cursor(row=new_row)
 
     def action_cursor_right(self) -> None:
         """Scroll right."""
@@ -142,25 +164,32 @@ class RawPager(Datatable):
         """Scroll to beginning of line."""
         self.scroll_to(0, self.scroll_offset.y, animate=False)
 
-    # -- Rendering ---------------------------------------------------------
+    # -- Rendering ------------------------------------------------------------
 
     def render_line(self, y: int) -> Strip:
+        # Match parent Datatable's scroll model: y is viewport-relative,
+        # row 0 at scroll_offset.y is the header slot (render blank).
         y_abs = y + self.scroll_offset.y
         x = self.scroll_offset.x
+        width = self.size.width
 
-        if y_abs >= len(self.rows):
-            return Strip([])
+        # Row 0 in the scroll model is the header — render empty for raw pager.
+        if y_abs == self.scroll_offset.y:
+            return Strip([Segment(" " * width, Style())])
 
-        row = self.rows[y_abs]
+        row_idx = y_abs - 1  # -1 to account for header slot
+
+        if row_idx < 0 or row_idx >= len(self.rows):
+            return Strip([Segment(" " * width, Style())])
+
+        row = self.rows[row_idx]
         line = row[0] if row else ""
-        is_cursor = y_abs == self.cursor_row
+        is_cursor = row_idx == self.cursor_row
 
         if is_cursor:
             base_style = self._style_cursor
         else:
             base_style = Style()
-
-        width = self.size.width
 
         if "[" in line:
             return self._render_markup_line(line, x, width, base_style)
