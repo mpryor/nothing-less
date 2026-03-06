@@ -33,8 +33,9 @@ class TestBuildStatusText:
         assert "Sort" not in text
         assert "Filter" not in text
         assert "Search" not in text
-        assert "1/100" in text
-        assert "1/5" in text
+        # Position indicators — use regex to avoid matching substrings
+        assert re.search(r"\b1/100\b", text)
+        assert re.search(r"\b1/5\b", text)
 
     def test_sort_ascending(self):
         text = build_status_text(

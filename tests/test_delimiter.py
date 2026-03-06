@@ -7,6 +7,7 @@ from nless.delimiter import (
     split_csv_row,
     split_line,
 )
+from nless.types import Column
 
 
 class TestSplitCsvRow:
@@ -142,3 +143,128 @@ class TestInferDelimiter:
     def test_non_json_with_braces_not_detected_as_json(self):
         lines = ["name,age,city", "{invalid json,30,NYC"]
         assert infer_delimiter(lines) != "json"
+
+
+class TestSplitLineComputedColumns:
+    """Tests for split_line with computed columns (col_ref, col_ref_index, json_ref)."""
+
+    def test_regex_col_ref_index_in_bounds(self):
+        pattern = re.compile(r"(?P<a>\w+)-(?P<b>\w+)")
+        columns = [
+            Column(
+                name="src",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="part_a",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+                computed=True,
+                col_ref="src",
+                col_ref_index=0,
+                delimiter=pattern,
+            ),
+        ]
+        result = split_line("hello-world", ",", columns)
+        assert "hello" in result
+
+    def test_regex_col_ref_index_out_of_bounds(self):
+        pattern = re.compile(r"(?P<a>\w+)")  # Only 1 group
+        columns = [
+            Column(
+                name="src",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="part_b",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+                computed=True,
+                col_ref="src",
+                col_ref_index=5,  # Way out of bounds
+                delimiter=pattern,
+            ),
+        ]
+        result = split_line("hello-world", ",", columns)
+        # Should not crash; out-of-bounds returns empty string
+        assert "" in result
+
+    def test_literal_col_ref_index_out_of_bounds(self):
+        columns = [
+            Column(
+                name="src",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="part_c",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+                computed=True,
+                col_ref="src",
+                col_ref_index=99,
+                delimiter="|",
+            ),
+        ]
+        result = split_line("a|b|c", ",", columns)
+        assert "" in result
+
+    def test_json_ref_nested_key(self):
+        columns = [
+            Column(
+                name="data",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="data.name",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+                computed=True,
+                json_ref="data.name",
+                delimiter="json",
+            ),
+        ]
+        result = split_line('{"name": "Alice", "age": 30}', "json", columns)
+        assert "Alice" in result
+
+    def test_json_ref_missing_key(self):
+        columns = [
+            Column(
+                name="data",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="data.missing",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+                computed=True,
+                json_ref="data.missing",
+                delimiter="json",
+            ),
+        ]
+        result = split_line('{"name": "Alice"}', "json", columns)
+        assert "" in result

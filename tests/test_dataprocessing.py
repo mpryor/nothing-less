@@ -47,6 +47,24 @@ class TestCoerceToNumeric:
     def test_non_numeric_string(self):
         assert coerce_to_numeric("hello") == "hello"
 
+    def test_scientific_notation(self):
+        assert coerce_to_numeric("1e10") == 1e10
+
+    def test_negative_number(self):
+        assert coerce_to_numeric("-42") == -42.0
+
+    def test_empty_string(self):
+        assert coerce_to_numeric("") == ""
+
+    def test_whitespace_string(self):
+        assert coerce_to_numeric(" 42 ") == " 42 "
+
+    def test_infinity_treated_as_string(self):
+        assert coerce_to_numeric("inf") == "inf"
+
+    def test_none_passthrough(self):
+        assert coerce_to_numeric(None) is None
+
 
 class TestCoerceSortKey:
     def test_integer_string(self):

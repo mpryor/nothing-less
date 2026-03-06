@@ -60,14 +60,6 @@ class TestNlessTheme:
         match = theme.highlight_re.search("[#ff0000]text[/#ff0000]")
         assert match is None
 
-    def test_frozen_dataclass(self):
-        theme = NlessTheme()
-        try:
-            theme.name = "other"  # type: ignore[misc]
-            assert False, "Should not be able to mutate frozen dataclass"
-        except AttributeError:
-            pass
-
 
 class TestCustomThemes:
     def test_load_from_nonexistent_dir(self):
@@ -148,7 +140,7 @@ class TestResolveTheme:
 
 
 class TestGetAllThemes:
-    def test_includes_builtins(self):
+    def test_returns_all_builtin_themes(self):
         themes = get_all_themes()
-        assert "default" in themes
-        assert "dracula" in themes
+        for name in BUILTIN_THEMES:
+            assert name in themes

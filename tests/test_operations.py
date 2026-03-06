@@ -237,6 +237,13 @@ class TestFilter:
             await _wait(pilot, app)
 
             assert not buf._loading_reason
+            # Verify the filter actually created a new buffer with correct rows
+            assert len(app.buffers) == 2
+            filtered_buf = app.buffers[1]
+            plain_rows = [
+                [strip_markup(c) for c in r] for r in filtered_buf.displayed_rows
+            ]
+            assert all(r[0] == "Alice" for r in plain_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +566,9 @@ class TestDeferredGeneration:
             # Three presses: asc → desc → clear
             assert buf.sort_column is None
             assert not buf._loading_reason
+            # Rows should be in original insertion order (unsorted)
+            names = [strip_markup(r[0]) for r in buf.displayed_rows]
+            assert names == ["Charlie", "Alice", "Bob"]
 
 
 # ---------------------------------------------------------------------------
@@ -1664,3 +1674,49 @@ class TestTimeWindow:
             assert buf.time_window is None
             assert buf.rolling_time_window is False
             assert buf._rolling_timer is None
+
+
+# ---------------------------------------------------------------------------
+# Write buffer to file
+# ---------------------------------------------------------------------------
+
+
+class TestWriteBuffer:
+    @pytest.mark.asyncio
+    async def test_write_csv_output(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.csv")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            assert len(lines) == 3  # header + 2 data rows
+            assert "name" in lines[0]
+            assert "Alice" in lines[1]
+            assert "Bob" in lines[2]
+
+    @pytest.mark.asyncio
+    async def test_write_empty_buffer(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.csv")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            # Header only, no data rows
+            assert len(lines) == 1
+            assert "name" in lines[0]
