@@ -1,6 +1,6 @@
-from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
+import logging
 import os
 import select
 import stat
@@ -10,6 +10,8 @@ import time
 from typing import IO, Any, Callable
 
 from nless.types import CliArgs
+
+logger = logging.getLogger(__name__)
 
 AddLinesCallback = Callable[[list[str]], None]
 IsReadyCallback = Callable[[], bool]
@@ -39,10 +41,12 @@ class LineStream:
         is_ready_func: IsReadyCallback,
     ) -> None:
         self.subscribers.append((subscriber, is_ready_func, add_lines_func))
-        tpe = ThreadPoolExecutor(max_workers=1)
-        tpe.submit(
-            self._initial_notify, is_ready_func, add_lines_func, self.lines.copy()
+        thread = Thread(
+            target=self._initial_notify,
+            args=(is_ready_func, add_lines_func, self.lines.copy()),
+            daemon=True,
         )
+        thread.start()
 
     def subscribe_future_only(
         self,
@@ -64,7 +68,7 @@ class LineStream:
             try:
                 callback(lines)
             except Exception:
-                pass
+                logger.exception("Error in subscriber callback for %r", subscriber)
 
 
 class ShellCommandLineStream(LineStream):
