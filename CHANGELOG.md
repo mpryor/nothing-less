@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0 (2026-03-06)
+
+### Feat
+
+- show history in delimiter autocomplete dropdown
+
+### Fix
+
+- ~ operator with deleted buffers and @ time window ceiling
+
 ## 1.3.0 (2026-03-06)
 
 ### Feat
