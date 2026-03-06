@@ -1,3 +1,4 @@
+import array
 import fcntl
 import json
 import logging
@@ -5,11 +6,14 @@ import os
 import select
 import stat
 import subprocess
+import termios
 from threading import Thread
 import time
 from typing import IO, Any, Callable
 
 from nless.types import CliArgs
+
+F_GETPIPE_SZ = 1032  # Linux-only; not exposed by fcntl module
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +123,20 @@ class StdinLineStream(LineStream):
         mode = os.fstat(self.new_fd).st_mode
         return stat.S_ISFIFO(mode)
 
+    def pipe_pressure(self) -> tuple[int, int | None] | None:
+        """Return (bytes_pending, pipe_capacity_or_None) or None if unavailable."""
+        try:
+            buf = array.array("i", [0])
+            fcntl.ioctl(self.new_fd, termios.FIONREAD, buf)
+            pending = buf[0]
+            try:
+                capacity = fcntl.fcntl(self.new_fd, F_GETPIPE_SZ)
+            except OSError:
+                capacity = None  # macOS: no F_GETPIPE_SZ
+            return (pending, capacity)
+        except (OSError, ValueError):
+            return None
+
     def run(self) -> None:
         """Read input and handle commands."""
         streaming = self.is_streaming()
@@ -156,11 +174,16 @@ class StdinLineStream(LineStream):
                                 buffer_start_time = 0.0
                     file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
                     if file_readable:
+                        got_data = False
+                        hit_eof = False
                         while True:
                             try:
                                 line = stdin.read()
                                 if not line:
+                                    if not got_data:
+                                        hit_eof = True
                                     break
+                                got_data = True
                                 if not buffer:
                                     buffer_start_time = current_time
                                 buffer += line
@@ -175,6 +198,14 @@ class StdinLineStream(LineStream):
                                     buffer = leftover
                             except (OSError, IOError, ValueError, TypeError):
                                 break
+                        if hit_eof:
+                            # select said readable but read got nothing = EOF
+                            if buffer:
+                                lines, _ = self.parse_streaming_line(buffer)
+                                self.handle_input(lines)
+                                buffer = ""
+                            self.done = True
+                            break
                 else:
                     lines = stdin.readlines()
                     if len(lines) > 0:
