@@ -86,7 +86,10 @@ class StreamingMixin:
 
         try:
             if needs_deferred:
-                self.app.call_from_thread(self._deferred_update_table)
+                if self.app._thread_id == threading.get_ident():
+                    self._deferred_update_table()
+                else:
+                    self.app.call_from_thread(self._deferred_update_table)
 
             skipped_lines = self._skipped_lines
             skipped = len(skipped_lines)
@@ -131,6 +134,21 @@ class StreamingMixin:
             sample = _sample_lines(log_lines, max_total=15)
             self.delimiter = infer_delimiter(sample)
             self.delimiter_inferred = True
+            if self.delimiter == "raw" and not self.raw_mode:
+                # Auto-detected raw mode — set up minimal state and defer
+                # to _deferred_update_table which will swap the widget.
+                self.raw_mode = True
+                self.first_log_line = log_lines[0]
+                parts = self._parse_first_line_columns(self.first_log_line)
+                self.current_columns = self._make_columns(parts)
+                self._ensure_arrival_column(self.current_columns)
+                self._rebuild_column_caches()
+                self.first_row_parsed = True
+                now = time.time()
+                self.raw_rows.extend(log_lines)
+                self._arrival_timestamps.extend([now] * len(log_lines))
+                self._needs_deferred_update = True
+                return
 
         if not self.first_row_parsed:
             self.first_log_line = log_lines[0]

@@ -59,9 +59,12 @@ def split_line(
     else:
         cells = line.split(delimiter)
 
-    cells = [
-        txt.replace("\t", "  ").strip() for txt in cells
-    ]  # Rich rendering breaks on tabs
+    if delimiter == "raw":
+        pass  # Preserve whitespace and tabs for raw pager rendering
+    else:
+        cells = [
+            txt.replace("\t", "  ").strip() for txt in cells
+        ]  # Rich rendering breaks on tabs
 
     if not columns or not any(c.delimiter or c.json_ref or c.col_ref for c in columns):
         return cells

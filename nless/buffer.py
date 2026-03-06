@@ -113,6 +113,7 @@ class NlessBuffer(
         self.locked = False
         self.pane_id: int = pane_id
         self.mounted = False
+        self.raw_mode: bool = cli_args.raw if cli_args else False
         if line_stream:
             line_stream.subscribe(self, self.add_logs, lambda: self.mounted)
         self.first_row_parsed = False
@@ -368,11 +369,39 @@ class NlessBuffer(
             self.line_stream = line_stream
 
     def compose(self) -> ComposeResult:
-        """Create and yield the DataTable widget."""
+        """Create and yield the DataTable or RawPager widget."""
         with Vertical():
             theme = self._get_theme()
-            table = NlessDataTable(theme=theme)
-            yield table
+            if self.raw_mode:
+                from .rawpager import RawPager
+
+                yield RawPager(theme=theme)
+            else:
+                yield NlessDataTable(theme=theme)
+
+    def _ensure_correct_view_widget(self) -> None:
+        """Swap between RawPager and DataTable if raw_mode changed."""
+        from .rawpager import RawPager
+
+        try:
+            current = self.query_one(NlessDataTable)
+        except Exception:
+            return
+
+        want_raw = self.raw_mode
+        is_raw = isinstance(current, RawPager)
+        if want_raw == is_raw:
+            return
+
+        theme = self._get_theme()
+        container = self.query_one(Vertical)
+        current.remove()
+        if want_raw:
+            new_widget = RawPager(theme=theme)
+        else:
+            new_widget = NlessDataTable(theme=theme)
+        container.mount(new_widget)
+        new_widget.focus()
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -950,13 +979,15 @@ class NlessBuffer(
             """Main-thread: push processed data into widgets."""
             if result is None or gen != self._update_generation:
                 return
-            data_table.clear(columns=True)
-            data_table.fixed_columns = result["fixed_columns"]
-            data_table.add_columns(result["column_labels"])
-            data_table.column_widths = result["column_widths"]
+            self._ensure_correct_view_widget()
+            dt = self.query_one(NlessDataTable)
+            dt.clear(columns=True)
+            dt.fixed_columns = result["fixed_columns"]
+            dt.add_columns(result["column_labels"])
+            dt.column_widths = result["column_widths"]
 
             self.displayed_rows = result["styled_rows"]
-            data_table.add_rows_precomputed(result["styled_rows"])
+            dt.add_rows_precomputed(result["styled_rows"])
 
             bad_lines = result["inconsistent_rows"]
             if bad_lines:
@@ -996,9 +1027,7 @@ class NlessBuffer(
                 self._stop_spinner()
                 self._update_status_bar()
                 if restore_position:
-                    self._restore_position(
-                        data_table, cursor_x, cursor_y, scroll_x, scroll_y
-                    )
+                    self._restore_position(dt, cursor_x, cursor_y, scroll_x, scroll_y)
                 if loaded_reason:
                     row_count = len(self.displayed_rows)
                     if row_count > 0:
@@ -1091,6 +1120,7 @@ class NlessBuffer(
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
+        self._ensure_correct_view_widget()
         data_table = self.query_one(NlessDataTable)
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
