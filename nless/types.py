@@ -28,6 +28,9 @@ class CliArgs:
     filename: str | None = None
     theme: str | None = None
     keymap: str | None = None
+    tail: bool = False
+    time_window: str | None = None
+    columns: str | None = None
 
 
 @dataclass

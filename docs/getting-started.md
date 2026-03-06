@@ -54,6 +54,9 @@ Once data is loaded, press `?` to view all keybindings.
 | `--sort-by` | `-s` | Column to sort by initially, format: `column=asc` or `column=desc` |
 | `--theme` | `-t` | Color theme to use (e.g. `dracula`, `nord`, `monokai`) |
 | `--keymap` | `-k` | Keymap preset to use (e.g. `vim`, `less`, `emacs`) |
+| `--tail` | | Start in tail mode (cursor follows new data) |
+| `--time-window` | `-w` | Show only rows within a time window (e.g. `5m`, `1h`, `30s`). Append `+` for rolling (e.g. `5m+`) |
+| `--columns` | `-c` | Regex to filter visible columns on startup (e.g. `name\|status`) |
 
 ### Examples
 
@@ -85,6 +88,18 @@ Pivot by unique keys:
 
 ```bash
 nless -u 'namespace' -u 'status' pods.txt
+```
+
+Start in tail mode with a rolling time window:
+
+```bash
+kubectl get events -w | nless --tail -w '5m+'
+```
+
+Show only specific columns:
+
+```bash
+nless -c 'name|status|age' pods.txt
 ```
 
 Combine options with piped input:

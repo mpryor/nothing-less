@@ -59,6 +59,24 @@ def parse_args(argv=None) -> CliArgs:
         help="Keymap preset to use (e.g. vim, less, emacs)",
         default=None,
     )
+    parser.add_argument(
+        "--tail",
+        action="store_true",
+        help="Start in tail mode (cursor follows new data)",
+        default=False,
+    )
+    parser.add_argument(
+        "--time-window",
+        "-w",
+        help="Show only rows within a time window (e.g. 5m, 1h, 30s). Append + for rolling (e.g. 5m+)",
+        default=None,
+    )
+    parser.add_argument(
+        "--columns",
+        "-c",
+        help="Regex to filter visible columns (e.g. 'name|status')",
+        default=None,
+    )
 
     args = parser.parse_args(argv)
 
@@ -114,6 +132,9 @@ def parse_args(argv=None) -> CliArgs:
         sort_by=args.sort_by,
         theme=args.theme,
         keymap=args.keymap,
+        tail=args.tail,
+        time_window=args.time_window,
+        columns=args.columns,
     )
     cli_args.filename = args.filename
     return cli_args

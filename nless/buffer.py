@@ -132,6 +132,7 @@ class NlessBuffer(Static):
         line_stream: LineStream | None = None,
     ):
         super().__init__()
+        self._cli_args = cli_args
         self.line_stream = line_stream
         self._lock = threading.RLock()
         self._pending_action: tuple[str, Callable] | None = None
@@ -168,7 +169,7 @@ class NlessBuffer(Static):
             self.delimiter = None
 
         self.delimiter_inferred = False
-        self.is_tailing = False
+        self.is_tailing = cli_args.tail if cli_args else False
         self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
         # Columns hidden by pivot (to reveal when new lines arrive)
@@ -332,6 +333,8 @@ class NlessBuffer(Static):
             self._start_spinner()
         if not self._initial_load_done:
             self.set_timer(1.0, self._mark_initial_load_done)
+        if self.rolling_time_window and self.time_window:
+            self._start_rolling_timer()
 
     def _mark_initial_load_done(self) -> None:
         self._initial_load_done = True
@@ -1279,6 +1282,37 @@ class NlessBuffer(Static):
             total += float(match.group(1)) * units[match.group(2).lower()]
         return total if total > 0 else None
 
+    def _apply_initial_column_filter(self, column_regex: str) -> None:
+        """Apply a column visibility filter from CLI args."""
+        filters = [name.strip() for name in column_regex.split("|")]
+        regexes = [re.compile(rf"{name}", re.IGNORECASE) for name in filters]
+        metadata_names = {mc.value for mc in MetadataColumn}
+        for col in self.current_columns:
+            if col.name in metadata_names or col.pinned:
+                continue
+            plain_name = strip_markup(col.name)
+            matched = False
+            for i, regex in enumerate(regexes):
+                if regex.search(plain_name):
+                    col.hidden = False
+                    col.render_position = i
+                    matched = True
+                    break
+            if not matched:
+                col.hidden = True
+                col.render_position = 99999
+        self._rebuild_column_caches()
+
+    def _apply_initial_time_window(self, window_str: str) -> None:
+        """Apply a time window from CLI args."""
+        rolling = window_str.endswith("+")
+        value = window_str.rstrip("+").strip()
+        duration = self._parse_duration(value)
+        if duration is None:
+            return
+        self.time_window = duration
+        self.rolling_time_window = rolling
+
     def _apply_time_window(self, rows: list[list[str]]) -> list[list[str]]:
         """Filter rows by the active time window using arrival timestamps."""
         if not self.time_window:
@@ -1454,6 +1488,12 @@ class NlessBuffer(Static):
 
             self._rebuild_column_caches()
             self.first_row_parsed = True
+
+            if self._cli_args and self._cli_args.columns:
+                self._apply_initial_column_filter(self._cli_args.columns)
+
+            if self._cli_args and self._cli_args.time_window:
+                self._apply_initial_time_window(self._cli_args.time_window)
 
         now = time.time()
         batch_timestamps = [now] * len(log_lines)
