@@ -1,34 +1,36 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (2026-03-06)
 
-### Features
+### Feat
 
-- **CLI arguments** — `--tail`, `--time-window`/`-w`, and `--columns`/`-c` flags for startup configuration
-- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
-- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
-- **Excluded lines** — press `~` to view rows that failed to parse or were removed by filters, with chained accumulation across ancestor buffers
-- **Auto-switch delimiter** — automatically re-infers delimiter when many rows fail to parse during initial load
-- **Buffer rename** — press `r` to rename the current buffer
-- **Group rename** — press `R` to rename the current buffer group
+- add --tail, --time-window, and --columns CLI arguments
+- ~ shows all excluded logs (filters + parse failures, not just parse)
+- chained ~ buffers exclude lines from all ancestor delimiters
+- unparsed buffer (~) stays updated with streaming data
+- ~ creates a new raw buffer from unparsed logs instead of a popup screen
+- show skipped row count in status bar, suppress repeated mismatch warnings
+- smarter delimiter inference with auto-switch on mismatch
+- delimiter fixes, empty-input guards, space+ option, status bar
+- queue user actions during data loading instead of rejecting them
+- flash message when delimiter change clears active filters
+- arrival timestamps, time window filter, and rolling window
 
-### Fixes
+### Fix
 
-- Fix cache mutation in `_partition_rows`/`_dedup_rows` corrupting parsed row cache on subsequent rebuilds
-- Fix `displayed_rows.remove()` by value removing wrong row when duplicates exist
-- Fix missing bounds check on regex `col_ref_index` in nested delimiter splitting
-- Fix unclosed `/dev/tty` file handle when reading piped stdin
-- Fix unclosed file handles in `StdinLineStream`
-- Fix race condition with stale group index in `_copy_buffer_async`
-- Fix `ValueError` from `list.remove()` in input history when entry not present
-- Fix `_arrival_timestamps`/`raw_rows` array misalignment during delimiter switch
-- Fix group bar timer not stopped on app exit
-- Fix regex recompiled on every `_update_panes` call
+- prevent double lines when switching delimiter to raw
+- filters now match text that looks like Rich markup tags (e.g. [INFO])
+- update 5 stale tests to match current behavior
+- catch parse errors in view_unparsed_logs for JSON/CSV delimiters
+- JSON delimiter switch from raw/regex uses first data row as header
+- one-shot time window, cursor scroll behind header, page up/down
 
 ### Refactor
 
-- Extract `NlessApp` into mixins: `app_columns.py`, `app_filters.py`, `app_groups.py`
-- Extract `NlessBuffer` into mixins: `buffer_columns.py`, `buffer_delimiter.py`, `buffer_search.py`, `buffer_streaming.py`, `buffer_timewindow.py`
+- extract mixins from god objects, fix bugs, and improve test suite
+- improve state management and fix code smells across codebase
+- consolidate delimiter auto-switch logic and fix review findings
+- extract shared auto-switch method, remove redundant state
 
 ## 1.2.0 (2026-03-05)
 
