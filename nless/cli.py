@@ -165,12 +165,16 @@ def main():
         app = NlessApp(cli_args=cli_args, starting_stream=stdin_line_stream)
         t = Thread(target=stdin_line_stream.run, daemon=True)
         t.start()
-        sys.__stdin__ = open(
-            "/dev/tty"
-        )  # hack to allow textual to read input from terminal, while still reading piped data from stdin
+        tty_file = open("/dev/tty")  # noqa: SIM115
+        sys.__stdin__ = tty_file  # allow textual to read terminal input while piped stdin is read on a thread
     else:
+        tty_file = None
         app = NlessApp(cli_args=cli_args, show_help=True, starting_stream=None)
-    app.run()
+    try:
+        app.run()
+    finally:
+        if tty_file is not None:
+            tty_file.close()
 
 
 if __name__ == "__main__":

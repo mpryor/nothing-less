@@ -118,7 +118,12 @@ def split_line(
             match = col.delimiter.match(ref_cell)
             if match:
                 subcells = [txt.replace("\t", "  ") for txt in match.groups()]
-                computed.append((pos, subcells[col.col_ref_index]))
+                value = (
+                    subcells[col.col_ref_index]
+                    if col.col_ref_index < len(subcells)
+                    else ""
+                )
+                computed.append((pos, value))
         else:
             ref_cell = _find_ref_column_cell(
                 col.col_ref, sorted_columns, cells, count_metadata_columns

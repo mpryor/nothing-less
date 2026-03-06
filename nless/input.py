@@ -104,10 +104,11 @@ class StdinLineStream(LineStream):
         new_fd: int | None,
     ):
         super().__init__()
+        self._opened_file = None
         if file_name is not None:
             file_name = os.path.expanduser(file_name)
-            self.file = open(file_name, "r+", errors="ignore")
-            self.new_fd = self.file.fileno()
+            self._opened_file = open(file_name, "r+", errors="ignore")  # noqa: SIM115
+            self.new_fd = self._opened_file.fileno()
         elif new_fd is not None:
             self.new_fd = new_fd
 
@@ -132,53 +133,58 @@ class StdinLineStream(LineStream):
         last_read_time = time.time_ns() / 1_000_000  # - FLUSH_INTERVAL_MS
         buffer_start_time = 0.0
 
-        while True:
-            if streaming:
-                current_time = time.time_ns() / 1_000_000
-                if buffer:
-                    elapsed_since_read = current_time - last_read_time
-                    elapsed_since_start = current_time - buffer_start_time
-                    should_flush = (
-                        elapsed_since_read >= FLUSH_INTERVAL_MS
-                        or elapsed_since_start >= MAX_BUFFER_HOLD_MS
-                        or len(buffer) >= MAX_BUFFER_SIZE
-                    )
-                    if should_flush:
-                        lines, leftover = self.parse_streaming_line(buffer)
-                        self.handle_input(lines)
-                        buffer = leftover
-                        last_read_time = current_time
-                        if leftover:
-                            buffer_start_time = current_time
-                        else:
-                            buffer_start_time = 0.0
-                file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
-                if file_readable:
-                    while True:
-                        try:
-                            line = stdin.read()
-                            if not line:
-                                break
-                            if not buffer:
-                                buffer_start_time = current_time
-                            buffer += line
+        try:
+            while True:
+                if streaming:
+                    current_time = time.time_ns() / 1_000_000
+                    if buffer:
+                        elapsed_since_read = current_time - last_read_time
+                        elapsed_since_start = current_time - buffer_start_time
+                        should_flush = (
+                            elapsed_since_read >= FLUSH_INTERVAL_MS
+                            or elapsed_since_start >= MAX_BUFFER_HOLD_MS
+                            or len(buffer) >= MAX_BUFFER_SIZE
+                        )
+                        if should_flush:
+                            lines, leftover = self.parse_streaming_line(buffer)
+                            self.handle_input(lines)
+                            buffer = leftover
                             last_read_time = current_time
-                            if self.delimiter != "json":
-                                # If we're reading json - we assume we need to coalesce multiple lines
-                                #   to account for multi-line json objects during initial read
-                                #   This *could* cause a lock if streaming json objects faster than the FLUSH_INTERVAL_MS
-                                # Otherwise, we can process line-by-line
-                                lines, leftover = self.parse_streaming_line(buffer)
-                                self.handle_input(lines)
-                                buffer = leftover
-                        except (OSError, IOError, ValueError, TypeError):
-                            break
-            else:
-                lines = stdin.readlines()
-                if len(lines) > 0:
-                    self.handle_input(lines)
+                            if leftover:
+                                buffer_start_time = current_time
+                            else:
+                                buffer_start_time = 0.0
+                    file_readable, _, _ = select.select([stdin], [], [], TIMEOUT)
+                    if file_readable:
+                        while True:
+                            try:
+                                line = stdin.read()
+                                if not line:
+                                    break
+                                if not buffer:
+                                    buffer_start_time = current_time
+                                buffer += line
+                                last_read_time = current_time
+                                if self.delimiter != "json":
+                                    # If we're reading json - we assume we need to coalesce multiple lines
+                                    #   to account for multi-line json objects during initial read
+                                    #   This *could* cause a lock if streaming json objects faster than the FLUSH_INTERVAL_MS
+                                    # Otherwise, we can process line-by-line
+                                    lines, leftover = self.parse_streaming_line(buffer)
+                                    self.handle_input(lines)
+                                    buffer = leftover
+                            except (OSError, IOError, ValueError, TypeError):
+                                break
                 else:
-                    time.sleep(1)
+                    lines = stdin.readlines()
+                    if len(lines) > 0:
+                        self.handle_input(lines)
+                    else:
+                        time.sleep(1)
+        finally:
+            stdin.close()
+            if self._opened_file is not None:
+                self._opened_file.close()
 
     def parse_streaming_line(self, line: str) -> tuple[list[str], str]:
         lines = line.split("\n")

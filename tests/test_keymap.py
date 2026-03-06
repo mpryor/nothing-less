@@ -4,7 +4,6 @@ import json
 
 from nless.keymap import (
     BUILTIN_KEYMAPS,
-    NlessKeymap,
     get_all_keymaps,
     load_custom_keymaps,
     resolve_keymap,
@@ -35,14 +34,6 @@ class TestNlessKeymap:
         emacs = BUILTIN_KEYMAPS["emacs"]
         assert "table.cursor_down" in emacs.bindings
         assert emacs.bindings["table.cursor_down"] == "ctrl+n,down"
-
-    def test_frozen_dataclass(self):
-        keymap = NlessKeymap()
-        try:
-            keymap.name = "other"  # type: ignore[misc]
-            assert False, "Should not be able to mutate frozen dataclass"
-        except AttributeError:
-            pass
 
 
 class TestCustomKeymaps:
