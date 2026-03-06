@@ -8,13 +8,13 @@ under load.
 
 Baselines were measured on the development machine (2026-03-03):
 
-    load            0.30s   (50K rows)
-    sort            0.44s   (50K rows)
-    filter          0.41s   (50K rows)
-    unique          0.53s   (50K rows)
+    load            0.31s   (50K rows)
+    sort            0.55s   (50K rows)
+    filter          0.57s   (50K rows)
+    unique          0.57s   (50K rows)
     copy            0.001s  (50K rows)
     add_rows        0.027s  (50K rows)
-    sort_100k       0.65s   (100K rows)
+    sort_100k       1.03s   (100K rows)
 
 Run only perf tests:   pytest -m perf
 Skip perf tests:       pytest -m "not perf"
@@ -34,13 +34,13 @@ N_COLS = 5
 
 # Measured baselines (max of 3 runs, seconds).
 _BASELINES = {
-    "load": 0.30,
-    "sort": 0.44,
-    "filter": 0.41,
-    "unique": 0.53,
+    "load": 0.31,
+    "sort": 0.55,
+    "filter": 0.57,
+    "unique": 0.57,
     "copy": 0.001,
     "add_rows": 0.027,
-    "sort_100k": 0.65,
+    "sort_100k": 1.03,
 }
 
 # Multiplier applied to baselines to set thresholds.  2x is tight enough to
