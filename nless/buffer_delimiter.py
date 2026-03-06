@@ -151,6 +151,7 @@ class DelimiterMixin:
                     should_update = True
 
         if should_update:
+            self.raw_mode = self.delimiter == "raw"
 
             def callback():
                 if had_filters:

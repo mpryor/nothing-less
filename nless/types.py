@@ -31,6 +31,7 @@ class CliArgs:
     tail: bool = False
     time_window: str | None = None
     columns: str | None = None
+    raw: bool = False
 
 
 @dataclass

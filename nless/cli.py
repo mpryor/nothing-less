@@ -78,6 +78,12 @@ def parse_args(argv=None) -> CliArgs:
         help="Regex to filter visible columns (e.g. 'name|status')",
         default=None,
     )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Start in raw pager mode (no delimiter parsing)",
+        default=False,
+    )
 
     args = parser.parse_args(argv)
 
@@ -127,7 +133,7 @@ def parse_args(argv=None) -> CliArgs:
             unique_keys.add(unique_key)
 
     cli_args = CliArgs(
-        delimiter=args.delimiter,
+        delimiter=args.delimiter if not args.raw else "raw",
         filters=filters,
         unique_keys=unique_keys,
         sort_by=args.sort_by,
@@ -136,6 +142,7 @@ def parse_args(argv=None) -> CliArgs:
         tail=args.tail,
         time_window=args.time_window,
         columns=args.columns,
+        raw=args.raw,
     )
     cli_args.filename = args.filename
     return cli_args

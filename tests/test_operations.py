@@ -1679,6 +1679,163 @@ class TestTimeWindow:
 
 
 # ---------------------------------------------------------------------------
+# Raw Pager Mode
+# ---------------------------------------------------------------------------
+
+
+class TestRawPagerMode:
+    @pytest.mark.asyncio
+    async def test_cli_raw_flag_enables_raw_mode(self):
+        """--raw CLI flag should set raw_mode on the buffer."""
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)):
+            buf = app.buffers[0]
+            assert buf.raw_mode is True
+            assert buf.delimiter == "raw"
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_uses_raw_pager_widget(self):
+        """In raw mode, the buffer should compose a RawPager widget."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)):
+            buf = app.buffers[0]
+            widget = buf.query_one(Datatable)
+            assert isinstance(widget, RawPager)
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_displays_lines_as_is(self):
+        """Lines should appear in the pager without column parsing."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            lines = ["Hello world", "  indented line", "\ttab line"]
+            _load(buf, lines)
+            await _wait(pilot, app)
+
+            pager = buf.query_one(RawPager)
+            assert len(pager.rows) == 3
+            # Each row is a single-element list containing the raw line
+            assert pager.rows[0][0] == "Hello world"
+            assert pager.rows[1][0] == "  indented line"
+            assert pager.rows[2][0] == "\ttab line"
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_auto_detection(self):
+        """Non-tabular input should auto-detect raw mode."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            # Single-word lines with no delimiter pattern
+            _load(buf, ["hello", "world", "foo"])
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is True
+            assert buf.delimiter == "raw"
+            widget = buf.query_one(Datatable)
+            assert isinstance(widget, RawPager)
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_switch_to_table(self):
+        """Pressing D and entering a delimiter should switch to table mode."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30", "Bob,25"])
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is True
+
+            # Switch to CSV delimiter
+            buf.switch_delimiter(",")
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is False
+            assert buf.delimiter == ","
+            widget = buf.query_one(Datatable)
+            assert not isinstance(widget, RawPager)
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_switch_from_table(self):
+        """Switching delimiter to 'raw' from table mode should enable raw mode."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age", "Alice,30", "Bob,25"])
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is False
+
+            buf.switch_delimiter("raw")
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is True
+            widget = buf.query_one(Datatable)
+            assert isinstance(widget, RawPager)
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_search(self):
+        """Search should work in raw mode, highlighting matches."""
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["Hello world", "Goodbye world", "Hello again"])
+            await _wait(pilot, app)
+
+            buf._perform_search("Hello")
+            await _wait(pilot, app)
+
+            assert buf.search_term is not None
+            assert len(buf.search_matches) == 2
+
+    @pytest.mark.asyncio
+    async def test_raw_mode_navigation(self):
+        """Cursor navigation should work in raw mode."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["line 1", "line 2", "line 3"])
+            await _wait(pilot, app)
+
+            pager = buf.query_one(RawPager)
+            pager.move_cursor(row=2)
+            assert pager.cursor_row == 2
+            pager.move_cursor(row=0)
+            assert pager.cursor_row == 0
+
+
+# ---------------------------------------------------------------------------
 # Write buffer to file
 # ---------------------------------------------------------------------------
 
