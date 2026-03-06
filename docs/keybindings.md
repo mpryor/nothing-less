@@ -47,6 +47,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `C` | Prompt for a regex filter to selectively display columns, or `all` to see all columns |
 | `>` | Move the current column one to the right |
 | `<` | Move the current column one to the left |
+| `A` | Toggle the `_arrival` metadata column showing when each row was received |
 
 ## Pivoting
 
@@ -67,6 +68,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `E` | Exclude the current column by the highlighted cell |
 | `\|` | Filter ALL columns and prompt for a filter |
 | `&` | Apply the current search as a filter across all columns |
+| `@` | Set a time window to show only recent rows (e.g. `5m`, `1h`, `30s`). Append `+` for rolling mode (e.g. `5m+`) |
 
 ## Searching
 
@@ -116,11 +118,11 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `t` | Toggle tail mode — keep the cursor at the bottom as new data arrives |
 | `x` | Reset new-line highlights — clear the highlighting on streamed rows |
 
-## Unparsed Logs
+## Excluded Lines
 
 | Key | Action |
 |-----|--------|
-| `~` | View lines that did not match the current delimiter |
+| `~` | View excluded lines — rows that failed to parse or were removed by filters. Chained `~` buffers accumulate exclusions from all ancestors |
 
 ## Themes & Keymaps
 

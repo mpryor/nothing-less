@@ -25,7 +25,7 @@ All files are created automatically on first use. If a file is missing or contai
 | `show_getting_started` | `bool` | `true` | Show the getting started modal on first launch |
 | `theme` | `string` | `"default"` | Color theme name (built-in or custom) |
 | `keymap` | `string` | `"vim"` | Keymap preset name (built-in or custom) |
-| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} \| {unique}{tailing}{loading}"` | Status bar format string |
+| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} \| {unique}{time_window}{skipped}{tailing}{loading}"` | Status bar format string |
 
 Example:
 
@@ -200,6 +200,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.exclude_filter_cursor_word` | `E` | Exclude by cursor word |
 | `app.filter_any` | `\|` | Filter all columns |
 | `app.search_to_filter` | `&` | Apply search as filter |
+| `app.time_window` | `@` | Time window filter |
 
 #### Columns & Data
 
@@ -209,6 +210,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.filter_columns` | `C` | Show/hide columns |
 | `buffer.move_column_right` | `>` | Move column right |
 | `buffer.move_column_left` | `<` | Move column left |
+| `app.toggle_arrival` | `A` | Toggle arrival timestamps |
 | `buffer.sort` | `s` | Sort column |
 | `app.mark_unique` | `U` | Mark column as pivot key |
 | `app.delimiter` | `D` | Change delimiter |
@@ -238,7 +240,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.run_command` | `!` | Run shell command |
 | `buffer.toggle_tail` | `t` | Toggle tail mode |
 | `buffer.reset_highlights` | `x` | Reset new-line highlights |
-| `buffer.view_unparsed_logs` | `~` | View unparsed lines |
+| `buffer.view_unparsed_logs` | `~` | View excluded lines |
 | `app.select_theme` | `T` | Select theme |
 | `app.select_keymap` | `K` | Select keymap |
 | `app.help` | `?` | Show help |
@@ -260,6 +262,9 @@ The status bar format can be customized using a format string with named variabl
 | `{col}` | `3` |
 | `{cols}` | `10` |
 | `{unique}` | `Unique: col1,col2` or empty |
+| `{time_window}` | `Window: 5m` or empty |
+| `{delimiter}` | `Delim: csv` or empty |
+| `{skipped}` | `Skipped: 42` or empty |
 | `{tailing}` | `\| Tailing` (themed) or empty |
 | `{loading}` | `\| ⠋ Filtering 1,000 rows` or `\| ✔ Filtered 1,000 → 500 rows` (themed) or empty |
 | `{keymap}` | `vim` |
