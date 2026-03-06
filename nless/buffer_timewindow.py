@@ -43,6 +43,7 @@ class TimeWindowMixin:
         if not value or value in ("0", "off", "clear", "none"):
             self.time_window = None
             self.rolling_time_window = False
+            self._time_window_ceiling = None
             self._stop_rolling_timer()
             self.invalidate_caches()
             self._deferred_update_table(reason="Clearing time window")
@@ -64,32 +65,15 @@ class TimeWindowMixin:
         self.rolling_time_window = rolling
         self.invalidate_caches()
         if rolling:
+            self._time_window_ceiling = None
             self._deferred_update_table(reason="Applying time window")
             self._start_rolling_timer()
         else:
             self._stop_rolling_timer()
-
-            # One-shot: prune raw_rows permanently then clear time_window
-            # so subsequent rebuilds (sort, filter) don't re-evaluate
-            def _finalize_one_shot():
-                cutoff = time.time() - duration
-                kept = [
-                    (row, ts)
-                    for row, ts in zip(self.raw_rows, self._arrival_timestamps)
-                    if ts >= cutoff
-                ]
-                if kept:
-                    self.raw_rows, self._arrival_timestamps = [
-                        list(x) for x in zip(*kept)
-                    ]
-                else:
-                    self.raw_rows = []
-                    self._arrival_timestamps = []
-                self.time_window = None
-
-            self._deferred_update_table(
-                reason="Applying time window", callback=_finalize_one_shot
-            )
+            # Fixed window: capture the current moment as the upper bound so
+            # newly streamed rows that arrive after this point are excluded.
+            self._time_window_ceiling = time.time()
+            self._deferred_update_table(reason="Applying time window")
 
     def _apply_initial_time_window(self: NlessBuffer, window_str: str) -> None:
         """Apply a time window from CLI args."""
@@ -105,13 +89,18 @@ class TimeWindowMixin:
         """Filter rows by the active time window using arrival timestamps."""
         if not self.time_window:
             return rows
-        cutoff = time.time() - self.time_window
+        ceiling = self._time_window_ceiling  # None for rolling windows
+        if ceiling is not None:
+            cutoff = ceiling - self.time_window
+        else:
+            cutoff = time.time() - self.time_window
         # rows are parallel to self._arrival_timestamps after _filter_rows
         return [
             row
             for i, row in enumerate(rows)
             if i < len(self._arrival_timestamps)
             and self._arrival_timestamps[i] >= cutoff
+            and (ceiling is None or self._arrival_timestamps[i] <= ceiling)
         ]
 
     def _start_rolling_timer(self: NlessBuffer) -> None:

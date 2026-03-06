@@ -117,6 +117,7 @@ class NlessBuffer(
             line_stream.subscribe(self, self.add_logs, lambda: self.mounted)
         self.first_row_parsed = False
         self.raw_rows = []
+        self._all_source_lines: list[str] | None = None  # unfiltered history for ~
         self.displayed_rows = []
         self.first_log_line = ""  # used to determine columns when delimiter is set
         self.current_columns: list[Column] = []
@@ -155,6 +156,8 @@ class NlessBuffer(
         self.time_window: float | None = None
         # When True, the time window re-evaluates periodically
         self.rolling_time_window: bool = False
+        # Fixed upper bound for non-rolling windows (blocks new streaming data)
+        self._time_window_ceiling: float | None = None
         self._rolling_timer = None
 
         # Caches rebuilt when columns change
@@ -266,6 +269,7 @@ class NlessBuffer(
             new_buffer._pivot_hidden_columns = set(self._pivot_hidden_columns)
             new_buffer.time_window = self.time_window
             new_buffer.rolling_time_window = self.rolling_time_window
+            new_buffer._time_window_ceiling = self._time_window_ceiling
             new_buffer.line_stream = self.line_stream
             timestamps_snapshot = list(self._arrival_timestamps)
             if self.line_stream:
@@ -281,6 +285,9 @@ class NlessBuffer(
         new_buffer.raw_rows, new_buffer._arrival_timestamps = new_buffer._filter_lines(
             raw_rows_snapshot, timestamps_snapshot
         )
+        # Keep unfiltered history so ~ can find excluded lines even without
+        # a line_stream.  The snapshot is shared (not copied) to save memory.
+        new_buffer._all_source_lines = raw_rows_snapshot
         return new_buffer
 
     def _get_theme(self):
@@ -366,12 +373,17 @@ class NlessBuffer(
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
-    def _make_shown_filter(self) -> Callable[[str], bool]:
+    def _make_shown_filter(
+        self, *, include_ancestors: bool = True
+    ) -> Callable[[str], bool]:
         """Build a filter that returns True if a line would be shown in this buffer.
 
         A line is "shown" if it parses with the delimiter, has the right column
-        count, and passes all content filters.  When chained via _source_parse_filter,
-        a line is also considered shown if any ancestor buffer would show it.
+        count, and passes all content filters.  When *include_ancestors* is True
+        (the default), a line is also considered shown if any ancestor buffer
+        would show it (via _source_parse_filter).  Pass False when building the
+        filter set for ``action_view_unparsed_logs`` so each buffer is evaluated
+        independently.
         """
         delimiter = self.delimiter
         columns = list(self.current_columns)
@@ -379,7 +391,7 @@ class NlessBuffer(
         expected = len([c for c in columns if c.name not in metadata])
         filters = list(self.current_filters)
         col_lookup = dict(self._col_data_idx)
-        parent = self._source_parse_filter
+        parent = self._source_parse_filter if include_ancestors else None
 
         def shown(line: str) -> bool:
             if parent and parent(line):
@@ -402,21 +414,30 @@ class NlessBuffer(
 
     def action_view_unparsed_logs(self) -> None:
         """Create a new buffer containing logs not shown in any open buffer."""
-        # Build shown filters for all open buffers
+        # Build shown filters for all open buffers.  Each filter answers
+        # "would this buffer display this line?" without considering ancestor
+        # chains — we combine them with any() ourselves.
         buffer_filters = []
         for buf in self.app.buffers:
+            shown = buf._make_shown_filter(include_ancestors=False)
+            # A raw buffer with no filters would claim to show every line,
+            # but it may only *contain* a subset.  Fall back to a membership
+            # check against its actual rows so ~ can find genuinely missing lines.
             if buf.delimiter == "raw" and not buf.current_filters:
-                # Raw with no filters shows everything — nothing to exclude from
-                self.notify("All logs are being shown.", severity="information")
-                return
-            buffer_filters.append(buf._make_shown_filter())
+                raw_set = set(buf.raw_rows)
+                buffer_filters.append(lambda line, _s=raw_set: line in _s)
+            else:
+                buffer_filters.append(shown)
 
         def shown_in_any(line: str) -> bool:
             return any(f(line) for f in buffer_filters)
 
-        # Use the line stream's full history if available
+        # Use the line stream's full history if available, then unfiltered
+        # snapshot from copy(), then fall back to raw_rows.
         if self.line_stream:
             all_lines = self.line_stream.lines
+        elif self._all_source_lines is not None:
+            all_lines = self._all_source_lines
         else:
             all_lines = self.raw_rows
 

@@ -1549,7 +1549,7 @@ class TestTimeWindow:
 
     @pytest.mark.asyncio
     async def test_time_window_via_action(self, cli_args):
-        """The @ action without '+' should apply once then clear time_window."""
+        """The @ action without '+' should filter old rows and set a ceiling."""
         import time
 
         app = NlessApp(cli_args=cli_args, starting_stream=None)
@@ -1568,8 +1568,9 @@ class TestTimeWindow:
 
             # Filter was applied (old row dropped)
             assert len(buf.displayed_rows) == 2
-            # One-shot: time_window cleared after apply
-            assert buf.time_window is None
+            # Non-rolling: time_window stays active with a ceiling
+            assert buf.time_window == 3600.0
+            assert buf._time_window_ceiling is not None
 
     @pytest.mark.asyncio
     async def test_time_window_off_via_action(self, cli_args):
@@ -1591,8 +1592,8 @@ class TestTimeWindow:
             assert buf.time_window is None
 
     @pytest.mark.asyncio
-    async def test_one_shot_window_not_reapplied_on_sort(self, cli_args):
-        """After a one-shot time window, sorting should not re-filter rows."""
+    async def test_fixed_window_stable_on_sort(self, cli_args):
+        """After a fixed time window, sorting should keep the same row count."""
         import time
 
         app = NlessApp(cli_args=cli_args, starting_stream=None)
@@ -1609,7 +1610,7 @@ class TestTimeWindow:
             await _wait(pilot, app)
             assert len(buf.displayed_rows) == 2
 
-            # Now sort — should not re-apply the time window
+            # Sort — fixed ceiling means the same rows stay visible
             buf.action_sort()
             await _wait(pilot, app)
             assert len(buf.displayed_rows) == 2
@@ -1633,8 +1634,8 @@ class TestTimeWindow:
             assert buf._rolling_timer is not None
 
     @pytest.mark.asyncio
-    async def test_non_rolling_window_no_timer(self, cli_args):
-        """Without '+', one-shot clears time_window and has no timer."""
+    async def test_non_rolling_window_has_ceiling(self, cli_args):
+        """Without '+', a fixed ceiling is set and no timer runs."""
         app = NlessApp(cli_args=cli_args, starting_stream=None)
         async with app.run_test(size=(120, 40)) as pilot:
             buf = app.buffers[0]
@@ -1646,9 +1647,10 @@ class TestTimeWindow:
             )
             await _wait(pilot, app)
 
-            # One-shot: time_window cleared after apply
-            assert buf.time_window is None
+            # Fixed window: time_window stays, ceiling is set, no timer
+            assert buf.time_window == 300.0
             assert buf.rolling_time_window is False
+            assert buf._time_window_ceiling is not None
             assert buf._rolling_timer is None
 
     @pytest.mark.asyncio
@@ -1720,3 +1722,103 @@ class TestWriteBuffer:
             # Header only, no data rows
             assert len(lines) == 1
             assert "name" in lines[0]
+
+
+class TestViewExcludedLines:
+    @pytest.mark.asyncio
+    async def test_tilde_after_deleting_prior_buffer(self, cli_args):
+        """~ should find excluded lines even after the parent buffer is deleted."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,status", "alice,running", "bob,pending", "carol,running"])
+            await _wait(pilot, app)
+
+            # Filter to only "running" rows — creates Buffer 1
+            app._perform_filter("^running$", "status")
+            await _wait(pilot, app)
+            assert len(app.buffers) == 2
+
+            # Delete the original (Buffer 0)
+            app._switch_to_buffer(0)
+            app.action_close_active_buffer()
+            await pilot.pause()
+            assert len(app.buffers) == 1
+
+            # Press ~ — should find "bob,pending" as excluded
+            curr = app._get_current_buffer()
+            curr.action_view_unparsed_logs()
+            await _wait(pilot, app)
+            assert len(app.buffers) == 2, "Unparsed buffer should have been created"
+
+    @pytest.mark.asyncio
+    async def test_chained_tilde_after_deleting_intermediate_buffers(self, cli_args):
+        """Chained ~ should work after closing intermediate buffers.
+
+        Scenario: json-parsed file → ~ shows non-JSON lines → filter ~
+        by [INFO → close unfiltered ~ → ~ on filtered → close filtered →
+        ~ on remaining raw buffer should still find excluded lines.
+        """
+        from nless.input import LineStream
+
+        cli_args_json = CliArgs(
+            delimiter="json",
+            filters=[],
+            unique_keys=set(),
+            sort_by=None,
+        )
+        stream = LineStream()
+        app = NlessApp(cli_args=cli_args_json, starting_stream=stream)
+        async with app.run_test(size=(120, 40)) as pilot:
+            stream.notify(
+                [
+                    '{"level":"error","msg":"timeout"}',
+                    "[INFO] server started",
+                    '{"level":"warn","msg":"slow"}',
+                    "[INFO] health check",
+                    "[WARN] disk high",
+                ]
+            )
+            await _wait(pilot, app)
+
+            # ~ to see unparsed lines (non-JSON)
+            app.buffers[0].action_view_unparsed_logs()
+            await _wait(pilot, app)
+            assert len(app.buffers) == 2
+
+            # Filter unparsed buffer by [INFO, then close the unfiltered one
+            app._switch_to_buffer(1)
+            await pilot.pause()
+            app._perform_filter(r"\[INFO", "log")
+            await _wait(pilot, app)
+            app._switch_to_buffer(1)
+            app.action_close_active_buffer()
+            await pilot.pause()
+
+            # ~ on filtered unparsed buffer
+            for i, b in enumerate(app.buffers):
+                if b.current_filters:
+                    app._switch_to_buffer(i)
+                    break
+            app._get_current_buffer().action_view_unparsed_logs()
+            await _wait(pilot, app)
+
+            # Close the filtered buffer
+            for i, b in enumerate(app.buffers):
+                if b.current_filters:
+                    app._switch_to_buffer(i)
+                    app.action_close_active_buffer()
+                    break
+            await pilot.pause()
+
+            # ~ on the remaining raw unparsed buffer — should NOT say "all shown"
+            for i, b in enumerate(app.buffers):
+                if b.delimiter == "raw" and not b.current_filters:
+                    app._switch_to_buffer(i)
+                    break
+            before = len(app.buffers)
+            app._get_current_buffer().action_view_unparsed_logs()
+            await _wait(pilot, app)
+            assert len(app.buffers) > before, (
+                "~ should find excluded lines, not say 'all logs are being shown'"
+            )
