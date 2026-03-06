@@ -15,8 +15,8 @@
 
 ## Features
 
-- **Streaming support** — stay up-to-date as new data arrives on stdin
-- **Delimiter inference** — no configuration needed; nless infers the delimiter from your data
+- **Streaming support** — stay up-to-date as new data arrives on stdin, with arrival timestamps and time window filtering
+- **Delimiter inference** — no configuration needed; nless infers the delimiter from your data and auto-switches when it detects a mismatch
 - **Vi-like keybindings** — familiar to any Vim user, minimize keypresses to analyze a dataset
 - **Kubernetes-friendly** — built for K8s use-cases like parsing streams from kubectl
 - **Tabular data toolkit** — filter, sort, search, pivot, and reshape data on the fly
@@ -26,6 +26,9 @@
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
 - **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
+- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Excluded lines** — press `~` to see rows that failed to parse or were removed by filters, with chained accumulation
 - **Themes & keymaps** — 10 built-in color themes (Dracula, Nord, Gruvbox, and more) plus custom theme support; configurable keymap presets
 
 ## Demos

@@ -591,14 +591,61 @@ Press `D` and enter:
 1. Press `c` and select `user`, then press `U` to group by user
 2. Bob appears twice — press ++enter++ on his row to see his specific errors
 
-**Step 4 — Check unparsed lines:**
+**Step 4 — Check excluded lines:**
 
 1. Press `q` to go back to the original regex-parsed buffer
-2. Press `~` to see lines that didn't match the regex pattern
+2. Press `~` to see lines that were excluded — this includes both lines that didn't match the regex pattern *and* lines removed by filters
 3. The `server started` line appears here (it has no method/path/status/user/ip)
+4. Press `~` again from this buffer to chain further — each `~` accumulates exclusions from all ancestor buffers, letting you drill into what's being filtered out at every level
 
 **Step 5 — Export findings:**
 
 1. Navigate back to the error-filtered buffer (press `L` / `H` to switch buffers)
 2. Press `W`, type `errors.csv`, press ++enter++
+
+---
+
+## 13. Time Windows and Arrival Timestamps
+
+When working with streaming data, you often want to focus on recent activity. nless records an arrival timestamp for every row and lets you filter by time window.
+
+### Viewing arrival timestamps
+
+Start a streaming source:
+
+```bash
+ping localhost | nless
+```
+
+1. Wait for a few lines to arrive
+2. Press `A` to toggle the `_arrival` column — it appears pinned on the left, showing the UTC timestamp (with millisecond precision) when each row was received
+3. Press `A` again to hide it
+
+### Filtering by time window
+
+The `@` key lets you show only rows that arrived within a time window of now:
+
+1. Press `@` and type `30s` to show only the last 30 seconds of data
+2. Rows older than 30 seconds are filtered out
+3. Supported formats: `30s`, `5m`, `1h`, `2h30m`, `2d`, or a plain number (treated as minutes)
+4. To clear the time window, press `@` and type `0`, `off`, `clear`, or `none`
+
+### Rolling time windows
+
+Append `+` to make the window rolling — it continuously re-evaluates to drop expired rows:
+
+1. Press `@` and type `1m+`
+2. The window automatically refreshes every few seconds, dropping rows older than 1 minute
+3. The status bar shows the active window duration
+
+This is useful for monitoring dashboards where you want a sliding view of the last N minutes of activity.
+
+### Combining time windows with other features
+
+Time windows work alongside filters, sorts, and pivots:
+
+1. Start with: `kubectl get events -w | nless`
+2. Press `@` and type `5m+` to see only the last 5 minutes (rolling)
+3. Press `c` and select `TYPE`, then press `f` and type `Warning` to narrow to warnings
+4. Press `c` and select `REASON`, then press `U` to pivot — you're now watching a live count of warning reasons in the last 5 minutes
 

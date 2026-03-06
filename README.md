@@ -63,8 +63,8 @@ As a kubernetes engineer, I frequently need to interact with streaming tabular d
 
 This project is not meant to replace any of the tools mentioned in the [alternatives](#alternatives) section. Instead, it's meant to bring its own unique set of features to complement your workflow:
 
-- **Streaming support** - stay up-to-date as new data arrives on stdin
-- **Delimiter inference** - no configuration needed; nless infers the delimiter from your data
+- **Streaming support** - stay up-to-date as new data arrives on stdin, with arrival timestamps and time window filtering
+- **Delimiter inference** - no configuration needed; nless infers the delimiter from your data and auto-switches on mismatch
 - **Vi-like keybindings** - familiar to any Vim user, minimize keypresses to analyze a dataset
 - **Kubernetes-friendly** - built for K8s use-cases like parsing streams from kubectl
 - **Tabular data toolkit** - filter, sort, search, pivot, and reshape data on the fly
@@ -85,7 +85,9 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Tail mode** - keep the cursor at the bottom as new data arrives with `t`
 - **Output** - write buffer contents to a file or stdout (`W`), copy cell values (`y`)
 - **Themes** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
-- **Unparsed lines** - view lines that didn't match the current delimiter with `~`
+- **Arrival timestamps** - every row records when it was received; toggle the `_arrival` column with `A`
+- **Time window filtering** - show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Excluded lines** - view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
 
 <details>
 <summary>Full keybinding reference</summary>
@@ -116,6 +118,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `C` - prompt for a regex filter to selectively display columns, or `all` to see all columns
 - `>` - move the current column one to the right
 - `<` - move the current column one to the left
+- `A` - toggle the `_arrival` metadata column showing when each row was received
 
 **Pivoting**:
 - `U` - mark the selected column as part of a composite key to group records by, adding a `count` column pinned to the left
@@ -128,6 +131,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `E` - exclude the current column by the highlighted cell
 - `|` - filter ALL columns and prompt for a filter
 - `&` - apply the current search as a filter across all columns
+- `@` - set a time window to show only recent rows (e.g. `5m`, `1h`); append `+` for rolling
 
 **Searching**:
 - `/` - prompt for a search value and jump to the first match
@@ -149,8 +153,8 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 **Themes**:
 - `T` - open the theme selector
 
-**Unparsed Logs**:
-- `~` - view logs that did not match the current delimiter
+**Excluded Lines**:
+- `~` - view excluded lines (parse failures + filtered rows), with chained accumulation
 
 **Sorting**:
 - `s` - toggle ascending/descending sort on the current column
