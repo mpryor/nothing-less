@@ -3,6 +3,8 @@ import json
 import re
 from io import StringIO
 
+from rich.markup import escape as rich_escape
+
 from .types import Column, MetadataColumn
 
 
@@ -44,7 +46,7 @@ def split_line(
     elif delimiter == ",":
         cells = split_csv_row(line)
     elif delimiter == "raw":
-        cells = [line]
+        cells = [rich_escape(line)]
     elif delimiter == "json":
         cells = [
             json.dumps(v) if isinstance(v, dict) or isinstance(v, list) else str(v)
