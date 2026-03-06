@@ -41,21 +41,27 @@ class StaticSuggestionProvider(SuggestionProvider):
     """Provides suggestions from a fixed list of options.
 
     Prefix matches appear first, then substring matches. Case-insensitive.
-    Shows all options when input is empty.
+    Shows all options when input is empty.  History items (if provided) are
+    included and appear before static options in results.
     """
 
     MAX_RESULTS = 20
 
-    def __init__(self, options: list[str]) -> None:
+    def __init__(self, options: list[str], history: list[str] | None = None) -> None:
+        static_set = set(options)
+        # History items not already in static options, most recent first
+        unique_history = list(dict.fromkeys(reversed(history or [])))
+        self.history = [h for h in unique_history if h not in static_set]
         self.options = options
 
     def get_suggestions(self, value: str) -> list[str]:
+        all_items = self.history + self.options
         if not value:
-            return self.options[: self.MAX_RESULTS]
+            return all_items[: self.MAX_RESULTS]
         lower = value.lower()
         prefix = []
         substring = []
-        for item in self.options:
+        for item in all_items:
             item_lower = item.lower()
             if item_lower.startswith(lower):
                 prefix.append(item)

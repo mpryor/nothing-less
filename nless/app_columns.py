@@ -137,10 +137,13 @@ class ColumnOpsMixin:
 
     def action_column_delimiter(self: NlessApp) -> None:
         """Change the column delimiter."""
+        history = [
+            h["val"] for h in self.input_history if h["id"] == "column_delimiter_input"
+        ]
         self._create_prompt(
             "Type column delimiter (e.g. , or \\t or 'space' or 'raw')",
             "column_delimiter_input",
-            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS),
+            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS, history=history),
         )
 
     def action_filter_columns(self: NlessApp) -> None:
