@@ -9,6 +9,7 @@ from textual.geometry import Region, Size
 from textual.strip import Strip
 
 from rich.segment import Segment
+from rich.style import Style
 
 from .datatable import Coordinate, Datatable
 
@@ -153,14 +154,11 @@ class RawPager(Datatable):
         row = self.rows[y_abs]
         line = row[0] if row else ""
         is_cursor = y_abs == self.cursor_row
-        is_odd = y_abs % 2 != 0
 
         if is_cursor:
             base_style = self._style_cursor
-        elif is_odd:
-            base_style = self._style_zebra_odd_row
         else:
-            base_style = self._style_zebra_even_row
+            base_style = Style()
 
         width = self.size.width
 
