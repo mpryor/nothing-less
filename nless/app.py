@@ -1,14 +1,15 @@
 import csv
 import json
+import logging
 import os
 import re
 import subprocess
-import time
 from collections.abc import Callable
 from threading import Thread
 
 from textual.binding import Binding
 from textual.css.query import NoMatches
+from textual.dom import DOMError
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.events import Key
@@ -49,6 +50,8 @@ from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinat
 from .keymap import get_all_keymaps, resolve_keymap
 from .theme import get_all_themes, resolve_theme
 from .types import CliArgs, Column, Filter, MetadataColumn
+
+logger = logging.getLogger(__name__)
 
 
 _TAB_SWITCH_KEYS = frozenset(str(i) for i in range(1, 10))
@@ -260,7 +263,7 @@ class NlessApp(App):
     def on_select_changed(self, event: Select.Changed) -> None:
         try:
             event.control.remove()
-        except Exception:
+        except (NoMatches, DOMError):
             pass  # NlessSelect already removes itself in on_input_submitted
         if event.control.id == "theme_select":
             self.apply_theme(str(event.value))
@@ -452,9 +455,7 @@ class NlessApp(App):
         new_pane_id = self._get_new_pane_id()
         source_row_count = len(curr_buffer.displayed_rows)
         reason = f"{reason} {source_row_count:,} rows"
-        curr_buffer._loading_reason = reason
-        curr_buffer._start_spinner()
-        curr_buffer._update_status_bar()
+        curr_buffer.start_loading(reason)
 
         def _run():
             try:
@@ -464,18 +465,14 @@ class NlessApp(App):
                 msg = str(e)
 
                 def _on_error():
-                    curr_buffer._loading_reason = None
-                    curr_buffer._stop_spinner()
-                    curr_buffer._update_status_bar()
+                    curr_buffer.stop_loading()
                     self.notify(f"Error: {msg}", severity="error")
 
                 self.call_from_thread(_on_error)
                 return
 
             def _finish():
-                curr_buffer._loading_reason = None
-                curr_buffer._stop_spinner()
-                curr_buffer._update_status_bar()
+                curr_buffer.stop_loading()
 
                 def _on_ready():
                     if after_add_fn:
@@ -992,8 +989,7 @@ class NlessApp(App):
                 ):
                     c.render_position -= 1
 
-        buf._parsed_rows = None
-        buf._cached_col_widths = None
+        buf.invalidate_caches()
         buf._deferred_update_table(reason="Toggling arrival column")
 
     def action_time_window(self) -> None:
@@ -1033,64 +1029,8 @@ class NlessApp(App):
         return result
 
     def handle_time_window_submitted(self, event: AutocompleteInput.Submitted) -> None:
-        value = event.value.strip()
         event.input.remove()
-        curr_buffer = self._get_current_buffer()
-
-        if not value or value in ("0", "off", "clear", "none"):
-            curr_buffer.time_window = None
-            curr_buffer.rolling_time_window = False
-            curr_buffer._stop_rolling_timer()
-            curr_buffer._parsed_rows = None
-            curr_buffer._cached_col_widths = None
-            curr_buffer._deferred_update_table(reason="Clearing time window")
-            return
-
-        rolling = value.endswith("+")
-        if rolling:
-            value = value.rstrip("+").strip()
-
-        duration = NlessBuffer._parse_duration(value)
-        if duration is None:
-            self.notify(
-                "Invalid duration. Use e.g. 5m, 1h, 30s, 2h30m (+ for rolling)",
-                severity="error",
-            )
-            return
-
-        curr_buffer.time_window = duration
-        curr_buffer.rolling_time_window = rolling
-        curr_buffer._parsed_rows = None
-        curr_buffer._cached_col_widths = None
-        if rolling:
-            curr_buffer._deferred_update_table(reason="Applying time window")
-            curr_buffer._start_rolling_timer()
-        else:
-            curr_buffer._stop_rolling_timer()
-
-            # One-shot: prune raw_rows permanently then clear time_window
-            # so subsequent rebuilds (sort, filter) don't re-evaluate
-            def _finalize_one_shot():
-                cutoff = time.time() - duration
-                kept = [
-                    (row, ts)
-                    for row, ts in zip(
-                        curr_buffer.raw_rows, curr_buffer._arrival_timestamps
-                    )
-                    if ts >= cutoff
-                ]
-                if kept:
-                    curr_buffer.raw_rows, curr_buffer._arrival_timestamps = [
-                        list(x) for x in zip(*kept)
-                    ]
-                else:
-                    curr_buffer.raw_rows = []
-                    curr_buffer._arrival_timestamps = []
-                curr_buffer.time_window = None
-
-            curr_buffer._deferred_update_table(
-                reason="Applying time window", callback=_finalize_one_shot
-            )
+        self._get_current_buffer().apply_time_window_setting(event.value)
 
     def handle_filter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         filter_value = event.value
@@ -1179,191 +1119,9 @@ class NlessApp(App):
             done_reason="Filtered",
         )
 
-    @staticmethod
-    def _should_reinsert_header_as_data(
-        prev_delimiter, new_delimiter, parsed_full_json_file
-    ) -> bool:
-        """Check whether the old header line should be re-inserted as a data row.
-
-        This is needed when switching from a standard delimiter (where the first
-        line was consumed as header) to raw/json/regex (where every line is data).
-        """
-        if prev_delimiter == new_delimiter or parsed_full_json_file:
-            return False
-        prev_is_standard = (
-            prev_delimiter != "raw"
-            and not isinstance(prev_delimiter, re.Pattern)
-            and prev_delimiter != "json"
-        )
-        new_is_headerless = (
-            new_delimiter == "raw"
-            or isinstance(new_delimiter, re.Pattern)
-            or new_delimiter == "json"
-        )
-        return prev_is_standard and new_is_headerless
-
-    @staticmethod
-    def _parse_delimiter_input(value: str) -> str | re.Pattern:
-        """Parse user delimiter input, handling tab escape and regex compilation.
-
-        Returns a compiled regex Pattern if the input has named capture groups,
-        otherwise returns the delimiter string (with \\t converted to tab).
-        """
-        if value not in ("raw", "json"):
-            try:
-                pattern = re.compile(rf"{value}")
-                if pattern.groups > 0:
-                    return pattern
-            except (re.error, ValueError):
-                pass
-        if value == "\\t":
-            return "\t"
-        if value == "space":
-            return " "
-        if value == "space+":
-            return "  "
-        return value
-
-    def _resolve_new_header(self, delimiter, prev_delimiter, curr_buffer):
-        """Determine the new header columns and whether the full JSON file was parsed.
-
-        Returns (header_list, parsed_full_json_file) or None if an error occurred
-        and was reported to the user.
-        """
-        if delimiter == "raw":
-            return ["log"], False
-
-        if delimiter == "json":
-            # Try first_log_line as JSON header
-            try:
-                return list(json.loads(curr_buffer.first_log_line).keys()), False
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-
-            # When coming from raw/regex, first_log_line isn't a data row —
-            # try the first raw_row instead
-            if (
-                prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern)
-            ) and curr_buffer.raw_rows:
-                try:
-                    header = list(json.loads(curr_buffer.raw_rows[0]).keys())
-                    curr_buffer.first_log_line = curr_buffer.raw_rows.pop(0)
-                    return header, False
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass
-
-            # Fallback: try to read all logs as one JSON payload
-            try:
-                all_logs = ""
-                if prev_delimiter != "raw" and not isinstance(
-                    prev_delimiter, re.Pattern
-                ):
-                    all_logs = curr_buffer.first_log_line + "\n"
-                all_logs += "\n".join(curr_buffer.raw_rows)
-                buffer_json = json.loads(all_logs)
-                if (
-                    isinstance(buffer_json, list)
-                    and len(buffer_json) > 0
-                    and isinstance(buffer_json[0], dict)
-                ):
-                    header = list(buffer_json[0].keys())
-                    curr_buffer.raw_rows = [json.dumps(item) for item in buffer_json]
-                elif isinstance(buffer_json, dict):
-                    header = list(buffer_json.keys())
-                    curr_buffer.raw_rows = [json.dumps(buffer_json)]
-                else:
-                    curr_buffer.notify(
-                        "Failed to parse JSON logs: no valid JSON found",
-                        severity="error",
-                    )
-                    return None
-                curr_buffer.first_log_line = curr_buffer.raw_rows[0]
-                return header, True
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                curr_buffer.notify(f"Failed to parse JSON logs: {e}", severity="error")
-                return None
-
-        if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
-            header = split_line(
-                curr_buffer.raw_rows[0],
-                curr_buffer.delimiter,
-                curr_buffer.current_columns,
-            )
-            curr_buffer.raw_rows.pop(0)
-            return header, False
-
-        return split_line(
-            curr_buffer.first_log_line,
-            curr_buffer.delimiter,
-            curr_buffer.current_columns,
-        ), False
-
     def handle_delimiter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         event.input.remove()
-        self._apply_delimiter(event.value)
-
-    def _apply_delimiter(self, delimiter_input: str) -> None:
-        if not delimiter_input:
-            return
-        curr_buffer = self._get_current_buffer()
-        should_update = False
-        with curr_buffer._try_lock(
-            "delimiter",
-            deferred=lambda: self._apply_delimiter(delimiter_input),
-        ) as acquired:
-            if not acquired:
-                return
-            had_filters = bool(curr_buffer.current_filters)
-            curr_buffer.current_filters = []
-            curr_buffer.search_term = None
-            curr_buffer.sort_column = None
-            curr_buffer.unique_column_names = set()
-            prev_delimiter = curr_buffer.delimiter
-
-            curr_buffer._reset_delimiter_state()
-            delimiter = self._parse_delimiter_input(delimiter_input)
-
-            # If it's a regex with named groups, apply directly
-            if isinstance(delimiter, re.Pattern):
-                curr_buffer.delimiter = delimiter
-                curr_buffer.current_columns = NlessBuffer._make_columns(
-                    list(delimiter.groupindex.keys())
-                )
-                NlessBuffer._ensure_arrival_column(curr_buffer.current_columns)
-                if prev_delimiter != "raw" and not isinstance(
-                    prev_delimiter, re.Pattern
-                ):
-                    curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
-                should_update = True
-            else:
-                curr_buffer.delimiter = delimiter
-
-                result = self._resolve_new_header(
-                    delimiter, prev_delimiter, curr_buffer
-                )
-                if result is not None:
-                    new_header, parsed_full_json_file = result
-
-                    if self._should_reinsert_header_as_data(
-                        prev_delimiter, delimiter, parsed_full_json_file
-                    ):
-                        curr_buffer.raw_rows.insert(0, curr_buffer.first_log_line)
-
-                    curr_buffer.current_columns = NlessBuffer._make_columns(
-                        list(new_header)
-                    )
-                    NlessBuffer._ensure_arrival_column(curr_buffer.current_columns)
-                    should_update = True
-
-        if should_update:
-
-            def callback():
-                if had_filters:
-                    curr_buffer._flash_status("Filters cleared — delimiter changed")
-
-            curr_buffer._deferred_update_table(
-                reason="Changing delimiter", callback=callback
-            )
+        self._get_current_buffer().switch_delimiter(event.value)
 
     def handle_column_filter_submitted(
         self, event: AutocompleteInput.Submitted
@@ -1539,34 +1297,7 @@ class NlessApp(App):
         """Create a new raw-delimiter buffer from lines that didn't parse."""
         new_pane_id = self._get_new_pane_id()
         new_buffer = NlessBuffer(pane_id=new_pane_id, cli_args=None)
-        new_buffer.delimiter = "raw"
-        new_buffer.delimiter_inferred = False
-        new_buffer.first_log_line = unparsed_rows[0]
-        new_buffer.first_row_parsed = True
-        new_buffer.current_columns = NlessBuffer._make_columns(["log"])
-        NlessBuffer._ensure_arrival_column(new_buffer.current_columns)
-        new_buffer._rebuild_column_caches()
-        new_buffer.raw_rows = unparsed_rows
-        now = time.time()
-        new_buffer._arrival_timestamps = [now] * len(unparsed_rows)
-        new_buffer._initial_load_done = True
-        new_buffer._source_parse_filter = source_parse_filter
-
-        if line_stream:
-            parse_filter = source_parse_filter
-
-            def unparsed_stream_filter(lines: list[str]) -> None:
-                rejected = [line for line in lines if not parse_filter(line)]
-                if rejected:
-                    new_buffer.add_logs(rejected)
-
-            line_stream.subscribe_future_only(
-                new_buffer,
-                unparsed_stream_filter,
-                lambda: new_buffer.mounted,
-            )
-            new_buffer.line_stream = line_stream
-
+        new_buffer.init_as_unparsed(unparsed_rows, source_parse_filter, line_stream)
         self.add_buffer(new_buffer, "~unparsed", reason="Unparsed logs")
 
     def add_buffer(
@@ -1798,17 +1529,20 @@ class NlessApp(App):
             return self._ICON_BLANK
         return source
 
+    def _strip_tab_icon(self, name: str) -> str:
+        """Remove any streaming/status icon prefix from a tab name."""
+        for prefix in ("⏵ ", "📄 ", "✓ ", f"{self._ICON_BLANK} "):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name
+
     def _rename_first_buffer(self, group: BufferGroup, name: str) -> None:
         """Rename the first buffer tab in a group, prepending the group icon."""
         try:
             container = self.query_one(f"#group_{group.group_id}")
             tabbed_content = container.query_one(TabbedContent)
             first_tab = next(tabbed_content.query(Tab).results())
-            # Strip any existing icon prefix from the name
-            for prefix in ("⏵ ", "📄 ", "✓ ", f"{self._ICON_BLANK} "):
-                if name.startswith(prefix):
-                    name = name[len(prefix) :]
-                    break
+            name = self._strip_tab_icon(name)
             icon = self._resolve_icon(group)
             icon_prefix = f"{icon} " if icon else ""
             first_tab.update(
@@ -1826,14 +1560,10 @@ class NlessApp(App):
             tabbed_content = container.query_one(TabbedContent)
             first_tab = next(tabbed_content.query(Tab).results())
             content = str(first_tab.content)
-            # Strip Rich markup, index number, and icon to get the plain name
+            # Strip Rich markup and index number to get the plain name
             name = re.sub(r"\[/?[^\]]*\]", "", content)
             name = re.sub(r"^\d+\s*", "", name)
-            for prefix in ("⏵ ", "📄 ", "✓ ", f"{self._ICON_BLANK} "):
-                if name.startswith(prefix):
-                    name = name[len(prefix) :]
-                    break
-            # Rebuild with the resolved icon
+            name = self._strip_tab_icon(name)
             icon = self._resolve_icon(group, animate=animate)
             icon_prefix = f"{icon} " if icon else ""
             first_tab.update(
@@ -2051,8 +1781,10 @@ class NlessApp(App):
                 buf._deferred_update_table(
                     restore_position=True, reason="Applying theme"
                 )
+            except NoMatches:
+                pass  # Buffer not mounted yet
             except Exception:
-                pass
+                logger.debug("Error applying theme to buffer", exc_info=True)
 
         # Re-render tab labels with new accent color in all groups
         for group in self.groups:
@@ -2098,7 +1830,7 @@ class NlessApp(App):
         try:
             title = self.query_one("#title_bar", Static)
             title.update(self._build_title_bar())
-        except Exception:
+        except NoMatches:
             pass
 
     def compose(self) -> ComposeResult:

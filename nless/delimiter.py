@@ -77,7 +77,11 @@ def split_line(
         ]
     )
 
+    # Collect computed cells with their target positions, then merge in
+    # one pass to avoid O(n²) repeated list insertions.
+    computed = []  # list of (insert_position, value)
     for i, col in enumerate(sorted_columns):
+        pos = col.data_position - count_metadata_columns
         if col.delimiter and col.delimiter == "json":
             json_path = col.json_ref.split(".")
             ref_cell = _find_ref_column_cell(
@@ -99,12 +103,12 @@ def split_line(
                         json_data = ""
             except (json.JSONDecodeError, IndexError):
                 json_data = ""
-            cells.insert(
-                col.data_position - count_metadata_columns,
+            value = (
                 json.dumps(json_data)
                 if isinstance(json_data, (dict, list))
-                else str(json_data),
+                else str(json_data)
             )
+            computed.append((pos, value))
         elif isinstance(col.delimiter, re.Pattern):
             ref_cell = _find_ref_column_cell(
                 col.col_ref, sorted_columns, cells, count_metadata_columns
@@ -114,10 +118,7 @@ def split_line(
             match = col.delimiter.match(ref_cell)
             if match:
                 subcells = [txt.replace("\t", "  ") for txt in match.groups()]
-                cells.insert(
-                    col.data_position - count_metadata_columns,
-                    subcells[col.col_ref_index],
-                )
+                computed.append((pos, subcells[col.col_ref_index]))
         else:
             ref_cell = _find_ref_column_cell(
                 col.col_ref, sorted_columns, cells, count_metadata_columns
@@ -128,12 +129,26 @@ def split_line(
                 txt.replace("\t", "  ")
                 for txt in split_line(ref_cell, col.delimiter, [])
             ]
-            cells.insert(
-                col.data_position - count_metadata_columns,
-                subcells[col.col_ref_index]
-                if col.col_ref_index < len(subcells)
-                else "",
+            value = (
+                subcells[col.col_ref_index] if col.col_ref_index < len(subcells) else ""
             )
+            computed.append((pos, value))
+
+    # Merge computed cells into the base cells in one pass (O(n))
+    if computed:
+        computed.sort(key=lambda x: x[0])
+        result = []
+        base_idx = 0
+        for insert_pos, value in computed:
+            # Copy base cells up to this insertion point
+            while base_idx < insert_pos and base_idx < len(cells):
+                result.append(cells[base_idx])
+                base_idx += 1
+            result.append(value)
+        # Append remaining base cells
+        result.extend(cells[base_idx:])
+        return result
+
     return cells
 
 

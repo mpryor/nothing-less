@@ -1,6 +1,7 @@
 import csv
 from datetime import datetime, timezone
 import json
+import logging
 import re
 import threading
 import time
@@ -40,6 +41,8 @@ from .dataprocessing import (
 from .operations import handle_mark_unique
 from .statusbar import build_status_text
 from .types import CliArgs, Column, Filter, MetadataColumn, RowLengthMismatchError
+
+logger = logging.getLogger(__name__)
 
 
 def _sample_lines(lines: list[str], max_total: int = 15) -> list[str]:
@@ -210,6 +213,8 @@ class NlessBuffer(Static):
         self._delimiter_suggestion_shown = False
         self._mismatch_warning_shown = False
         self._total_skipped = 0
+        # Lines that triggered green highlighting from streaming updates
+        self._green_lines: set[str] | None = None
         # When set, rejects lines that parse with an ancestor buffer's delimiter.
         # Used by chained ~ (view unparsed) buffers.
         self._source_parse_filter: Callable[[str], bool] | None = None
@@ -262,6 +267,12 @@ class NlessBuffer(Static):
         return matching, kept_timestamps
 
     def copy(self, pane_id) -> "NlessBuffer":
+        """Create a duplicate buffer with shared line_stream subscription.
+
+        Caches (_parsed_rows, _cached_col_widths, _sort_keys, _dedup_key_to_row_idx)
+        are intentionally NOT copied — they are rebuilt on the first
+        _deferred_update_table call after the new buffer is mounted.
+        """
         # Snapshot state under lock, then release so the UI stays responsive.
         with self._lock:
             raw_rows_snapshot = list(self.raw_rows)
@@ -319,6 +330,45 @@ class NlessBuffer(Static):
             self._highlight_tags = (f"[{color}]", f"[/{color}]")
             open_tag, close_tag = self._highlight_tags
         return f"{open_tag}{text}{close_tag}"
+
+    def init_as_unparsed(
+        self,
+        rows: list[str],
+        source_parse_filter: Callable[[str], bool],
+        line_stream: LineStream | None = None,
+    ) -> None:
+        """Set up this buffer as a raw view of unparsed/excluded lines.
+
+        Configures delimiter, columns, raw_rows, and optionally subscribes
+        to ongoing stream updates so newly rejected lines appear automatically.
+        """
+        self.delimiter = "raw"
+        self.delimiter_inferred = False
+        self.first_log_line = rows[0]
+        self.first_row_parsed = True
+        self.current_columns = self._make_columns(["log"])
+        self._ensure_arrival_column(self.current_columns)
+        self._rebuild_column_caches()
+        self.raw_rows = rows
+        now = time.time()
+        self._arrival_timestamps = [now] * len(rows)
+        self._initial_load_done = True
+        self._source_parse_filter = source_parse_filter
+
+        if line_stream:
+            parse_filter = source_parse_filter
+
+            def unparsed_stream_filter(lines: list[str]) -> None:
+                rejected = [line for line in lines if not parse_filter(line)]
+                if rejected:
+                    self.add_logs(rejected)
+
+            line_stream.subscribe_future_only(
+                self,
+                unparsed_stream_filter,
+                lambda: self.mounted,
+            )
+            self.line_stream = line_stream
 
     def compose(self) -> ComposeResult:
         """Create and yield the DataTable widget."""
@@ -597,8 +647,22 @@ class NlessBuffer(Static):
         """Parse raw rows, filter by current filters, return (matching, mismatched).
 
         Uses a parsed-row cache to avoid re-parsing on sort/search operations.
-        Also shrinks raw_rows to only keep matching lines so that subsequent
-        _update_table() calls (sort, search, etc.) scan fewer rows.
+        Also compacts raw_rows to only keep matching + unparseable lines so that
+        subsequent _update_table() calls (sort, search, etc.) scan fewer rows.
+        """
+        filtered, mismatched, compacted = self._partition_rows(expected_cell_count)
+        self._apply_raw_rows_compaction(compacted)
+        return filtered, mismatched
+
+    def _partition_rows(self, expected_cell_count: int):
+        """Partition raw_rows into (filtered, mismatched, compaction_data).
+
+        Pure read of self.raw_rows — does NOT mutate buffer state.
+        Returns:
+            filtered:  list of parsed cell lists that passed all filters
+            mismatched: raw line strings that didn't parse with the current delimiter
+            compacted: tuple of (kept_raw, kept_parsed, kept_timestamps,
+                        unparseable_raw, unparseable_timestamps)
         """
         # Use cached parsed rows if available (sort/search don't need re-parse)
         if self._parsed_rows is not None and len(self._parsed_rows) == len(
@@ -610,7 +674,7 @@ class NlessBuffer(Static):
 
         # Fast path: cache valid + no filters → all rows pass, skip the loop
         if parsed is not None and not self.current_filters:
-            return list(parsed), []
+            return list(parsed), [], None
 
         filtered_rows = []
         rows_with_inconsistent_length = []
@@ -647,12 +711,28 @@ class NlessBuffer(Static):
                 kept_parsed.append(cells)
                 if i < len(self._arrival_timestamps):
                     kept_timestamps.append(self._arrival_timestamps[i])
-        # Preserve rows that couldn't parse with the current delimiter —
-        # they may parse correctly after a delimiter change.
+
+        compacted = (
+            kept_raw,
+            kept_parsed,
+            kept_timestamps,
+            unparseable_raw,
+            unparseable_timestamps,
+        )
+        return filtered_rows, rows_with_inconsistent_length, compacted
+
+    def _apply_raw_rows_compaction(self, compacted) -> None:
+        """Apply the compaction result from _partition_rows to buffer state.
+
+        Replaces raw_rows, _parsed_rows, and _arrival_timestamps with the
+        compacted versions (matching rows + unparseable rows).
+        """
+        if compacted is None:
+            return
+        kept_raw, kept_parsed, kept_ts, unparseable_raw, unparseable_ts = compacted
         self.raw_rows = kept_raw + unparseable_raw
         self._parsed_rows = kept_parsed
-        self._arrival_timestamps = kept_timestamps + unparseable_timestamps
-        return filtered_rows, rows_with_inconsistent_length
+        self._arrival_timestamps = kept_ts + unparseable_ts
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
         """Deduplicate rows by composite unique column key, prepending count."""
@@ -801,7 +881,7 @@ class NlessBuffer(Static):
                 )
 
                 # Highlight rows affected by newly streamed lines
-                green_lines = getattr(self, "_green_lines", None)
+                green_lines = self._green_lines
                 if green_lines and self.unique_column_names:
                     green_keys = set()
                     for line in green_lines:
@@ -817,17 +897,20 @@ class NlessBuffer(Static):
                     self._green_lines = None
 
                 self._last_flushed_idx = len(self.raw_rows)
+                # Snapshot shared state for width computation outside the lock
+                cached_widths = self._cached_col_widths
+                has_search = bool(self.search_term)
 
             # Precompute column widths on the bg thread so the main thread
             # can use add_rows_precomputed (just extends + refresh).
             # Reuse cached widths on sort-only rebuilds (no search → no
             # markup changes → widths are stable).
             if (
-                self._cached_col_widths is not None
-                and not self.search_term
-                and len(self._cached_col_widths) == len(column_labels)
+                cached_widths is not None
+                and not has_search
+                and len(cached_widths) == len(column_labels)
             ):
-                col_widths = self._cached_col_widths
+                col_widths = cached_widths
             else:
                 col_widths = [len(c) for c in column_labels]
                 for row in styled_rows:
@@ -838,7 +921,8 @@ class NlessBuffer(Static):
                             str_len = len(cell_str)
                         if str_len > col_widths[i]:
                             col_widths[i] = str_len
-                self._cached_col_widths = col_widths
+                with self._lock:
+                    self._cached_col_widths = col_widths
 
             return {
                 "styled_rows": styled_rows,
@@ -1036,6 +1120,18 @@ class NlessBuffer(Static):
         self._flash_timer = None
         self._update_status_bar()
 
+    def start_loading(self, reason: str) -> None:
+        """Show a loading spinner with the given reason text."""
+        self._loading_reason = reason
+        self._start_spinner()
+        self._update_status_bar()
+
+    def stop_loading(self) -> None:
+        """Clear the loading state and stop the spinner."""
+        self._loading_reason = None
+        self._stop_spinner()
+        self._update_status_bar()
+
     def _start_spinner(self) -> None:
         """Start the status bar spinner animation (must run on main thread)."""
         if self._spinner_timer is not None:
@@ -1043,7 +1139,7 @@ class NlessBuffer(Static):
         self._spinner_frame = 0
         try:
             self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
-        except Exception:
+        except (RuntimeError, Exception):
             pass  # Not mounted yet
 
     def _stop_spinner(self) -> None:
@@ -1051,7 +1147,7 @@ class NlessBuffer(Static):
         if self._spinner_timer is not None:
             try:
                 self._spinner_timer.stop()
-            except Exception:
+            except (RuntimeError, Exception):
                 pass
             self._spinner_timer = None
 
@@ -1059,15 +1155,15 @@ class NlessBuffer(Static):
         """Thread-safe: schedule spinner start on the main thread."""
         try:
             self.app.call_from_thread(self._start_spinner)
-        except Exception:
-            pass
+        except (RuntimeError, Exception):
+            pass  # App shutting down or not running
 
     def _request_spinner_stop(self) -> None:
         """Thread-safe: schedule spinner stop on the main thread."""
         try:
             self.app.call_from_thread(self._stop_spinner)
-        except Exception:
-            pass
+        except (RuntimeError, Exception):
+            pass  # App shutting down or not running
 
     def _tick_spinner(self) -> None:
         """Advance the spinner frame and refresh the status bar."""
@@ -1084,7 +1180,7 @@ class NlessBuffer(Static):
             interval = min(self.time_window / 10, 5.0) if self.time_window else 5.0
             interval = max(interval, 1.0)
             self._rolling_timer = self.set_interval(interval, self._tick_rolling)
-        except Exception:
+        except (RuntimeError, Exception):
             pass  # Not mounted yet
 
     def _stop_rolling_timer(self) -> None:
@@ -1092,7 +1188,7 @@ class NlessBuffer(Static):
         if self._rolling_timer is not None:
             try:
                 self._rolling_timer.stop()
-            except Exception:
+            except (RuntimeError, Exception):
                 pass
             self._rolling_timer = None
 
@@ -1101,9 +1197,66 @@ class NlessBuffer(Static):
         if not self.time_window or not self.rolling_time_window:
             self._stop_rolling_timer()
             return
-        self._parsed_rows = None
-        self._cached_col_widths = None
+        self.invalidate_caches()
         self._deferred_update_table(reason="")
+
+    def apply_time_window_setting(self, value: str) -> None:
+        """Parse a time window value and apply it to the buffer.
+
+        Handles clearing ("0", "off", etc.), rolling windows ("5m+"), and
+        one-shot windows that permanently prune raw_rows.
+        """
+        value = value.strip()
+        if not value or value in ("0", "off", "clear", "none"):
+            self.time_window = None
+            self.rolling_time_window = False
+            self._stop_rolling_timer()
+            self.invalidate_caches()
+            self._deferred_update_table(reason="Clearing time window")
+            return
+
+        rolling = value.endswith("+")
+        if rolling:
+            value = value.rstrip("+").strip()
+
+        duration = self._parse_duration(value)
+        if duration is None:
+            self.notify(
+                "Invalid duration. Use e.g. 5m, 1h, 30s, 2h30m (+ for rolling)",
+                severity="error",
+            )
+            return
+
+        self.time_window = duration
+        self.rolling_time_window = rolling
+        self.invalidate_caches()
+        if rolling:
+            self._deferred_update_table(reason="Applying time window")
+            self._start_rolling_timer()
+        else:
+            self._stop_rolling_timer()
+
+            # One-shot: prune raw_rows permanently then clear time_window
+            # so subsequent rebuilds (sort, filter) don't re-evaluate
+            def _finalize_one_shot():
+                cutoff = time.time() - duration
+                kept = [
+                    (row, ts)
+                    for row, ts in zip(self.raw_rows, self._arrival_timestamps)
+                    if ts >= cutoff
+                ]
+                if kept:
+                    self.raw_rows, self._arrival_timestamps = [
+                        list(x) for x in zip(*kept)
+                    ]
+                else:
+                    self.raw_rows = []
+                    self._arrival_timestamps = []
+                self.time_window = None
+
+            self._deferred_update_table(
+                reason="Applying time window", callback=_finalize_one_shot
+            )
 
     def _navigate_search(self, direction: int) -> None:
         """Navigate through search matches."""
@@ -1158,6 +1311,198 @@ class NlessBuffer(Static):
         self._delimiter_suggestion_shown = False
         self._mismatch_warning_shown = False
         self._total_skipped = 0
+
+    def invalidate_caches(self) -> None:
+        """Invalidate all data caches, forcing a full reparse on the next update.
+
+        Call after changes to columns, filters, delimiter, or raw_rows.
+        """
+        self._parsed_rows = None
+        self._cached_col_widths = None
+        self._sort_keys = []
+
+    def switch_delimiter(self, delimiter_input: str) -> bool:
+        """Switch to a new delimiter, adjusting header and raw_rows internally.
+
+        Handles all state transitions: clears filters/sort/unique, resolves the
+        new header, re-inserts or removes header rows as needed, and triggers a
+        table rebuild.
+
+        Returns True if the switch succeeded and a rebuild was triggered.
+        """
+        if not delimiter_input:
+            return False
+        should_update = False
+        had_filters = bool(self.current_filters)
+        with self._try_lock(
+            "delimiter",
+            deferred=lambda: self.switch_delimiter(delimiter_input),
+        ) as acquired:
+            if not acquired:
+                return False
+            self.current_filters = []
+            self.search_term = None
+            self.sort_column = None
+            self.unique_column_names = set()
+            prev_delimiter = self.delimiter
+
+            self._reset_delimiter_state()
+            delimiter = self._parse_delimiter_input(delimiter_input)
+
+            if isinstance(delimiter, re.Pattern):
+                self.delimiter = delimiter
+                self.current_columns = self._make_columns(
+                    list(delimiter.groupindex.keys())
+                )
+                self._ensure_arrival_column(self.current_columns)
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    self.raw_rows.insert(0, self.first_log_line)
+                should_update = True
+            else:
+                self.delimiter = delimiter
+                result = self._resolve_new_header(delimiter, prev_delimiter)
+                if result is not None:
+                    new_header, parsed_full_json_file = result
+
+                    if self._should_reinsert_header_as_data(
+                        prev_delimiter, delimiter, parsed_full_json_file
+                    ):
+                        self.raw_rows.insert(0, self.first_log_line)
+
+                    self.current_columns = self._make_columns(list(new_header))
+                    self._ensure_arrival_column(self.current_columns)
+                    should_update = True
+
+        if should_update:
+
+            def callback():
+                if had_filters:
+                    self._flash_status("Filters cleared — delimiter changed")
+
+            self._deferred_update_table(reason="Changing delimiter", callback=callback)
+        return should_update
+
+    def _resolve_new_header(self, delimiter, prev_delimiter):
+        """Determine the new header columns when switching delimiters.
+
+        Returns (header_list, parsed_full_json_file) or None on error.
+        All raw_rows / first_log_line mutations happen here, keeping them
+        internal to the buffer.
+        """
+        if delimiter == "raw":
+            return ["log"], False
+
+        if delimiter == "json":
+            # Try first_log_line as JSON header
+            try:
+                return list(json.loads(self.first_log_line).keys()), False
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+            # When coming from raw/regex, first_log_line isn't a data row —
+            # try the first raw_row instead
+            if (
+                prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern)
+            ) and self.raw_rows:
+                try:
+                    header = list(json.loads(self.raw_rows[0]).keys())
+                    self.first_log_line = self.raw_rows.pop(0)
+                    return header, False
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass
+
+            # Fallback: try to read all logs as one JSON payload
+            try:
+                all_logs = ""
+                if prev_delimiter != "raw" and not isinstance(
+                    prev_delimiter, re.Pattern
+                ):
+                    all_logs = self.first_log_line + "\n"
+                all_logs += "\n".join(self.raw_rows)
+                buffer_json = json.loads(all_logs)
+                if (
+                    isinstance(buffer_json, list)
+                    and len(buffer_json) > 0
+                    and isinstance(buffer_json[0], dict)
+                ):
+                    header = list(buffer_json[0].keys())
+                    self.raw_rows = [json.dumps(item) for item in buffer_json]
+                elif isinstance(buffer_json, dict):
+                    header = list(buffer_json.keys())
+                    self.raw_rows = [json.dumps(buffer_json)]
+                else:
+                    self.notify(
+                        "Failed to parse JSON logs: no valid JSON found",
+                        severity="error",
+                    )
+                    return None
+                self.first_log_line = self.raw_rows[0]
+                return header, True
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                self.notify(f"Failed to parse JSON logs: {e}", severity="error")
+                return None
+
+        if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
+            header = split_line(
+                self.raw_rows[0],
+                self.delimiter,
+                self.current_columns,
+            )
+            self.raw_rows.pop(0)
+            return header, False
+
+        return split_line(
+            self.first_log_line,
+            self.delimiter,
+            self.current_columns,
+        ), False
+
+    @staticmethod
+    def _should_reinsert_header_as_data(
+        prev_delimiter, new_delimiter, parsed_full_json_file
+    ) -> bool:
+        """Check whether the old header line should be re-inserted as a data row.
+
+        Needed when switching from a standard delimiter (first line = header)
+        to raw/json/regex (every line is data).
+        """
+        if prev_delimiter == new_delimiter or parsed_full_json_file:
+            return False
+        prev_is_standard = (
+            prev_delimiter != "raw"
+            and not isinstance(prev_delimiter, re.Pattern)
+            and prev_delimiter != "json"
+        )
+        new_is_headerless = (
+            new_delimiter == "raw"
+            or isinstance(new_delimiter, re.Pattern)
+            or new_delimiter == "json"
+        )
+        return prev_is_standard and new_is_headerless
+
+    @staticmethod
+    def _parse_delimiter_input(value: str) -> str | re.Pattern:
+        """Parse user delimiter input, handling tab escape and regex compilation.
+
+        Returns a compiled regex Pattern if the input has named capture groups,
+        otherwise returns the delimiter string.
+        """
+        if value not in ("raw", "json"):
+            try:
+                pattern = re.compile(rf"{value}")
+                if pattern.groups > 0:
+                    return pattern
+            except (re.error, ValueError):
+                pass
+        if value == "\\t":
+            return "\t"
+        if value == "space":
+            return " "
+        if value == "space+":
+            return "  "
+        return value
 
     def _warn_mismatch_once(self, count: int) -> None:
         """Show the mismatch warning at most once per delimiter."""
@@ -1420,8 +1765,8 @@ class NlessBuffer(Static):
                                     self._flash_status,
                                     f"Loaded {row_count:,} rows",
                                 )
-                    except Exception:
-                        pass
+                    except (RuntimeError, Exception):
+                        pass  # Widget not mounted or app shutting down
                 self.locked = False
 
         if needs_deferred:
@@ -1565,7 +1910,9 @@ class NlessBuffer(Static):
                     if is_large_batch:
                         self._update_status_bar()
             except Exception:
-                # Fall back to full rebuild if incremental path fails
+                logger.debug(
+                    "Incremental add failed, falling back to rebuild", exc_info=True
+                )
                 self._needs_deferred_update = True
 
     def _add_rows_incremental(
@@ -1809,11 +2156,6 @@ class NlessBuffer(Static):
         if len(cells) != len(self.current_columns):
             raise RowLengthMismatchError()
 
-        try:
-            self._align_cells_to_visible_columns([cells])[0]
-        except (IndexError, KeyError):
-            raise RowLengthMismatchError()
-
         if not self._matches_all_filters(cells):
             return
 
@@ -1822,7 +2164,10 @@ class NlessBuffer(Static):
         data_cells = list(cells)  # snapshot before alignment (data-position order)
         new_index = self._find_sorted_insert_index(cells)
 
-        cells = self._align_cells_to_visible_columns([cells])[0]
+        try:
+            cells = self._align_cells_to_visible_columns([cells])[0]
+        except (IndexError, KeyError):
+            raise RowLengthMismatchError()
         cells = self._highlight_search_matches(
             [cells], data_table.fixed_columns, row_offset=new_index
         )[0]

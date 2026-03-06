@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-import os
 import json
+import os
 from pathlib import Path
+import tempfile
 
 HISTORY_FILE = "~/.config/nless/history.json"
 CONFIG_FILE = "~/.config/nless/config.json"
@@ -48,5 +49,13 @@ def load_config() -> NlessConfig:
 
 
 def save_config(config: NlessConfig):
-    with open(os.path.expanduser(CONFIG_FILE), "w") as f:
-        json.dump(config.__dict__, f, indent=4)
+    path = os.path.expanduser(CONFIG_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config.__dict__, f, indent=4)
+        os.replace(tmp_path, path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise

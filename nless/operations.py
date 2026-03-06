@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import time
 from collections import defaultdict
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .dataprocessing import strip_markup
@@ -44,17 +45,10 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
     if len(new_buffer.unique_column_names) == 0:
         # remove count column
         new_buffer.current_columns = [
-            Column(
-                name=c.name,
-                labels=c.labels,
+            replace(
+                c,
                 render_position=c.render_position - 1,
                 data_position=c.data_position - 1,
-                hidden=c.hidden,
-                json_ref=c.json_ref,
-                computed=c.computed,
-                col_ref=c.col_ref,
-                col_ref_index=c.col_ref_index,
-                delimiter=c.delimiter,
             )
             for c in new_buffer.current_columns
             if c.name != MetadataColumn.COUNT.value
@@ -62,17 +56,10 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
     elif MetadataColumn.COUNT.value not in [c.name for c in new_buffer.current_columns]:
         # add count column at the start
         new_buffer.current_columns = [
-            Column(
-                name=c.name,
-                labels=c.labels,
+            replace(
+                c,
                 render_position=c.render_position + 1,
                 data_position=c.data_position + 1,
-                hidden=c.hidden,
-                json_ref=c.json_ref,
-                computed=c.computed,
-                col_ref=c.col_ref,
-                col_ref_index=c.col_ref_index,
-                delimiter=c.delimiter,
             )
             for c in new_buffer.current_columns
         ]
