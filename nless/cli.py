@@ -1,4 +1,5 @@
 import argparse
+import os
 import re
 import sys
 from threading import Thread
@@ -175,6 +176,7 @@ def main():
     finally:
         if tty_file is not None:
             tty_file.close()
+        os._exit(0)  # Hard exit: daemon I/O threads may block atexit join
 
 
 if __name__ == "__main__":

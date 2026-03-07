@@ -11,27 +11,7 @@ if TYPE_CHECKING:
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{tailing}{loading}{lag} {throughput} {pipe}"
-
-
-def _format_rate(rate: float) -> str:
-    """Format a rows/sec rate into a human-readable string like ~1.2K/s or ~3.4M/s."""
-    if rate < 1000:
-        return f"~{rate:.0f}/s"
-    elif rate < 1_000_000:
-        return f"~{rate / 1000:.1f}K/s"
-    else:
-        return f"~{rate / 1_000_000:.1f}M/s"
-
-
-def _format_pipe(pressure: tuple[int, int | None]) -> str:
-    """Format pipe pressure as 'pipe: 42KB/64KB' or 'pipe: 42KB' (no capacity)."""
-    pending, capacity = pressure
-    pending_kb = f"{pending // 1024}KB" if pending >= 1024 else f"{pending}B"
-    if capacity is not None and capacity > 0:
-        capacity_kb = f"{capacity // 1024}KB" if capacity >= 1024 else f"{capacity}B"
-        return f"pipe: {pending_kb}/{capacity_kb}"
-    return f"pipe: {pending_kb}"
+DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{tailing}{loading}{behind}"
 
 
 def build_status_text(
@@ -57,9 +37,8 @@ def build_status_text(
     time_window: str | None = None,
     delimiter: str | None = None,
     skipped_rows: int = 0,
-    lag_rows: int = 0,
-    throughput: float = 0.0,
-    pipe_pressure: tuple[int, int | None] | None = None,
+    behind: bool = False,
+    buffered_rows: int = 0,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -126,22 +105,18 @@ def build_status_text(
     if skipped_rows > 0:
         skipped_text = f"[bold]Skipped[/bold]: {skipped_rows:,} "
 
-    lag_text = ""
-    throughput_text = ""
-    pipe_text = ""
-    if lag_rows >= 1000:
-        lag_text = f"{lag_rows:,} rows behind"
-    if throughput > 0 and lag_rows >= 1000:
-        throughput_text = _format_rate(throughput)
-    if pipe_pressure is not None:
-        pending, capacity = pipe_pressure
-        show_pipe = capacity is None or (capacity > 0 and pending / capacity > 0.5)
-        if show_pipe and pending > 0:
-            pipe_text = _format_pipe(pipe_pressure)
+    behind_text = ""
+    if behind:
+        behind_text = "[yellow]⚠[/yellow] "
 
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
-        loading_color = theme.markup("status_loading", f"{spinner} {loading_reason}")
+        pending = buffered_rows - total_rows
+        if pending > 0:
+            loading_label = f"{spinner} {loading_reason} ({pending:,} buffered)"
+        else:
+            loading_label = f"{spinner} {loading_reason}"
+        loading_color = theme.markup("status_loading", loading_label)
         loading_text = f"| [bold]{loading_color}[/bold] "
     elif flash_message:
         flash_color = theme.markup("status_loading", flash_message)
@@ -164,9 +139,7 @@ def build_status_text(
         "skipped": skipped_text,
         "tailing": tailing_text,
         "loading": loading_text,
-        "lag": lag_text,
-        "throughput": throughput_text,
-        "pipe": pipe_text,
+        "behind": behind_text,
         "keymap": keymap_name,
         "theme": theme_name,
     }

@@ -108,6 +108,13 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
 
+    def exit(self, *args, **kwargs) -> None:
+        """Unsubscribe all buffers from their streams before exiting."""
+        for buf in getattr(self, "all_buffers", []):
+            if buf.line_stream:
+                buf.line_stream.unsubscribe(buf)
+        super().exit(*args, **kwargs)
+
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
