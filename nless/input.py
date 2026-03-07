@@ -13,8 +13,6 @@ from typing import IO, Any, Callable
 
 from nless.types import CliArgs
 
-F_GETPIPE_SZ = 1032  # Linux-only; not exposed by fcntl module
-
 logger = logging.getLogger(__name__)
 
 AddLinesCallback = Callable[[list[str]], None]
@@ -123,17 +121,12 @@ class StdinLineStream(LineStream):
         mode = os.fstat(self.new_fd).st_mode
         return stat.S_ISFIFO(mode)
 
-    def pipe_pressure(self) -> tuple[int, int | None] | None:
-        """Return (bytes_pending, pipe_capacity_or_None) or None if unavailable."""
+    def pipe_pending_bytes(self) -> int | None:
+        """Return bytes waiting in the OS pipe buffer, or None if unavailable."""
         try:
             buf = array.array("i", [0])
             fcntl.ioctl(self.new_fd, termios.FIONREAD, buf)
-            pending = buf[0]
-            try:
-                capacity = fcntl.fcntl(self.new_fd, F_GETPIPE_SZ)
-            except OSError:
-                capacity = None  # macOS: no F_GETPIPE_SZ
-            return (pending, capacity)
+            return buf[0]
         except (OSError, ValueError):
             return None
 

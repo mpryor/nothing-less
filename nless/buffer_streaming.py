@@ -53,13 +53,21 @@ class StreamingMixin:
         self._skipped_lines = []
         with self._lock:
             self.locked = True
-            self._bp_rows_ingested += len(log_lines)
+            was_loading = self._loading_reason is not None
             try:
                 self._needs_deferred_update = False
                 self._add_logs_inner(log_lines)
                 needs_deferred = self._needs_deferred_update
+            except Exception:
+                logger.debug(
+                    "add_logs failed (app may be shutting down)", exc_info=True
+                )
             finally:
-                if not needs_deferred:
+                # Don't tear down loading state when a deferred rebuild is
+                # already in flight (was_loading) or freshly requested
+                # (needs_deferred).  The in-flight rebuild's _apply_to_widgets
+                # will handle cleanup when it finishes.
+                if not needs_deferred and not was_loading:
                     had_loading = self._loading_reason is not None
                     self._loading_reason = None
                     self._request_spinner_stop()
@@ -76,39 +84,40 @@ class StreamingMixin:
                         pass  # Widget not mounted or app shutting down
                 self.locked = False
 
-        if needs_deferred:
-            self.app.call_from_thread(self._deferred_update_table)
+        try:
+            if needs_deferred:
+                self.app.call_from_thread(self._deferred_update_table)
 
-        skipped_lines = self._skipped_lines
-        skipped = len(skipped_lines)
-        if skipped > 0 and not needs_deferred:
-            self._skipped_lines = []
-            n_total = len(self.displayed_rows) + skipped
-            flash_msg = self._try_auto_switch_delimiter(
-                skipped_lines,
-                skipped,
-                n_total,
-                lines_already_in_raw=True,
-            )
-            if flash_msg:
+            skipped_lines = self._skipped_lines
+            skipped = len(skipped_lines)
+            if skipped > 0 and not needs_deferred:
+                self._skipped_lines = []
+                n_total = len(self.displayed_rows) + skipped
+                flash_msg = self._try_auto_switch_delimiter(
+                    skipped_lines,
+                    skipped,
+                    n_total,
+                    lines_already_in_raw=True,
+                )
+                if flash_msg:
 
-                def rebuild():
-                    self._flash_status(flash_msg)
-                    self._deferred_update_table(reason="Switching delimiter")
+                    def rebuild():
+                        self._flash_status(flash_msg)
+                        self._deferred_update_table(reason="Switching delimiter")
 
-                if self.app._thread_id == threading.get_ident():
-                    rebuild()
-                else:
-                    self.app.call_from_thread(rebuild)
-                return
+                    if self.app._thread_id == threading.get_ident():
+                        rebuild()
+                    else:
+                        self.app.call_from_thread(rebuild)
+                    return
 
-        self._bp_total_received += len(log_lines)
-
-        pending = self._pending_action
-        if pending is not None:
-            self._pending_action = None
-            _, fn = pending
-            self.app.call_from_thread(fn)
+            pending = self._pending_action
+            if pending is not None:
+                self._pending_action = None
+                _, fn = pending
+                self.app.call_from_thread(fn)
+        except Exception:
+            pass  # App shutting down
 
     def _add_logs_inner(self: NlessBuffer, log_lines: list[str]) -> None:
         from .buffer_delimiter import _sample_lines
@@ -177,6 +186,9 @@ class StreamingMixin:
                 # A deferred update is in flight — just extend raw_rows (done above).
                 # The in-flight update will chain another when it finishes.
                 pass
+            elif self._chain_timer is not None:
+                # A coalesced rebuild is already scheduled — let data accumulate.
+                pass
             elif len(filtered) > 1000:
                 self._loading_reason = self._loading_reason or "Loading"
                 self._request_spinner_start()
@@ -190,6 +202,17 @@ class StreamingMixin:
                         restore_position=False, reason="Rebuilding"
                     )
                 )
+            elif (
+                self.line_stream
+                and not self.line_stream.done
+                and len(self.displayed_rows) > 1000
+            ):
+                # Small batch during streaming with expensive ops — schedule
+                # a coalesced rebuild instead of O(N) per-line inserts.
+                self._loading_reason = "Loading"
+                self._request_spinner_start()
+                self._update_status_bar()
+                self._needs_deferred_update = True
             else:
                 for line in filtered:
                     try:

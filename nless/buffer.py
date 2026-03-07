@@ -195,13 +195,12 @@ class NlessBuffer(
 
         # Back pressure tracking
         self._bp_timer = None
-        self._bp_total_received: int = 0
-        self._bp_rows_ingested: int = 0
-        self._bp_last_sample_time: float = 0.0
-        self._bp_throughput: float = 0.0
-        self._bp_tip_shown: bool = False
-        self._bp_lag_rows: int = 0
-        self._bp_pipe_info: tuple[int, int | None] | None = None
+        self._bp_behind: bool = False
+
+        # Chain-delay for coalescing deferred rebuilds during streaming
+        self._chain_delay: float = self._CHAIN_DELAY_INITIAL
+        self._chain_timer = None
+        self._chain_skips: int = 0
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -913,10 +912,21 @@ class NlessBuffer(
 
             # Check if more data arrived while we were processing
             if len(self.raw_rows) > self._last_flushed_idx:
-                self._deferred_update_table(
-                    restore_position=restore_position, callback=callback
+                stream_active = self.line_stream and not self.line_stream.done
+                has_expensive_op = (
+                    self.sort_column is not None
+                    or self.unique_column_names
+                    or self.time_window
                 )
+                if stream_active and has_expensive_op:
+                    self._schedule_chain_rebuild(restore_position, callback)
+                else:
+                    self._stop_chain_timer()
+                    self._deferred_update_table(
+                        restore_position=restore_position, callback=callback
+                    )
             else:
+                self._stop_chain_timer()
                 loaded_reason = self._loading_reason
                 self._loading_reason = None
                 self._stop_spinner()
@@ -944,6 +954,57 @@ class NlessBuffer(
     def _run_deferred_update(self, _process_data, _apply_to_widgets):
         result = _process_data()
         self.app.call_from_thread(lambda: _apply_to_widgets(result))
+
+    _CHAIN_DELAY_INITIAL: float = 0.3
+
+    def _cancel_chain_timer(self) -> None:
+        """Cancel the pending chain timer without resetting delay/skip state."""
+        if self._chain_timer is not None:
+            try:
+                self._chain_timer.stop()
+            except Exception:
+                pass
+            self._chain_timer = None
+
+    def _stop_chain_timer(self) -> None:
+        """Cancel any pending chain rebuild timer and reset state."""
+        self._cancel_chain_timer()
+        self._chain_delay = self._CHAIN_DELAY_INITIAL
+        self._chain_skips = 0
+
+    def _schedule_chain_rebuild(self, restore_position, callback):
+        """Delay the next rebuild to let more streaming data accumulate."""
+        self._cancel_chain_timer()
+
+        delay = self._chain_delay
+
+        def _do_chain():
+            self._chain_timer = None
+            try:
+                stream_active = self.line_stream and not self.line_stream.done
+                pending = len(self.raw_rows) - self._last_flushed_idx
+                displayed = max(len(self.displayed_rows), 1)
+
+                # Stream is outpacing us — skip this rebuild and wait longer.
+                # Cap at 3 skips (~2s) so infinite streams still show progress.
+                if stream_active and pending > displayed and self._chain_skips < 3:
+                    self._chain_skips += 1
+                    self._chain_delay = min(self._chain_delay * 2, 1.5)
+                    self._schedule_chain_rebuild(restore_position, callback)
+                    return
+
+                self._chain_skips = 0
+                self._chain_delay = self._CHAIN_DELAY_INITIAL
+                self._deferred_update_table(
+                    restore_position=restore_position, callback=callback
+                )
+            except Exception:
+                pass  # Widget unmounted or app shutting down
+
+        try:
+            self._chain_timer = self.set_timer(delay, _do_chain)
+        except Exception:
+            pass
 
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
@@ -1049,9 +1110,8 @@ class NlessBuffer(
             else None,
             delimiter=self._format_delimiter(),
             skipped_rows=self._total_skipped,
-            lag_rows=self._bp_lag_rows,
-            throughput=self._bp_throughput,
-            pipe_pressure=self._bp_pipe_info,
+            behind=self._bp_behind,
+            buffered_rows=len(self.raw_rows),
         )
         self.app.query_one("#status_bar", Static).update(text)
 
@@ -1087,7 +1147,7 @@ class NlessBuffer(
         self._spinner_frame = 0
         try:
             self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
-        except (RuntimeError, Exception):
+        except Exception:
             pass  # Not mounted yet
 
     def _stop_spinner(self) -> None:
@@ -1103,14 +1163,14 @@ class NlessBuffer(
         """Thread-safe: schedule spinner start on the main thread."""
         try:
             self.app.call_from_thread(self._start_spinner)
-        except (RuntimeError, Exception):
+        except Exception:
             pass  # App shutting down or not running
 
     def _request_spinner_stop(self) -> None:
         """Thread-safe: schedule spinner stop on the main thread."""
         try:
             self.app.call_from_thread(self._stop_spinner)
-        except (RuntimeError, Exception):
+        except Exception:
             pass  # App shutting down or not running
 
     def _tick_spinner(self) -> None:
@@ -1129,11 +1189,12 @@ class NlessBuffer(
             return
         try:
             self._bp_timer = self.set_interval(0.5, self._tick_bp)
-        except (RuntimeError, Exception):
+        except Exception:
             pass
 
     def _stop_bp_timer(self) -> None:
-        """Stop the back pressure sampling timer."""
+        """Stop the back pressure sampling timer and any pending chain rebuild."""
+        self._stop_chain_timer()
         if self._bp_timer is not None:
             try:
                 self._bp_timer.stop()
@@ -1142,55 +1203,36 @@ class NlessBuffer(
             self._bp_timer = None
 
     def _tick_bp(self) -> None:
-        """Sample throughput and lag, store on self for status bar to read."""
-        now = time.monotonic()
-        if self._bp_last_sample_time > 0:
-            dt = now - self._bp_last_sample_time
-            if dt > 0:
-                instant_rate = self._bp_rows_ingested / dt
-                self._bp_throughput = 0.3 * instant_rate + 0.7 * self._bp_throughput
-        self._bp_rows_ingested = 0
-        self._bp_last_sample_time = now
+        """Check if the OS pipe buffer has data waiting (i.e. we're behind)."""
+        try:
+            stream_done = self.line_stream and self.line_stream.done
 
-        # OS pipe buffer
-        if self.line_stream and hasattr(self.line_stream, "pipe_pressure"):
-            self._bp_pipe_info = self.line_stream.pipe_pressure()
-        else:
-            self._bp_pipe_info = None
+            behind = False
+            if (
+                not stream_done
+                and self.line_stream
+                and hasattr(self.line_stream, "pipe_pending_bytes")
+            ):
+                pending = self.line_stream.pipe_pending_bytes()
+                if pending is not None and pending > 0:
+                    behind = True
 
-        # Lines read from stdin but not yet passed through add_logs
-        if self.line_stream:
-            pipeline_lag = max(0, len(self.line_stream.lines) - self._bp_total_received)
-        else:
-            pipeline_lag = 0
+            self._bp_behind = behind
 
-        # During deferred rebuilds, displayed_rows is stale — show the gap
-        if self._loading_reason and self._spinner_timer is not None:
-            rebuild_lag = max(0, len(self.raw_rows) - len(self.displayed_rows))
-        else:
-            rebuild_lag = 0
+            # Fire pending chain rebuild immediately when stream finishes
+            if stream_done and self._chain_timer is not None:
+                self._stop_chain_timer()
+                self._deferred_update_table()
 
-        self._bp_lag_rows = pipeline_lag + rebuild_lag
+            # Stop timer when stream is done and we're caught up
+            if stream_done and not behind and not self._loading_reason:
+                self._stop_bp_timer()
+                self._bp_behind = False
 
-        # One-time tailing tip
-        if self._bp_lag_rows > 50_000 and not self._bp_tip_shown:
-            self._bp_tip_shown = True
-            self._flash_status("Tip: press `t` to enable tailing mode")
-
-        # Stop timer when stream is done, no rebuild in flight, and caught up
-        stream_done = self.line_stream and self.line_stream.done
-        if stream_done and self._bp_lag_rows == 0 and not self._loading_reason:
-            self._stop_bp_timer()
-            self._bp_throughput = 0.0
-            self._bp_lag_rows = 0
-            self._bp_pipe_info = None
-            self._bp_last_sample_time = 0.0
-
-        # Only trigger a status bar update when the spinner isn't already
-        # driving updates and the buffer lock isn't held (avoids racing
-        # with deferred table rebuilds).
-        if self._spinner_timer is None and not self.locked:
-            self._update_status_bar()
+            if self._spinner_timer is None and not self.locked:
+                self._update_status_bar()
+        except Exception:
+            pass  # Widget unmounted or app shutting down
 
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False
