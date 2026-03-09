@@ -1,14 +1,26 @@
 # Changelog
 
-## 1.4.0 (2026-03-06)
+## 1.4.0 (2026-03-09)
 
 ### Feat
 
+- **Raw pager mode** — `--raw` flag or auto-detected; renders unstructured text in a dedicated ScrollView-based pager with virtual rendering for fast loading of million-line files
+- **Fast incremental raw loading** — raw mode uses the same chunked incremental path as CSV, showing data immediately instead of buffering everything
+- **Header detection** — files with leading non-tabular lines (e.g. JSON preamble before CSV data) now skip to the correct header line automatically
+- **Pretty-printed JSON flattening** — multi-line JSON objects/arrays are collapsed into JSONL for tabular display
+- **Delimiter consistency scoring** — improved delimiter inference with cross-line field count agreement, reducing false positives on source code and config files
 - show history in delimiter autocomplete dropdown
+
+### Perf
+
+- populate parsed-row cache during incremental loading
+- coalesce chained deferred rebuilds during streaming
+- optimize streaming rebuild pipeline with back pressure detection
 
 ### Fix
 
 - ~ operator with deleted buffers and @ time window ceiling
+- raw pager uses themed background color (`row_even_bg`) to visually distinguish from normal `less`
 
 ## 1.3.0 (2026-03-06)
 

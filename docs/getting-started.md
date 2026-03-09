@@ -57,6 +57,7 @@ Once data is loaded, press `?` to view all keybindings.
 | `--tail` | | Start in tail mode (cursor follows new data) |
 | `--time-window` | `-w` | Show only rows within a time window (e.g. `5m`, `1h`, `30s`). Append `+` for rolling (e.g. `5m+`) |
 | `--columns` | `-c` | Regex to filter visible columns on startup (e.g. `name\|status`) |
+| `--raw` | | Start in raw pager mode (no delimiter parsing) |
 
 ### Examples
 
@@ -100,6 +101,12 @@ Show only specific columns:
 
 ```bash
 nless -c 'name|status|age' pods.txt
+```
+
+View a file in raw mode (no column parsing):
+
+```bash
+nless --raw /var/log/syslog
 ```
 
 Combine options with piped input:
