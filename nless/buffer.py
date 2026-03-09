@@ -201,6 +201,7 @@ class NlessBuffer(
         self._chain_delay: float = self._CHAIN_DELAY_INITIAL
         self._chain_timer = None
         self._chain_skips: int = 0
+        self._chain_notified: bool = False
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
@@ -618,7 +619,14 @@ class NlessBuffer(
         subsequent _update_table() calls (sort, search, etc.) scan fewer rows.
         """
         filtered, mismatched, compacted = self._partition_rows(expected_cell_count)
-        self._apply_raw_rows_compaction(compacted)
+        if compacted is not None:
+            self._apply_raw_rows_compaction(compacted)
+        elif filtered and (
+            self._parsed_rows is None or len(filtered) != len(self._parsed_rows)
+        ):
+            # Partial-cache fast path: update cache with newly parsed rows.
+            # Copy so downstream in-place sort doesn't corrupt the cache.
+            self._parsed_rows = list(filtered)
         return filtered, mismatched
 
     def _partition_rows(self, expected_cell_count: int):
@@ -631,17 +639,49 @@ class NlessBuffer(
             compacted: tuple of (kept_raw, kept_parsed, kept_timestamps,
                         unparseable_raw, unparseable_timestamps)
         """
-        # Use cached parsed rows if available (sort/search don't need re-parse)
-        if self._parsed_rows is not None and len(self._parsed_rows) == len(
+        # Use cached parsed rows if available (sort/search don't need re-parse).
+        # A partial cache (shorter than raw_rows) is also valid — we'll only
+        # parse the new rows appended since the last rebuild.
+        if self._parsed_rows is not None and len(self._parsed_rows) <= len(
             self.raw_rows
         ):
             parsed = self._parsed_rows
         else:
             parsed = None
 
-        # Fast path: cache valid + no filters → all rows pass, skip the loop
-        if parsed is not None and not self.current_filters:
+        # Fast path: full cache + no filters → all rows pass, skip the loop
+        if (
+            parsed is not None
+            and len(parsed) == len(self.raw_rows)
+            and not self.current_filters
+        ):
             return list(parsed), [], None
+
+        # Fast path: partial cache + no filters → only parse new rows
+        if (
+            parsed is not None
+            and not self.current_filters
+            and len(parsed) < len(self.raw_rows)
+        ):
+            new_parsed = []
+            mismatched = []
+            for i in range(len(parsed), len(self.raw_rows)):
+                row_str = self.raw_rows[i]
+                ts = (
+                    self._arrival_timestamps[i]
+                    if i < len(self._arrival_timestamps)
+                    else time.time()
+                )
+                try:
+                    cells = split_line(row_str, self.delimiter, self.current_columns)
+                except (json.JSONDecodeError, csv.Error, ValueError):
+                    continue
+                if len(cells) != expected_cell_count:
+                    mismatched.append(row_str)
+                    continue
+                cells.append(self._format_arrival(ts))
+                new_parsed.append(cells)
+            return list(parsed) + new_parsed, mismatched, None
 
         filtered_rows = []
         rows_with_inconsistent_length = []
@@ -651,13 +691,14 @@ class NlessBuffer(
         unparseable_raw = []
         unparseable_timestamps = []
         needs_copy = parsed is not None and bool(self.unique_column_names)
+        parsed_len = len(parsed) if parsed is not None else 0
         for i, row_str in enumerate(self.raw_rows):
             ts = (
                 self._arrival_timestamps[i]
                 if i < len(self._arrival_timestamps)
                 else time.time()
             )
-            if parsed is not None:
+            if parsed is not None and i < parsed_len:
                 # Copy when dedup is active to avoid mutating the cache
                 # when _dedup_rows prepends a count column.
                 cells = list(parsed[i]) if needs_copy else parsed[i]
@@ -735,10 +776,13 @@ class NlessBuffer(
         if sort_column_idx is None:
             return
         try:
-            rows.sort(
-                key=lambda r: coerce_to_numeric(r[sort_column_idx]),
-                reverse=self.sort_reverse,
+            # Precompute sort keys in one O(N) pass to avoid calling
+            # coerce_to_numeric O(N log N) times inside the sort comparator.
+            keys = [coerce_to_numeric(r[sort_column_idx]) for r in rows]
+            indices = sorted(
+                range(len(rows)), key=keys.__getitem__, reverse=self.sort_reverse
             )
+            rows[:] = [rows[i] for i in indices]
         except (ValueError, IndexError):
             pass
         except TypeError:
@@ -758,7 +802,13 @@ class NlessBuffer(
         gen = self._update_generation
         self._loading_reason = reason
         # Invalidate caches for structural changes (not sort/search)
-        if reason not in ("Sorting", "Searching", "Applying theme"):
+        if reason not in (
+            "Sorting",
+            "Searching",
+            "Applying theme",
+            "Deduplicating",
+            "Filtering",
+        ):
             self._parsed_rows = None
             self._cached_col_widths = None
         self._start_spinner()
@@ -923,7 +973,9 @@ class NlessBuffer(
                 else:
                     self._stop_chain_timer()
                     self._deferred_update_table(
-                        restore_position=restore_position, callback=callback
+                        restore_position=restore_position,
+                        callback=callback,
+                        reason=self._reload_reason(),
                     )
             else:
                 self._stop_chain_timer()
@@ -941,7 +993,8 @@ class NlessBuffer(
                         _past = {
                             "Sorting": "Sorted",
                             "Searching": "Searched",
-                            "Rebuilding": "Rebuilt",
+                            "Deduplicating": "Loaded",
+                            "Filtering": "Loaded",
                         }
                         done = _past.get(loaded_reason, "Loaded")
                         self._flash_status(f"{done} {row_count:,} rows")
@@ -954,6 +1007,16 @@ class NlessBuffer(
     def _run_deferred_update(self, _process_data, _apply_to_widgets):
         result = _process_data()
         self.app.call_from_thread(lambda: _apply_to_widgets(result))
+
+    def _reload_reason(self) -> str:
+        """Build a descriptive reason for chained streaming rebuilds."""
+        if self.sort_column is not None:
+            return "Sorting"
+        if self.unique_column_names:
+            return "Deduplicating"
+        if self.time_window:
+            return "Filtering"
+        return "Loading"
 
     _CHAIN_DELAY_INITIAL: float = 0.3
 
@@ -974,6 +1037,12 @@ class NlessBuffer(
 
     def _schedule_chain_rebuild(self, restore_position, callback):
         """Delay the next rebuild to let more streaming data accumulate."""
+        if not self._chain_notified:
+            self._chain_notified = True
+            self.notify(
+                "[yellow]⚠[/yellow]  Data arriving faster than it can be processed — buffering",
+                severity="warning",
+            )
         self._cancel_chain_timer()
 
         delay = self._chain_delay
@@ -996,7 +1065,9 @@ class NlessBuffer(
                 self._chain_skips = 0
                 self._chain_delay = self._CHAIN_DELAY_INITIAL
                 self._deferred_update_table(
-                    restore_position=restore_position, callback=callback
+                    restore_position=restore_position,
+                    callback=callback,
+                    reason=self._reload_reason(),
                 )
             except Exception:
                 pass  # Widget unmounted or app shutting down
@@ -1160,16 +1231,16 @@ class NlessBuffer(
             self._spinner_timer = None
 
     def _request_spinner_start(self) -> None:
-        """Thread-safe: schedule spinner start on the main thread."""
+        """Thread-safe: schedule spinner start on the main thread (non-blocking)."""
         try:
-            self.app.call_from_thread(self._start_spinner)
+            self.app.call_later(self._start_spinner)
         except Exception:
             pass  # App shutting down or not running
 
     def _request_spinner_stop(self) -> None:
-        """Thread-safe: schedule spinner stop on the main thread."""
+        """Thread-safe: schedule spinner stop on the main thread (non-blocking)."""
         try:
-            self.app.call_from_thread(self._stop_spinner)
+            self.app.call_later(self._stop_spinner)
         except Exception:
             pass  # App shutting down or not running
 
@@ -1246,12 +1317,20 @@ class NlessBuffer(
             has_unique_columns=bool(self.unique_column_names),
         )
 
+    _arrival_format_cache: dict[int, str] = {}
+
     @staticmethod
     def _format_arrival(ts: float) -> str:
         """Format an epoch timestamp as ISO 8601 for display."""
-        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%S.%f"
-        )[:-3]  # trim to milliseconds
+        sec = int(ts)
+        cache = NlessBuffer._arrival_format_cache
+        base = cache.get(sec)
+        if base is None:
+            base = datetime.fromtimestamp(sec, tz=timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+            cache[sec] = base
+        return f"{base}.{int(ts % 1 * 1000):03d}"
 
     def invalidate_caches(self) -> None:
         """Invalidate all data caches, forcing a full reparse on the next update.

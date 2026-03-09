@@ -199,7 +199,7 @@ class StreamingMixin:
                 self._green_lines = set(filtered)
                 self.call_after_refresh(
                     lambda: self._deferred_update_table(
-                        restore_position=False, reason="Rebuilding"
+                        restore_position=False, reason=self._reload_reason()
                     )
                 )
             elif (
