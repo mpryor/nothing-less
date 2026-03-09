@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from textual.coordinate import Coordinate
 
 from .dataprocessing import highlight_search_matches, strip_markup
-from .datatable import Datatable as NlessDataTable
 
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
@@ -19,7 +18,7 @@ class SearchMixin:
 
     def action_search_cursor_word(self: NlessBuffer) -> None:
         """Search for the word under the cursor."""
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -86,6 +85,6 @@ class SearchMixin:
             self.current_match_index + direction + num_matches
         ) % num_matches  # Wrap around
         target_coord = self.search_matches[self.current_match_index]
-        data_table = self.query_one(NlessDataTable)
-        data_table.cursor_coordinate = target_coord
+        data_table = self.query_one(".nless-view")
+        data_table.move_cursor(row=target_coord.row, column=target_coord.column)
         self._update_status_bar()

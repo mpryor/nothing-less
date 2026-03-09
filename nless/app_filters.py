@@ -6,7 +6,6 @@ import re
 from typing import TYPE_CHECKING
 
 from .dataprocessing import strip_markup
-from .datatable import Datatable as NlessDataTable
 from .operations import handle_mark_unique
 from .suggestions import ColumnValueSuggestionProvider
 from .types import Filter
@@ -21,7 +20,7 @@ class FilterMixin:
 
     def action_filter(self: NlessApp) -> None:
         """Filter rows based on user input."""
-        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        data_table = self._get_current_buffer().query_one(".nless-view")
         column_index = data_table.cursor_column
         column_label = data_table.columns[column_index]
         provider = ColumnValueSuggestionProvider(self._get_column_values(column_index))
@@ -43,7 +42,7 @@ class FilterMixin:
         filter_value = event.value
         event.input.remove()
         curr_buffer = self._get_current_buffer()
-        data_table = curr_buffer.query_one(NlessDataTable)
+        data_table = curr_buffer.query_one(".nless-view")
         exclude = event.input.id in ("exclude_filter_input", "exclude_filter_input_any")
 
         if event.input.id in ("filter_input_any", "exclude_filter_input_any"):
@@ -129,7 +128,7 @@ class FilterMixin:
     def action_filter_cursor_word(self: NlessApp) -> None:
         """Filter by the word under the cursor."""
         curr_buffer = self._get_current_buffer()
-        data_table = curr_buffer.query_one(NlessDataTable)
+        data_table = curr_buffer.query_one(".nless-view")
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -148,7 +147,7 @@ class FilterMixin:
 
     def action_exclude_filter(self: NlessApp) -> None:
         """Exclude rows from selected column based on user input."""
-        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        data_table = self._get_current_buffer().query_one(".nless-view")
         column_index = data_table.cursor_column
         column_label = data_table.columns[column_index]
         provider = ColumnValueSuggestionProvider(self._get_column_values(column_index))
@@ -161,7 +160,7 @@ class FilterMixin:
     def action_exclude_filter_cursor_word(self: NlessApp) -> None:
         """Exclude rows matching the word under the cursor."""
         curr_buffer = self._get_current_buffer()
-        data_table = curr_buffer.query_one(NlessDataTable)
+        data_table = curr_buffer.query_one(".nless-view")
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)

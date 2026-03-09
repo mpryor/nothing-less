@@ -43,7 +43,7 @@ from .dataprocessing import strip_markup
 from .help import HelpScreen
 from .input import LineStream, ShellCommandLineStream, StdinLineStream
 from .nlessselect import NlessSelect
-from .datatable import Datatable as NlessDataTable, Coordinate as NlessCoordinate
+from .datatable import Coordinate as NlessCoordinate
 from .keymap import get_all_keymaps, resolve_keymap
 from .theme import get_all_themes, resolve_theme
 from .types import CliArgs, Filter, MetadataColumn
@@ -384,7 +384,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
     def action_mark_unique(self) -> None:
         curr_buffer = self._get_current_buffer()
-        data_table = curr_buffer.query_one(NlessDataTable)
+        data_table = curr_buffer.query_one(".nless-view")
         current_cursor_column = data_table.cursor_column
 
         selected_column = curr_buffer._get_column_at_position(current_cursor_column)
@@ -427,7 +427,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
             pos = new_cursor_position
             self.set_timer(
                 0.3,
-                lambda: new_buffer.query_one(NlessDataTable).move_cursor(column=pos),
+                lambda: new_buffer.query_one(".nless-view").move_cursor(column=pos),
             )
 
         self._copy_buffer_async(
@@ -503,7 +503,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 break
 
     def _filter_composite_key(self, current_buffer: NlessBuffer) -> None:
-        data_table = current_buffer.query_one(NlessDataTable)
+        data_table = current_buffer.query_one(".nless-view")
         cursor_column = data_table.cursor_column
         selected_column = current_buffer._get_column_at_position(cursor_column)
         if selected_column:
@@ -548,10 +548,18 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.focused.remove()
 
         current_buffer = self._get_current_buffer()
-        if event.key == "enter" and isinstance(self.focused, NlessDataTable):
+        if (
+            event.key == "enter"
+            and hasattr(self.focused, "has_class")
+            and self.focused.has_class("nless-view")
+        ):
             self._filter_composite_key(current_buffer)
 
-        if event.key in _TAB_SWITCH_KEYS and isinstance(self.focused, NlessDataTable):
+        if (
+            event.key in _TAB_SWITCH_KEYS
+            and hasattr(self.focused, "has_class")
+            and self.focused.has_class("nless-view")
+        ):
             self.show_tab_by_index(int(event.key) - 1)
 
     def handle_write_to_file_submitted(
@@ -626,7 +634,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
     def _get_column_values(self, column_index: int) -> list[str]:
         """Get unique values for a column, ordered by frequency (most common first)."""
-        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        data_table = self._get_current_buffer().query_one(".nless-view")
         counts: dict[str, int] = {}
         for row in data_table.rows:
             if column_index < len(row):
@@ -690,7 +698,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         tabbed_content = self._get_active_tabbed_content()
         tabbed_content.active = f"buffer{new_buffer.pane_id}"
         try:
-            data_table = new_buffer.query_one(NlessDataTable)
+            data_table = new_buffer.query_one(".nless-view")
         except NoMatches:
             # Buffer not yet composed; retry after next refresh
             self.call_after_refresh(
@@ -740,7 +748,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         on_ready=None,
         reason="Loading",
     ) -> None:
-        curr_data_table = self._get_current_buffer().query_one(NlessDataTable)
+        curr_data_table = self._get_current_buffer().query_one(".nless-view")
 
         self.buffers.append(new_buffer)
         tabbed_content = self._get_active_tabbed_content()
@@ -795,7 +803,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
         tabbed_content.active = f"buffer{new_curr_buffer.pane_id}"
         tabbed_content.query_one(f"#buffer{new_curr_buffer.pane_id}").query_one(
-            NlessDataTable
+            ".nless-view"
         ).focus()
 
         self.call_after_refresh(lambda: new_curr_buffer._update_status_bar())
@@ -828,7 +836,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         active_buffer_id = f"buffer{self.buffers[self.curr_buffer_idx].pane_id}"
         tabbed_content.active = active_buffer_id
         tabbed_content.query_one(f"#{active_buffer_id}").query_one(
-            NlessDataTable
+            ".nless-view"
         ).focus()
         self._get_current_buffer()._update_status_bar()
 
@@ -866,7 +874,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         if self.show_help and self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())
         else:
-            self.query_one(NlessDataTable).focus()
+            self.query_one(".nless-view").focus()
 
     def action_help(self) -> None:
         """Show the help screen."""
@@ -939,7 +947,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
             try:
                 # Clear cached highlight tags so they pick up the new color
                 buf.__dict__.pop("_highlight_tags", None)
-                data_table = buf.query_one(NlessDataTable)
+                data_table = buf.query_one(".nless-view")
                 data_table.apply_theme(new_theme)
                 buf._deferred_update_table(
                     restore_position=True, reason="Applying theme"

@@ -16,7 +16,6 @@ from textual.widgets import (
 
 from .buffer import NlessBuffer
 from .buffergroup import BufferGroup
-from .datatable import Datatable as NlessDataTable
 from .input import LineStream
 
 if TYPE_CHECKING:
@@ -81,7 +80,7 @@ class GroupMixin:
         # Focus active buffer in new group
         current_buffer = self._get_current_buffer()
         try:
-            current_buffer.query_one(NlessDataTable).focus()
+            current_buffer.query_one(".nless-view").focus()
         except NoMatches:
             pass
         self.call_after_refresh(lambda: current_buffer._update_status_bar())
@@ -108,7 +107,7 @@ class GroupMixin:
 
         current_buffer = self._get_current_buffer()
         try:
-            current_buffer.query_one(NlessDataTable).focus()
+            current_buffer.query_one(".nless-view").focus()
         except NoMatches:
             pass
         self.call_after_refresh(lambda: current_buffer._update_status_bar())

@@ -206,7 +206,7 @@ class NlessBuffer(
 
     def action_copy(self) -> None:
         """Copy the contents of the currently highlighted cell to the clipboard."""
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -384,7 +384,7 @@ class NlessBuffer(
         from .rawpager import RawPager
 
         try:
-            current = self.query_one(NlessDataTable)
+            current = self.query_one(".nless-view")
         except Exception:
             return
 
@@ -530,7 +530,7 @@ class NlessBuffer(
             return  # Not ours — let it bubble to the app
         col_index = event.value
         event.control.remove()
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         data_table.move_cursor(column=col_index)
 
     def action_move_column(self, direction: int) -> None:
@@ -539,7 +539,7 @@ class NlessBuffer(
         ) as acquired:
             if not acquired:
                 return
-            data_table = self.query_one(NlessDataTable)
+            data_table = self.query_one(".nless-view")
             current_cursor_column = data_table.cursor_column
             selected_column = self._get_column_at_position(current_cursor_column)
             if not selected_column:
@@ -591,7 +591,7 @@ class NlessBuffer(
 
     def action_reset_highlights(self) -> None:
         """Remove new-line highlights from all displayed rows."""
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         highlight_re = self._get_theme().highlight_re
         for row_idx, row in enumerate(self.displayed_rows):
             new_row = [highlight_re.sub(r"\1", cell) for cell in row]
@@ -611,7 +611,7 @@ class NlessBuffer(
         with self._try_lock("sort", deferred=self.action_sort) as acquired:
             if not acquired:
                 return
-            data_table = self.query_one(NlessDataTable)
+            data_table = self.query_one(".nless-view")
             current_cursor_column = data_table.cursor_column
             selected_column = self._get_column_at_position(current_cursor_column)
             if not selected_column:
@@ -856,7 +856,7 @@ class NlessBuffer(
         self._update_status_bar()
 
         # Snapshot cursor/scroll from widgets before going off-thread.
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
         scroll_x = data_table.scroll_x
@@ -980,7 +980,7 @@ class NlessBuffer(
             if result is None or gen != self._update_generation:
                 return
             self._ensure_correct_view_widget()
-            dt = self.query_one(NlessDataTable)
+            dt = self.query_one(".nless-view")
             dt.clear(columns=True)
             dt.fixed_columns = result["fixed_columns"]
             dt.add_columns(result["column_labels"])
@@ -1121,7 +1121,7 @@ class NlessBuffer(
     def _update_table(self, restore_position: bool = True) -> None:
         """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
         self._ensure_correct_view_widget()
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         cursor_x = data_table.cursor_column
         cursor_y = data_table.cursor_row
         scroll_x = data_table.scroll_x
@@ -1195,7 +1195,7 @@ class NlessBuffer(
     def _update_status_bar(self) -> None:
         if self.pane_id != self.app.buffers[self.app.curr_buffer_idx].pane_id:
             return
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         text = build_status_text(
             sort_column=self.sort_column,
             sort_reverse=self.sort_reverse,

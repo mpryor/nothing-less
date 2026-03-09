@@ -26,6 +26,8 @@ class Coordinate:
 
 
 class Datatable(ScrollView):
+    DEFAULT_CLASSES = "nless-view"
+
     class CellHighlighted(Message):
         pass
 
