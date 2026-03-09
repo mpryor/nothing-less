@@ -253,9 +253,10 @@ class NlessBuffer(
     def copy(self, pane_id) -> "NlessBuffer":
         """Create a duplicate buffer with shared line_stream subscription.
 
-        Caches (_parsed_rows, _cached_col_widths, _sort_keys, _dedup_key_to_row_idx)
-        are intentionally NOT copied — they are rebuilt on the first
-        _deferred_update_table call after the new buffer is mounted.
+        Most caches (_cached_col_widths, _sort_keys, _dedup_key_to_row_idx)
+        are NOT copied — they are rebuilt on the first _deferred_update_table
+        call.  _parsed_rows IS copied when valid, so the new buffer's first
+        rebuild can skip re-parsing all rows via split_line.
         """
         # Snapshot state under lock, then release so the UI stays responsive.
         with self._lock:
@@ -295,6 +296,14 @@ class NlessBuffer(
         new_buffer.raw_rows, new_buffer._arrival_timestamps = new_buffer._filter_lines(
             raw_rows_snapshot, timestamps_snapshot
         )
+        # Copy parsed-row cache so the new buffer's first rebuild doesn't
+        # re-parse everything via split_line.  When _filter_lines removed
+        # rows, len(_parsed_rows) > len(raw_rows) and _partition_rows will
+        # safely ignore the stale cache.
+        if self._parsed_rows is not None and len(self._parsed_rows) == len(
+            raw_rows_snapshot
+        ):
+            new_buffer._parsed_rows = list(self._parsed_rows)
         # Keep unfiltered history so ~ can find excluded lines even without
         # a line_stream.  The snapshot is shared (not copied) to save memory.
         new_buffer._all_source_lines = raw_rows_snapshot
@@ -801,14 +810,17 @@ class NlessBuffer(
         self._update_generation += 1
         gen = self._update_generation
         self._loading_reason = reason
-        # Invalidate caches for structural changes (not sort/search)
-        if reason not in (
+        # Invalidate caches for structural changes (not sort/search).
+        # Reasons may have a suffix like " 50,000 rows", so check prefixes.
+        _CACHE_SAFE = (
             "Sorting",
             "Searching",
             "Applying theme",
             "Deduplicating",
             "Filtering",
-        ):
+            "Pivoting",
+        )
+        if not any(reason.startswith(p) for p in _CACHE_SAFE):
             self._parsed_rows = None
             self._cached_col_widths = None
         self._start_spinner()

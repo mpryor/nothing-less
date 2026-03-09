@@ -6,15 +6,15 @@ baselines (max of 3 runs) with a MULTIPLIER applied to absorb CI jitter,
 subject to a FLOOR so that very fast operations (sub-100ms) aren't flaky
 under load.
 
-Baselines were measured on the development machine (2026-03-03):
+Baselines were measured on the development machine (2026-03-09):
 
     load            0.31s   (50K rows)
-    sort            0.55s   (50K rows)
+    sort            0.39s   (50K rows)
     filter          0.57s   (50K rows)
-    unique          0.57s   (50K rows)
+    unique          0.35s   (50K rows)
     copy            0.001s  (50K rows)
     add_rows        0.027s  (50K rows)
-    sort_100k       1.03s   (100K rows)
+    sort_100k       0.69s   (100K rows)
 
 Run only perf tests:   pytest -m perf
 Skip perf tests:       pytest -m "not perf"
@@ -36,12 +36,12 @@ N_COLS = 5
 # Measured baselines (max of 3 runs, seconds).
 _BASELINES = {
     "load": 0.31,
-    "sort": 0.55,
+    "sort": 0.39,
     "filter": 0.57,
-    "unique": 0.57,
+    "unique": 0.35,
     "copy": 0.001,
     "add_rows": 0.027,
-    "sort_100k": 1.03,
+    "sort_100k": 0.69,
     "stream_sort_100k": 2.10,
 }
 

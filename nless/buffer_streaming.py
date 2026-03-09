@@ -313,6 +313,7 @@ class StreamingMixin:
 
         _MAX_SKIPPED_SAMPLE = 200
         new_rows = []
+        cached_cells = []
         skipped_lines = []
         skipped_count = 0
         for line in new_lines:
@@ -330,17 +331,25 @@ class StreamingMixin:
                 continue
             # Append arrival timestamp (metadata column at end)
             cells.append(formatted_arrival)
-            # Align to visible columns; strip only for fast-path delimiters
+            # Strip for fast-path parsers to match split_line output
             if needs_cleanup:
-                row = [_strip(cells[p]) for p in col_positions]
-            else:
-                row = [cells[p] for p in col_positions]
+                cells = [_strip(c) for c in cells]
+            cached_cells.append(cells)
+            # Align to visible columns
+            row = [cells[p] for p in col_positions]
             new_rows.append(row)
 
         self._total_skipped += skipped_count
         remaining = 200 - len(self._skipped_lines)
         if remaining > 0:
             self._skipped_lines.extend(skipped_lines[:remaining])
+
+        # Populate _parsed_rows cache so the first sort/filter after loading
+        # doesn't need to re-parse all rows via split_line.
+        if skipped_count == 0 and cached_cells:
+            if self._parsed_rows is None:
+                self._parsed_rows = []
+            self._parsed_rows.extend(cached_cells)
 
         # Track column widths from a sample to avoid O(n*cols) len() calls
         if track_widths and new_rows:
