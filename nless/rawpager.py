@@ -1,8 +1,8 @@
 """Raw text pager widget — renders lines as-is without columnar formatting.
 
-Uses Textual's RichLog for rendering and scrolling, with a cursor overlay
-for line-by-line navigation compatible with the Datatable interface that
-NlessBuffer expects.
+Uses Textual's ScrollView for virtual rendering (only visible lines are
+rendered), with a cursor overlay for line-by-line navigation compatible
+with the Datatable interface that NlessBuffer expects.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual.binding import Binding
-from textual.geometry import Region
+from textual.geometry import Region, Size
+from textual.scroll_view import ScrollView
 from textual.strip import Strip
-from textual.widgets import RichLog
 
 from .datatable import Coordinate, Datatable
 
@@ -25,8 +25,11 @@ if TYPE_CHECKING:
 DEFAULT_CLASSES = "nless-view"
 
 
-class RawPager(RichLog):
-    """RichLog-based raw text pager with cursor navigation.
+class RawPager(ScrollView):
+    """ScrollView-based raw text pager with virtual rendering and cursor navigation.
+
+    Only renders visible lines — handles millions of lines without
+    materializing Rich objects for every row.
 
     Exposes the same interface as Datatable so NlessBuffer can use it
     transparently: rows, columns, cursor, add_rows, clear, etc.
@@ -50,7 +53,7 @@ class RawPager(RichLog):
     ]
 
     def __init__(self, theme: NlessTheme | None = None) -> None:
-        super().__init__(wrap=False, highlight=False, markup=True, auto_scroll=False)
+        super().__init__()
         # Datatable-compatible state
         self.rows: list[list[str]] = []
         self.columns: list[str] = [""]
@@ -60,6 +63,7 @@ class RawPager(RichLog):
         self.cursor_coordinate = Coordinate(0, 0)
         self.row_count: int = 0
         self.fixed_columns: int = 0
+        self._max_width: int = 0
         self._init_styles(theme)
 
     def _init_styles(self, theme: NlessTheme | None = None) -> None:
@@ -70,6 +74,8 @@ class RawPager(RichLog):
         self._style_cursor = Style(
             bold=True, color=theme.cursor_fg, bgcolor=theme.cursor_bg
         )
+        self._style_default = Style(color=theme.col_even_fg, bgcolor=theme.row_even_bg)
+        self._style_blank = Style(bgcolor=theme.row_even_bg)
         self.styles.scrollbar_background = theme.scrollbar_bg
         self.styles.scrollbar_color = theme.scrollbar_fg
 
@@ -84,53 +90,61 @@ class RawPager(RichLog):
 
     # -- Row management -------------------------------------------------------
 
-    def _write_line(self, line: str) -> None:
-        """Write a single line to the RichLog."""
-        line = line.rstrip("\n")
-        if "[" in line:
-            try:
-                self.write(Text.from_markup(line))
-            except Exception:
-                self.write(Text(line))
-        else:
-            self.write(Text(line))
+    def _update_virtual_size(self) -> None:
+        self.virtual_size = Size(self._max_width, len(self.rows))
+
+    def _track_width(self, line: str) -> None:
+        """Track max line width for horizontal scrolling."""
+        # Use plain len — close enough for virtual_size and avoids markup parsing
+        w = len(line)
+        if w > self._max_width:
+            self._max_width = w
 
     def add_rows(self, rows_data: list[list[str]]) -> None:
         for row in rows_data:
             self.rows.append(row)
-            self._write_line(row[0] if row else "")
+            self._track_width(row[0] if row else "")
         self.row_count = len(self.rows)
+        self._update_virtual_size()
+        self.refresh()
 
     def add_rows_precomputed(self, rows_data: list[list[str]]) -> None:
-        self.add_rows(rows_data)
+        self.rows.extend(rows_data)
+        for row in rows_data:
+            self._track_width(row[0] if row else "")
+        self.row_count = len(self.rows)
+        self._update_virtual_size()
+        self.refresh()
 
     def add_row(self, row_data: list[str]) -> None:
         self.rows.append(row_data)
-        self._write_line(row_data[0] if row_data else "")
+        self._track_width(row_data[0] if row_data else "")
         self.row_count = len(self.rows)
+        self._update_virtual_size()
+        self.refresh()
 
     def add_row_at(self, index: int, row_data: list[str]) -> None:
         self.rows.insert(index, row_data)
+        self._track_width(row_data[0] if row_data else "")
         self.row_count = len(self.rows)
-        self._rebuild_lines()
+        self._update_virtual_size()
+        self.refresh()
 
     def remove_row(self, index: int) -> None:
         self.rows.pop(index)
         self.row_count = len(self.rows)
-        self._rebuild_lines()
+        # Don't recompute _max_width — it's only used for scrollbar sizing
+        self._update_virtual_size()
+        self.refresh()
 
     def clear(self, columns: bool | None = None) -> None:
         self.rows = []
         self.row_count = 0
         self.columns = [""]
         self.column_widths = [0]
-        super().clear()
-
-    def _rebuild_lines(self) -> None:
-        """Re-render all lines from self.rows (for insert/remove)."""
-        super().clear()
-        for row in self.rows:
-            self._write_line(row[0] if row else "")
+        self._max_width = 0
+        self.virtual_size = Size(0, 0)
+        self.refresh()
 
     # -- Cell access ----------------------------------------------------------
 
@@ -203,18 +217,49 @@ class RawPager(RichLog):
     def action_scroll_to_beginning(self) -> None:
         self.scroll_to(0, self.scroll_offset.y, animate=False)
 
-    # -- Rendering (cursor overlay) -------------------------------------------
+    # -- Rendering (virtual — only visible lines) -----------------------------
 
     def render_line(self, y: int) -> Strip:
-        """Render a line, highlighting the cursor row."""
-        strip = super().render_line(y)
+        """Render a single visible line with cursor highlighting."""
         row_idx = int(self.scroll_offset.y) + y
-        if row_idx == self.cursor_row:
-            strip = Strip(
-                [
-                    Segment(text, self._style_cursor, control)
-                    for text, _style, control in strip._segments
-                ],
-                strip.cell_length,
+        x = self.scroll_offset.x
+
+        if row_idx >= len(self.rows):
+            width = self.size.width
+            return Strip([Segment(" " * width, self._style_blank)], width)
+
+        line = self.rows[row_idx][0] if self.rows[row_idx] else ""
+        is_cursor = row_idx == self.cursor_row
+        style = self._style_cursor if is_cursor else self._style_default
+
+        if "[" in line:
+            try:
+                text = Text.from_markup(line)
+            except Exception:
+                text = Text(line)
+        else:
+            text = Text(line)
+
+        # Render to segments, then apply horizontal scroll offset
+        console = self.app.console
+        segments = []
+        consumed = 0
+        remaining_trim = x
+        for seg_text, seg_style, control in text.render(console):
+            if remaining_trim > 0:
+                if len(seg_text) <= remaining_trim:
+                    remaining_trim -= len(seg_text)
+                    continue
+                seg_text = seg_text[remaining_trim:]
+                remaining_trim = 0
+            segments.append(
+                Segment(seg_text, style + seg_style if seg_style else style, control)
             )
-        return strip
+            consumed += len(seg_text)
+
+        # Pad to full width so cursor highlight covers the line
+        width = self.size.width
+        if consumed < width:
+            segments.append(Segment(" " * (width - consumed), style))
+
+        return Strip(segments, width)

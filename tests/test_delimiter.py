@@ -1,6 +1,7 @@
 import re
 
 from nless.delimiter import (
+    flatten_json_lines,
     infer_delimiter,
     split_aligned_row,
     split_aligned_row_preserve_single_spaces,
@@ -143,6 +144,69 @@ class TestInferDelimiter:
     def test_non_json_with_braces_not_detected_as_json(self):
         lines = ["name,age,city", "{invalid json,30,NYC"]
         assert infer_delimiter(lines) != "json"
+
+    def test_source_code_infers_raw(self):
+        lines = [
+            "def main():",
+            "    x = get_value()",
+            "    if x > 0:",
+            '        print("positive")',
+            "    else:",
+            '        print("non-positive")',
+            "    return x",
+        ]
+        assert infer_delimiter(lines) == "raw"
+
+    def test_config_file_infers_raw(self):
+        lines = [
+            "{",
+            '  "name": "test",',
+            '  "version": "1.0",',
+            '  "description": "a thing"',
+            "}",
+        ]
+        # infer_delimiter alone won't detect this (sampled lines),
+        # but it shouldn't misidentify as CSV either
+        result = infer_delimiter(lines)
+        assert result != ","
+
+
+class TestFlattenJsonLines:
+    def test_jsonl_passthrough(self):
+        lines = ['{"a": 1}', '{"a": 2}']
+        assert flatten_json_lines(lines) is lines
+
+    def test_pretty_object(self):
+        lines = ["{", '  "op": "add",', '  "path": "/a"', "}"]
+        result = flatten_json_lines(lines)
+        assert result is not lines
+        assert len(result) == 1
+        assert '"op"' in result[0]
+
+    def test_pretty_array(self):
+        lines = ["[", '  {"a": 1},', '  {"a": 2}', "]"]
+        result = flatten_json_lines(lines)
+        assert result is not lines
+        assert len(result) == 2
+
+    def test_csv_passthrough(self):
+        lines = ["a,b,c", "1,2,3"]
+        assert flatten_json_lines(lines) is lines
+
+    def test_empty_passthrough(self):
+        lines = []
+        assert flatten_json_lines(lines) is lines
+
+    def test_large_pretty_array(self):
+        """Pretty-printed JSON larger than the 15-line sample window."""
+        import json
+
+        data = [{"id": i, "val": i * 10} for i in range(50)]
+        lines = json.dumps(data, indent=2).splitlines()
+        assert len(lines) > 15
+        result = flatten_json_lines(lines)
+        assert result is not lines
+        assert len(result) == 50
 
 
 class TestSplitLineComputedColumns:

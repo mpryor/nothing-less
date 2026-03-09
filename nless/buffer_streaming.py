@@ -133,21 +133,34 @@ class StreamingMixin:
             sample = _sample_lines(log_lines, max_total=15)
             self.delimiter = infer_delimiter(sample)
             self.delimiter_inferred = True
+
+            # Flatten pretty-printed JSON into JSONL.  Also catches
+            # pretty-printed files that infer_delimiter couldn't detect
+            # from the sampled subset (e.g. files larger than 15 lines).
+            from .delimiter import flatten_json_lines
+
+            flattened = flatten_json_lines(log_lines)
+            if flattened is not log_lines:
+                self.delimiter = "json"
+                log_lines = flattened
+
             if self.delimiter == "raw" and not self.raw_mode:
-                # Auto-detected raw mode — set up minimal state and defer
-                # to _deferred_update_table which will swap the widget.
                 self.raw_mode = True
-                self.first_log_line = log_lines[0]
-                parts = self._parse_first_line_columns(self.first_log_line)
-                self.current_columns = self._make_columns(parts)
-                self._ensure_arrival_column(self.current_columns)
-                self._rebuild_column_caches()
-                self.first_row_parsed = True
-                now = time.time()
-                self.raw_rows.extend(log_lines)
-                self._arrival_timestamps.extend([now] * len(log_lines))
-                self._needs_deferred_update = True
-                return
+
+        # Skip leading non-data lines for standard delimiters (e.g. a JSON
+        # preamble before actual CSV data).
+        if (
+            self.delimiter_inferred
+            and not self.first_row_parsed
+            and self.delimiter
+            and self.delimiter not in ("raw", "json")
+            and not isinstance(self.delimiter, re.Pattern)
+        ):
+            from .delimiter import find_header_index
+
+            header_idx = find_header_index(log_lines, self.delimiter)
+            if header_idx > 0:
+                log_lines = log_lines[header_idx:]
 
         if not self.first_row_parsed:
             self.first_log_line = log_lines[0]
@@ -268,6 +281,18 @@ class StreamingMixin:
                 )
                 self._needs_deferred_update = True
 
+            if self.raw_mode:
+                from .rawpager import RawPager
+
+                try:
+                    if not isinstance(self.query_one(".nless-view"), RawPager):
+                        if self.app._thread_id == threading.get_ident():
+                            self._deferred_raw_swap()
+                        else:
+                            self.app.call_from_thread(self._deferred_raw_swap)
+                except Exception:
+                    pass
+
     def _add_rows_incremental(
         self: NlessBuffer,
         new_lines: list[str],
@@ -287,6 +312,10 @@ class StreamingMixin:
         )
         formatted_arrival = self._format_arrival(arrival_ts or time.time())
         column_widths = data_table.column_widths
+        n_visible = len(col_positions)
+        if len(column_widths) < n_visible:
+            column_widths.extend([0] * (n_visible - len(column_widths)))
+            data_table.column_widths = column_widths
         delimiter = self.delimiter
         has_nested = self._has_nested_delimiters
         columns = self.current_columns
@@ -314,6 +343,14 @@ class StreamingMixin:
 
             def parse(line):
                 return line.split(delimiter)
+
+        elif delimiter == "raw":
+            needs_cleanup = False
+            from rich.markup import escape as _rich_escape
+
+            def parse(line):
+                s = line.rstrip("\n\r")
+                return [_rich_escape(s) if "[" in s else s]
 
         else:
             needs_cleanup = False  # split_line already cleans cells
