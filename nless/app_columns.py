@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 from .dataprocessing import strip_markup
 from .delimiter import split_line
-from .datatable import Datatable as NlessDataTable
 from .nlessselect import NlessSelect
 from .suggestions import PipeSeparatedSuggestionProvider, StaticSuggestionProvider
 from .types import Column, MetadataColumn
@@ -30,7 +29,7 @@ class ColumnOpsMixin:
         ) as acquired:
             if not acquired:
                 return
-            data_table = curr_buffer.query_one(NlessDataTable)
+            data_table = curr_buffer.query_one(".nless-view")
             cursor_column = data_table.cursor_column
             curr_column = curr_buffer._get_column_at_position(cursor_column)
             if not curr_column:
@@ -95,7 +94,7 @@ class ColumnOpsMixin:
     def action_json_header(self: NlessApp) -> None:
         """Set the column headers from JSON in the selected cell."""
         curr_buffer = self._get_current_buffer()
-        data_table = curr_buffer.query_one(NlessDataTable)
+        data_table = curr_buffer.query_one(".nless-view")
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
@@ -148,7 +147,7 @@ class ColumnOpsMixin:
 
     def action_filter_columns(self: NlessApp) -> None:
         """Filter columns by user input."""
-        data_table = self._get_current_buffer().query_one(NlessDataTable)
+        data_table = self._get_current_buffer().query_one(".nless-view")
         column_names = [strip_markup(c) for c in data_table.columns]
         self._create_prompt(
             "Type pipe delimited column names to show (e.g. col1|col2) or 'all' to reset",
@@ -207,7 +206,7 @@ class ColumnOpsMixin:
         ) as acquired:
             if not acquired:
                 return
-            data_table = current_buffer.query_one(NlessDataTable)
+            data_table = current_buffer.query_one(".nless-view")
             cursor_coordinate = data_table.cursor_coordinate
             cell = data_table.get_cell_at(cursor_coordinate)
             selected_column = current_buffer._get_column_at_position(

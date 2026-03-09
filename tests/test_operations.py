@@ -1707,7 +1707,7 @@ class TestRawPagerMode:
         app = NlessApp(cli_args=args, starting_stream=None)
         async with app.run_test(size=(120, 40)):
             buf = app.buffers[0]
-            widget = buf.query_one(Datatable)
+            widget = buf.query_one(".nless-view")
             assert isinstance(widget, RawPager)
 
     @pytest.mark.asyncio
@@ -1747,7 +1747,7 @@ class TestRawPagerMode:
 
             assert buf.raw_mode is True
             assert buf.delimiter == "raw"
-            widget = buf.query_one(Datatable)
+            widget = buf.query_one(".nless-view")
             assert isinstance(widget, RawPager)
 
     @pytest.mark.asyncio
@@ -1772,7 +1772,7 @@ class TestRawPagerMode:
 
             assert buf.raw_mode is False
             assert buf.delimiter == ","
-            widget = buf.query_one(Datatable)
+            widget = buf.query_one(".nless-view")
             assert not isinstance(widget, RawPager)
 
     @pytest.mark.asyncio
@@ -1793,7 +1793,7 @@ class TestRawPagerMode:
             await _wait(pilot, app)
 
             assert buf.raw_mode is True
-            widget = buf.query_one(Datatable)
+            widget = buf.query_one(".nless-view")
             assert isinstance(widget, RawPager)
 
     @pytest.mark.asyncio

@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .dataprocessing import strip_markup
-from .datatable import Datatable as NlessDataTable
 from .delimiter import split_line
 from .operations import handle_mark_unique
 from .types import MetadataColumn, RowLengthMismatchError
@@ -125,7 +124,7 @@ class StreamingMixin:
     def _add_logs_inner(self: NlessBuffer, log_lines: list[str]) -> None:
         from .buffer_delimiter import _sample_lines
 
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
 
         # Infer delimiter from first few lines if not already set
         if not self.delimiter and len(log_lines) > 0:
@@ -280,7 +279,7 @@ class StreamingMixin:
         Fuses parsing, column alignment, and column width tracking into a
         single pass, then bypasses the normal add_rows width computation.
         """
-        data_table = self.query_one(NlessDataTable)
+        data_table = self.query_one(".nless-view")
         col_positions = [col.data_position for col in self._sorted_visible_columns]
         metadata = [mc.value for mc in MetadataColumn]
         expected = len(self.current_columns) - len(
@@ -406,9 +405,13 @@ class StreamingMixin:
         self: NlessBuffer, log_line: str, arrival_ts: float | None = None
     ):
         """Adds a single log line, applying filters, dedup, sort, and search highlighting."""
-        data_table = self.query_one(NlessDataTable)
+        ts = arrival_ts or time.time()
+        # Non-rolling time window: drop rows arriving after the frozen ceiling
+        if self._time_window_ceiling is not None and ts > self._time_window_ceiling:
+            return
+        data_table = self.query_one(".nless-view")
         cells = split_line(log_line, self.delimiter, self.current_columns)
-        cells.append(self._format_arrival(arrival_ts or time.time()))
+        cells.append(self._format_arrival(ts))
         if self.unique_column_names:
             cells.insert(0, "1")
 
