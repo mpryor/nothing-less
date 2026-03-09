@@ -337,7 +337,103 @@ nless auto-detects the double-space-aligned format. If it doesn't, press `D` and
 
 ---
 
-## 8. Live Streaming
+## 8. Raw Pager Mode
+
+When nless can't detect a delimiter — or when you just want to browse a file as plain text — it switches to **raw pager mode**. Raw mode uses a virtual-rendering pager optimized for speed: it handles million-line files without the overhead of column parsing.
+
+### When raw mode activates
+
+Raw mode activates automatically when:
+
+- The input has no consistent delimiter (e.g. source code, config files, free-form logs)
+- You explicitly pass `--raw` on the command line
+
+You can also switch any buffer to raw mode (and back) with `D`.
+
+### Browsing unstructured text
+
+Create a file called `app.conf`:
+
+```
+# Application configuration
+[server]
+host = 0.0.0.0
+port = 8080
+workers = 4
+
+[database]
+url = postgresql://localhost:5432/mydb
+pool_size = 10
+timeout = 30
+
+[logging]
+level = INFO
+format = %(asctime)s %(levelname)s %(message)s
+file = /var/log/app.log
+```
+
+```bash
+nless app.conf
+```
+
+nless detects no consistent delimiter and opens in raw mode. The background is subtly tinted to indicate you're in raw mode rather than tabular mode.
+
+**Navigate the file:**
+
+- `j` / `k` to scroll line by line
+- `g` to jump to the top, `G` to the bottom
+- `ctrl+d` / `ctrl+u` to page down and up
+- `h` / `l` to scroll horizontally for long lines
+
+**Search within raw text:**
+
+1. Press `/`, type `database`, press ++enter++
+2. Press `n` to jump to the next match, `p` to go back
+
+### Switching from raw to structured
+
+Raw mode is a starting point — you can switch to a structured delimiter at any time.
+
+Create a file called `mixed.log`:
+
+```
+=== Server Startup Log ===
+Generated at: 2025-03-01 08:00:00
+Environment: production
+---
+timestamp,level,message,user,ip
+2025-03-01 08:00:01,INFO,server started,system,10.0.0.1
+2025-03-01 08:00:15,INFO,GET /api/health,system,10.0.0.1
+2025-03-01 08:01:22,WARN,rate limit exceeded,alice,10.0.0.50
+2025-03-01 08:01:45,ERROR,internal server error,bob,10.0.0.51
+2025-03-01 08:02:10,INFO,GET /api/users,alice,10.0.0.50
+2025-03-01 08:02:33,ERROR,database timeout,carol,10.0.0.52
+```
+
+```bash
+nless mixed.log
+```
+
+nless detects the CSV data and skips the preamble header lines automatically, parsing `timestamp`, `level`, `message`, `user`, `ip` as columns. If you'd rather see the raw text:
+
+1. Press `D` and select `raw` — the file is shown as plain text with no column splitting
+2. Press `D` again and select `,` — the data is re-parsed as CSV
+
+This round-trip between raw and structured views is useful when you need to see the original text alongside the parsed data.
+
+### Forcing raw mode from the CLI
+
+For large files where you don't need column parsing, `--raw` skips delimiter inference entirely:
+
+```bash
+nless --raw /var/log/syslog
+```
+
+This is the fastest way to browse a file — nless loads data incrementally and renders only the visible lines, so even a million-line file is responsive immediately.
+
+---
+
+## 9. Live Streaming
 
 nless can ingest data in real-time from pipes and shell commands. As new lines arrive, they are **highlighted in green** so you can instantly distinguish fresh data from what was already on screen. Once you've reviewed the new data, press `x` to clear the green highlights and reset everything to normal.
 
@@ -442,7 +538,7 @@ If each log line is a JSON object, nless auto-detects the format and parses fiel
 
 ---
 
-## 9. Reshaping Data with Column Visibility
+## 10. Reshaping Data with Column Visibility
 
 Create a file called `employees.csv`:
 
@@ -487,7 +583,7 @@ To show all columns again, press `C` and type `all`.
 
 ---
 
-## 10. Exporting Results
+## 11. Exporting Results
 
 After filtering, sorting, and reshaping data, you can export the current view.
 
@@ -515,7 +611,7 @@ nless data.csv  # filter/sort interactively, then W and -
 
 ---
 
-## 11. Live Debugging a Web Server
+## 12. Live Debugging a Web Server
 
 This tutorial combines live streaming, regex parsing, and interactive analysis. Start a log stream in one terminal:
 
@@ -550,7 +646,7 @@ tail -f /tmp/live-access.log | nless
 
 ---
 
-## 12. Time Windows and Arrival Timestamps
+## 13. Time Windows and Arrival Timestamps
 
 When working with streaming data, you often want to focus on recent activity. nless records an arrival timestamp for every row and lets you filter by time window.
 
@@ -604,7 +700,7 @@ kubectl get events -w | nless --tail -w '5m+'
 
 ---
 
-## 13. Putting It All Together
+## 14. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 

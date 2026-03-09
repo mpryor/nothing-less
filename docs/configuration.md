@@ -105,7 +105,7 @@ Only `"name"` is required. Omitted color slots inherit from the default theme. C
 | `header_fg` | Column header bar text |
 | `fixed_column_bg` | Pinned column background (e.g. `count` in pivots) |
 | `row_odd_bg` | Odd row background |
-| `row_even_bg` | Even row background |
+| `row_even_bg` | Even row background; also used as raw pager background |
 | `col_odd_fg` | Odd column text color |
 | `col_even_fg` | Even column text color |
 | `scrollbar_bg` | Scrollbar track |

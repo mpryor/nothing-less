@@ -42,7 +42,7 @@ Test files cover CLI arg parsing, buffer operations, delimiter inference/splitti
 ```
 Input (stdin/file/command) → StdinLineStream (async, threaded)
     → NlessApp (manages buffers & UI) → NlessBuffer (state & transforms)
-    → delimiter.split_line() (parse rows) → DataTable (render)
+    → delimiter.split_line() (parse rows) → DataTable or RawPager (render)
 ```
 
 ### Key Modules
@@ -54,6 +54,7 @@ Input (stdin/file/command) → StdinLineStream (async, threaded)
 - **input.py** — `StdinLineStream` (non-blocking I/O with `select()`, handles files and pipes, JSON-specific buffering) and `ShellCommandLineStream`. Publisher pattern with subscribers.
 - **types.py** — Core dataclasses: `Filter`, `CliArgs`, `Column`, `MetadataColumn`.
 - **datatable.py** — Custom performance-optimized ScrollView-based table rendering.
+- **rawpager.py** (`RawPager`) — ScrollView-based raw text pager with virtual rendering for unstructured/raw mode. Same interface as Datatable so NlessBuffer can swap transparently.
 - **config.py** — User preferences stored in `~/.config/nless/` as JSON.
 - **autocomplete.py** (`AutocompleteInput`) — Custom Input widget with command history navigation.
 - **help.py** (`HelpScreen`) — Keybindings help screen.

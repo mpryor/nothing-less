@@ -87,6 +87,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Themes** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
 - **Arrival timestamps** - every row records when it was received; toggle the `_arrival` column with `A`
 - **Time window filtering** - show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Raw pager mode** - `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
 - **Excluded lines** - view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
 
 <details>
