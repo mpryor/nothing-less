@@ -21,6 +21,7 @@ Skip perf tests:       pytest -m "not perf"
 """
 
 import time
+from threading import Thread
 
 import pytest
 
@@ -41,6 +42,7 @@ _BASELINES = {
     "copy": 0.001,
     "add_rows": 0.027,
     "sort_100k": 1.03,
+    "stream_sort_100k": 3.22,
 }
 
 # Multiplier applied to baselines to set thresholds.  2x is tight enough to
@@ -257,3 +259,57 @@ async def test_sort_100k(cli_args):
         elapsed = time.monotonic() - t0
 
     _assert_perf("sort_100k", elapsed)
+
+
+@pytest.mark.perf
+@pytest.mark.asyncio
+async def test_stream_sort_100k():
+    """Stream 100K rows with sort active — measures coalescing effectiveness."""
+    lines = _generate_csv_lines_numeric(N_ROWS_100K, N_COLS)
+    header = lines[0]
+    data = lines[1:]
+    batch_size = 5000
+
+    cli_args = CliArgs(
+        delimiter=None, filters=[], unique_keys=set(), sort_by="col0=desc"
+    )
+    app = NlessApp(cli_args=cli_args, starting_stream=None)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        buf = app.buffers[0]
+        buf.add_logs([header])
+        await pilot.pause(delay=0.1)
+
+        def feed():
+            for i in range(0, len(data), batch_size):
+                buf.add_logs(data[i : i + batch_size])
+                time.sleep(0.005)
+
+        t0 = time.monotonic()
+        feeder = Thread(target=feed, daemon=True)
+        feeder.start()
+
+        # Pump event loop while feeder runs, then wait for settling.
+        # Don't join the feeder — that blocks the event loop and
+        # deadlocks (add_logs uses call_from_thread internally).
+        deadline = time.monotonic() + 60.0
+        settled = 0
+        while time.monotonic() < deadline:
+            await pilot.pause(delay=0.05)
+            loading = getattr(buf, "_loading_reason", None)
+            feeder_done = not feeder.is_alive()
+            if (
+                feeder_done
+                and len(buf.displayed_rows) >= N_ROWS_100K
+                and not loading
+                and not buf.locked
+            ):
+                settled += 1
+                if settled >= 5:
+                    break
+            else:
+                settled = 0
+
+        elapsed = time.monotonic() - t0
+
+    _assert_perf("stream_sort_100k", elapsed)
