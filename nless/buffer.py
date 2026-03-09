@@ -395,6 +395,7 @@ class NlessBuffer(
 
         theme = self._get_theme()
         container = self.query_one(Vertical)
+        current.remove_class("nless-view")
         current.remove()
         if want_raw:
             new_widget = RawPager(theme=theme)
@@ -402,6 +403,30 @@ class NlessBuffer(
             new_widget = NlessDataTable(theme=theme)
         container.mount(new_widget)
         new_widget.focus()
+
+    def _deferred_raw_swap(self) -> None:
+        """Swap Datatable→RawPager after incremental load, transferring rows."""
+        from .rawpager import RawPager
+
+        try:
+            current = self.query_one(".nless-view")
+        except Exception:
+            return
+        if isinstance(current, RawPager):
+            return
+
+        rows = list(current.rows)
+        cursor_y = current.cursor_row
+        self._ensure_correct_view_widget()
+
+        try:
+            new_widget = self.query_one(".nless-view")
+            if rows:
+                new_widget.add_rows_precomputed(rows)
+            if cursor_y and rows:
+                new_widget.move_cursor(row=min(cursor_y, len(rows) - 1))
+        except Exception:
+            pass
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -958,7 +983,10 @@ class NlessBuffer(
                 for row in styled_rows:
                     for i, cell_str in enumerate(row):
                         if "[" in cell_str:
-                            str_len = Text.from_markup(cell_str).cell_len
+                            try:
+                                str_len = Text.from_markup(cell_str).cell_len
+                            except Exception:
+                                str_len = len(cell_str)
                         else:
                             str_len = len(cell_str)
                         if str_len > col_widths[i]:

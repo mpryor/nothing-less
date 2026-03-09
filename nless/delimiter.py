@@ -46,10 +46,13 @@ def split_line(
     elif delimiter == ",":
         cells = split_csv_row(line)
     elif delimiter == "raw":
-        cells = [rich_escape(line)]
+        stripped = line.rstrip("\n\r")
+        cells = [rich_escape(stripped) if "[" in stripped else stripped]
     elif delimiter == "json":
         cells = [
-            json.dumps(v) if isinstance(v, dict) or isinstance(v, list) else str(v)
+            (
+                json.dumps(v) if isinstance(v, dict) or isinstance(v, list) else str(v)
+            ).replace("[", "\\[")
             for v in json.loads(line).values()
         ]
     elif isinstance(delimiter, re.Pattern):
@@ -112,7 +115,7 @@ def split_line(
                 json.dumps(json_data)
                 if isinstance(json_data, (dict, list))
                 else str(json_data)
-            )
+            ).replace("[", "\\[")
             computed.append((pos, value))
         elif isinstance(col.delimiter, re.Pattern):
             ref_cell = _find_ref_column_cell(
@@ -160,6 +163,49 @@ def split_line(
         return result
 
     return cells
+
+
+def flatten_json_lines(lines: list[str]) -> list[str]:
+    """Convert pretty-printed JSON into JSONL (one object per line).
+
+    If the input is already JSONL, returns it unchanged.  Handles both
+    a single JSON object and a JSON array of objects.
+    """
+    # Find the first non-empty line to decide what we're dealing with
+    first = ""
+    for line in lines:
+        first = line.strip()
+        if first:
+            break
+
+    if not first:
+        return lines
+
+    # Already JSONL — first line is a complete JSON object
+    candidate = first.rstrip(",")
+    if candidate.startswith("{"):
+        try:
+            json.loads(candidate)
+            return lines
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Only attempt the expensive join+parse if the first line looks like
+    # the start of a JSON structure (object or array)
+    if first not in ("{", "["):
+        return lines
+
+    joined = "\n".join(lines)
+    try:
+        parsed = json.loads(joined)
+    except (json.JSONDecodeError, ValueError):
+        return lines
+
+    if isinstance(parsed, dict):
+        return [json.dumps(parsed)]
+    elif isinstance(parsed, list):
+        return [json.dumps(item) for item in parsed]
+    return lines
 
 
 _MULTI_SPACE_RE = re.compile(r" {2,}")
@@ -210,6 +256,54 @@ def split_csv_row(line: str) -> list[str]:
         return stripped.split(",")
 
 
+def _field_count(line: str, delimiter: str) -> int:
+    """Count fields produced by splitting *line* with *delimiter*."""
+    if delimiter == ",":
+        return len(split_csv_row(line))
+    elif delimiter == " ":
+        return len(split_aligned_row(line))
+    elif delimiter == "  ":
+        return len(split_aligned_row_preserve_single_spaces(line))
+    else:
+        return len(line.split(delimiter))
+
+
+def find_header_index(lines: list[str], delimiter: str) -> int:
+    """Return the index of the first line matching the consensus field count.
+
+    For files with leading non-tabular lines (e.g. a JSON preamble before CSV
+    data), this skips past the noise so the correct header line is used.
+
+    Returns 0 when no adjustment is needed.
+    """
+    counts: list[int] = []
+    for line in lines[:15]:
+        if not line.strip():
+            continue
+        c = _field_count(line, delimiter)
+        if c > 1:
+            counts.append(c)
+
+    if not counts:
+        return 0
+
+    consensus = max(set(counts), key=counts.count)
+    if consensus <= 1:
+        return 0
+
+    # First line already matches — no skip needed
+    if lines and _field_count(lines[0], delimiter) == consensus:
+        return 0
+
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if _field_count(line, delimiter) == consensus:
+            return i
+
+    return 0
+
+
 def infer_delimiter(sample_lines: list[str]) -> str | None:
     """Infer the delimiter from a sample of lines.
 
@@ -245,11 +339,15 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
 
     common_delimiters = [",", "\t", "|", ";", " ", "  "]
     delimiter_scores = {d: 0 for d in common_delimiters}
+    # Track field counts per delimiter for cross-line consistency check
+    delimiter_field_counts: dict[str, list[int]] = {d: [] for d in common_delimiters}
+    non_empty_lines = 0
 
     for line in sample_lines:
         # Skip empty lines
         if not line.strip():
             continue
+        non_empty_lines += 1
 
         for delimiter in common_delimiters:
             if delimiter == " ":
@@ -262,14 +360,18 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
             else:
                 parts = line.split(delimiter)
 
+            n_fields = len(parts)
+            if n_fields > 1:
+                delimiter_field_counts[delimiter].append(n_fields)
+
             # Score based on number of fields and consistency
-            if len(parts) > 1:
+            if n_fields > 1:
                 # More fields = higher score
-                delimiter_scores[delimiter] += len(parts)
+                delimiter_scores[delimiter] += n_fields
 
                 # Consistent non-empty fields = higher score
                 non_empty = sum(1 for p in parts if p.strip())
-                if non_empty == len(parts):
+                if non_empty == n_fields:
                     delimiter_scores[delimiter] += 2
 
                 # If fields are roughly similar lengths = higher score
@@ -279,20 +381,30 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                     delimiter_scores[delimiter] += 1
 
                 # Special case: if tab and consistent fields, boost score
-                if delimiter == "\t" and non_empty == len(parts):
+                if delimiter == "\t" and non_empty == n_fields:
                     delimiter_scores[delimiter] += 3
 
-                # Special case: if space delimiter and parts are consistent across lines
-                if delimiter == " " and len(sample_lines) > 1:
-                    # Check if number of fields is consistent across lines
-                    first_line_parts = split_aligned_row(sample_lines[0])
-                    if len(parts) == len(first_line_parts):
-                        delimiter_scores[delimiter] += 2
-                    else:
-                        delimiter_scores[delimiter] -= 20
+    # Penalize delimiters with inconsistent field counts across lines.
+    # Tabular data has the same number of columns on every row; source code,
+    # prose, and config files produce wildly varying split counts.
+    for delimiter, counts in delimiter_field_counts.items():
+        if non_empty_lines >= 2:
+            # If half or fewer non-empty lines split, weak signal
+            if len(counts) <= non_empty_lines * 0.5:
+                delimiter_scores[delimiter] = 0
+                continue
+            if len(counts) >= 2:
+                most_common = max(set(counts), key=counts.count)
+                agreement = counts.count(most_common) / len(counts)
+                if agreement >= 0.8:
+                    # Strong cross-line consistency — boost
+                    delimiter_scores[delimiter] += len(counts) * 2
+                else:
+                    # Inconsistent — zero out the score
+                    delimiter_scores[delimiter] = 0
 
     # Default to raw if no clear winner
-    if not delimiter_scores or max(delimiter_scores.values()) == 0:
+    if not delimiter_scores or max(delimiter_scores.values()) <= 0:
         return "raw"
 
     # Return the delimiter with the highest score
