@@ -42,7 +42,7 @@ _BASELINES = {
     "copy": 0.001,
     "add_rows": 0.027,
     "sort_100k": 1.03,
-    "stream_sort_100k": 3.22,
+    "stream_sort_100k": 2.10,
 }
 
 # Multiplier applied to baselines to set thresholds.  2x is tight enough to
