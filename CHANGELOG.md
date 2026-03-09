@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.0 (2026-03-09)
+
+### Feat
+
+- fast incremental raw mode, ScrollView-based RawPager, and header detection
+- rewrite RawPager to use RichLog with cursor overlay and fix streaming bugs
+- raw pager mode with on-demand columnar parsing
+- add cross-version performance history and benchmark suite
+- coalesce chained deferred rebuilds during streaming
+- add back pressure detection and status bar indicators
+
+### Fix
+
+- raw pager rendering issues
+- remove zebra striping from raw pager mode
+- escape Rich markup in raw pager lines
+- update stream_sort_100k perf baseline to 2.10s
+
+### Perf
+
+- populate parsed-row cache during incremental loading
+- optimize streaming rebuild pipeline
+
 ## 1.4.0 (2026-03-09)
 
 ### Feat
