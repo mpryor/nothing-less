@@ -50,6 +50,8 @@ from .types import CliArgs, Filter, MetadataColumn
 from .app_columns import ColumnOpsMixin
 from .app_filters import FilterMixin
 from .app_groups import GroupMixin
+from .buffer_delimiter import _sample_lines
+from .logformats import detect_log_format, save_custom_format
 from .regex_wizard import RegexWizardMixin
 
 logger = logging.getLogger(__name__)
@@ -209,6 +211,12 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             "toggle_arrival",
             "Toggle arrival timestamp column",
             id="app.toggle_arrival",
+        ),
+        Binding(
+            "P",
+            "detect_log_format",
+            "Auto-detect log format",
+            id="app.detect_log_format",
         ),
     ]
 
@@ -449,6 +457,27 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS, history=history),
         )
 
+    def action_detect_log_format(self) -> None:
+        """Sample data and auto-detect a known log format."""
+        buffer = self._get_current_buffer()
+        all_lines: list[str] = []
+        if buffer.delimiter not in ("raw",) and not isinstance(
+            buffer.delimiter, re.Pattern
+        ):
+            all_lines.append(buffer.first_log_line)
+        all_lines.extend(buffer.raw_rows)
+        if not all_lines:
+            self.notify("No data to analyze", severity="warning")
+            return
+        sample = _sample_lines(all_lines)
+        result = detect_log_format(sample)
+        if result is None:
+            self.notify("No known log format detected", severity="warning")
+            return
+        buffer.switch_delimiter(result.pattern.pattern)
+        buffer.delimiter_name = result.name
+        self.notify(f"Detected: {result.name}")
+
     def action_search_to_filter(self) -> None:
         """Convert current search into a filter across all columns."""
         current_buffer = self._get_current_buffer()
@@ -626,6 +655,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.handle_rename_buffer_submitted(event)
         elif event.input.id == "time_window_input":
             self.handle_time_window_submitted(event)
+        elif event.input.id == "save_log_format_input":
+            self.handle_save_log_format_submitted(event)
         elif event.input.id == "regex_wizard_name_input":
             self._handle_regex_wizard_name_submitted(event)
 
@@ -710,6 +741,36 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 self.notify(f"Invalid regex: {e}", severity="error")
                 return
         self._get_current_buffer().switch_delimiter(value)
+        # Offer to save regex with named groups as a custom log format
+        if value and value not in ("raw", "json", "\\t", "space", "space+"):
+            try:
+                pattern = re.compile(rf"{value}")
+                if pattern.groupindex:
+                    self._pending_log_format_pattern = value
+                    self._create_prompt(
+                        "Save as log format? Enter name (Esc to skip)",
+                        "save_log_format_input",
+                    )
+            except re.error:
+                pass
+
+    def handle_save_log_format_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
+        event.input.remove()
+        name = event.value.strip()
+        if not name:
+            return
+        pattern = getattr(self, "_pending_log_format_pattern", None)
+        if not pattern:
+            return
+        self._pending_log_format_pattern = None
+        try:
+            save_custom_format(name, pattern)
+            self._get_current_buffer().delimiter_name = name
+            self.notify(f"Saved log format: {name}")
+        except OSError as e:
+            self.notify(f"Failed to save: {e}", severity="error")
 
     def refresh_buffer_and_focus(
         self,

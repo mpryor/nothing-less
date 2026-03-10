@@ -6,11 +6,12 @@ nless stores configuration and history files in `~/.config/nless/`.
 
 ```
 ~/.config/nless/
-├── config.json      # User preferences
-├── history.json     # Input history (managed automatically)
-├── themes/          # Custom theme files
+├── config.json          # User preferences
+├── history.json         # Input history (managed automatically)
+├── log_formats.json     # Custom log format patterns for P auto-detection
+├── themes/              # Custom theme files
 │   └── my-theme.json
-└── keymaps/         # Custom keymap files
+└── keymaps/             # Custom keymap files
     └── my-keymap.json
 ```
 
@@ -215,6 +216,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.mark_unique` | `U` | Mark column as pivot key |
 | `app.delimiter` | `D` | Change delimiter |
 | `app.column_delimiter` | `d` | Split column |
+| `app.detect_log_format` | `P` | Auto-detect log format |
 | `app.json_header` | `J` | Extract JSON key |
 
 #### Buffers & Groups
@@ -280,6 +282,71 @@ Rich markup is supported. Use theme color variables inside markup tags to get co
     "status_format": "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] [{cursor_fg}]{unique}[/{cursor_fg}]{tailing}{loading}"
 }
 ```
+
+---
+
+## Custom Log Formats
+
+**Location:** `~/.config/nless/log_formats.json`
+
+Define custom log format patterns for the `P` (auto-detect log format) feature. Custom formats are checked before built-in formats and have higher priority, so they will be preferred when they match your data.
+
+### Creating custom formats
+
+There are two ways to add custom log formats:
+
+1. **From within nless** — press `D`, enter a regex with named capture groups, and when prompted, enter a name to save it. The format is saved automatically.
+
+2. **Edit the file directly** — create or edit `~/.config/nless/log_formats.json`:
+
+```json title="~/.config/nless/log_formats.json"
+[
+  {
+    "name": "My App Log",
+    "pattern": "(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}) \\[(?P<service>\\w+)\\] (?P<level>\\w+): (?P<message>.*)"
+  },
+  {
+    "name": "Internal Audit",
+    "pattern": "AUDIT (?P<action>\\w+) (?P<user>\\S+) (?P<resource>\\S+) (?P<result>\\w+)"
+  }
+]
+```
+
+Each entry requires:
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `name` | Yes | Display name shown in notifications and the status bar delimiter field |
+| `pattern` | Yes | Python regex with at least one named capture group (`(?P<name>...)`) |
+| `priority` | No | Tiebreaker for detection scoring (default: `100`). Higher values are preferred when multiple formats match equally |
+
+Patterns must be valid Python regular expressions. Entries with invalid regex or no named groups are silently skipped.
+
+### Built-in formats
+
+nless ships with 19 built-in log format patterns that `P` can detect:
+
+| Format | Example |
+|--------|---------|
+| Apache/nginx Combined | `93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /path HTTP/1.1" 200 2326 "http://ref" "Mozilla"` |
+| Apache/nginx Common | Same without referer/useragent |
+| Syslog RFC 5424 | `<165>1 2023-08-24T05:14:15Z host app 1234 ID47 - Message` |
+| Syslog RFC 3164 | `Jan  5 14:23:01 myhost sshd[12345]: message` |
+| NGINX Error | `2024/01/15 14:23:01 [error] 12345#0: message` |
+| AWS CloudWatch/Lambda | `2024-01-15T14:23:01.123Z request-id INFO message` |
+| Spring Boot / Logback | `2024-01-15T14:23:01.123+00:00  INFO 12345 --- [main] c.e.MyApp : message` |
+| Ruby/Rails Logger | `I, [2024-01-15T14:23:01.123 #12345]  INFO -- app: message` |
+| Laravel / Monolog | `[2024-01-15 14:23:01] production.ERROR: message` |
+| Rust env_logger | `[2024-01-15T14:23:01Z INFO  myapp::server] message` |
+| .NET Core Logger | `info: Microsoft.Hosting[14] message` |
+| Go Log (stdlib) | `2024/01/15 14:23:01 message` |
+| Logrus / slog Text | `time="2024-01-15T14:23:01Z" level=info msg="message"` |
+| Elixir Logger | `14:23:01.123 [info] message` |
+| Python Logging Default | `WARNING:root:message` |
+| Python Logging Dash | `2024-01-15 14:23:01,123 - myapp - INFO - message` |
+| ISO 8601 + Level + Logger | `2024-01-15 14:23:01,123 INFO com.example.Main message` |
+| ISO 8601 + Level | `2024-01-15T14:23:01 INFO message` |
+| Bracket Timestamp + Level | `[2024-01-15 14:23:01] [INFO] message` |
 
 ---
 

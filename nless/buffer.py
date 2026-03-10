@@ -145,6 +145,7 @@ class NlessBuffer(
             self.delimiter = None
 
         self.delimiter_inferred = False
+        self.delimiter_name: str | None = None
         self.is_tailing = cli_args.tail if cli_args else False
         self.unique_column_names = cli_args.unique_keys if cli_args else set()
         self.count_by_column_key = defaultdict(lambda: 0)
@@ -275,6 +276,7 @@ class NlessBuffer(
             new_buffer.current_match_index = self.current_match_index
             new_buffer.delimiter = self.delimiter
             new_buffer.delimiter_inferred = self.delimiter_inferred
+            new_buffer.delimiter_name = self.delimiter_name
             new_buffer.is_tailing = self.is_tailing
             new_buffer.unique_column_names = deepcopy(self.unique_column_names)
             new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)

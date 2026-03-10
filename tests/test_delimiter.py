@@ -89,6 +89,13 @@ class TestSplitLine:
         result = split_line("no match here", pattern, [])
         assert result == []
 
+    def test_regex_optional_group_none_becomes_empty_string(self):
+        pattern = re.compile(
+            r"(?P<process>[^\[:]+)(?:\[(?P<pid>\d+)\])?: (?P<message>.*)"
+        )
+        result = split_line("kernel: some message", pattern, [])
+        assert result == ["kernel", "", "some message"]
+
 
 class TestInferDelimiter:
     def test_csv_input(self):

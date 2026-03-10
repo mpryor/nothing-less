@@ -257,6 +257,28 @@ You can also set the regex delimiter directly from the CLI:
 nless -d '(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}) (?P<method>\w+) (?P<path>\S+) (?P<status>\d+) (?P<duration>\d+)ms' access.log
 ```
 
+### The Regex Wizard
+
+Writing `(?P<name>...)` for every group is tedious. nless has a built-in regex wizard that lets you write unnamed groups and then name them interactively.
+
+1. Press `D` and enter a regex with unnamed groups:
+
+    ```
+    (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) (\w+) (\S+) (\d+) (\d+)ms
+    ```
+
+2. The wizard detects unnamed groups and prompts you to name each one in order:
+    - "Name for group 1 (`\d{4}-\d{2}-\d{2}`):" → type `date`
+    - "Name for group 2 (`\d{2}:\d{2}:\d{2}`):" → type `time`
+    - "Name for group 3 (`\w+`):" → type `method`
+    - ...and so on
+
+3. After naming all groups, the wizard transforms the regex into the named version and applies it
+
+The wizard validates each name — it must be a valid Python identifier and can't duplicate an existing group name. Press ++escape++ or submit an empty name to cancel.
+
+The wizard also works with column delimiters (`d`), so you can use unnamed groups when splitting a column too.
+
 ---
 
 ## 6. Splitting Columns with Regex Capture Groups
@@ -700,7 +722,65 @@ kubectl get events -w | nless --tail -w '5m+'
 
 ---
 
-## 14. Putting It All Together
+## 14. Auto-Detecting Log Formats
+
+nless can automatically detect common log formats and apply the right regex delimiter with a single keypress. This saves you from manually writing regex patterns for well-known formats like syslog, Apache access logs, Spring Boot, and more.
+
+### One-press log parsing
+
+Create a file called `syslog.log`:
+
+```
+Jan  5 14:23:01 myhost sshd[12345]: Accepted publickey for deploy from 10.0.0.5 port 52341
+Jan  5 14:23:02 myhost sshd[12345]: pam_unix(sshd:session): session opened for user deploy
+Jan  5 14:23:03 myhost cron[999]: (root) CMD (/usr/bin/cleanup --force)
+Jan  5 14:24:00 myhost kernel: TCP: out of memory -- consider tuning tcp_mem
+Jan  5 14:24:01 myhost systemd[1]: Starting Daily apt download activities...
+```
+
+```bash
+nless syslog.log
+```
+
+1. The file opens in space-aligned or raw mode — not very useful for analysis
+2. Press `P` — nless samples the data, matches it against 19 built-in log formats, and detects "Syslog (RFC 3164)"
+3. The data is instantly parsed into columns: `timestamp`, `host`, `process`, `pid`, `message`
+4. The status bar shows `delim: Syslog (RFC 3164)` instead of a raw regex
+
+Now you can use all the usual tools — filter by `host`, sort by `process`, pivot by `pid`, search within `message`.
+
+### Supported formats
+
+Press `P` on any of these log formats and nless will detect them automatically:
+
+- **Web servers** — Apache/nginx Combined and Common, NGINX error logs
+- **System logs** — Syslog RFC 3164 (BSD) and RFC 5424
+- **Java/Spring** — Spring Boot / Logback, ISO 8601 + Level + Logger
+- **Python** — `WARNING:root:message` format and `timestamp - logger - LEVEL - message` format
+- **Go** — stdlib `log` package, Logrus / slog text output
+- **Ruby/Rails** — Rails Logger format
+- **PHP/Laravel** — Monolog format
+- **Rust** — env_logger format
+- **Elixir** — Elixir Logger format
+- **C#/.NET** — ASP.NET Core logger format
+- **AWS** — CloudWatch / Lambda log format
+- **Generic** — ISO 8601 timestamps with level, bracket timestamp formats
+
+If no known format matches (e.g. CSV data), nless shows "No known log format detected".
+
+### Saving custom log formats
+
+If your application uses a non-standard log format, you can save it for future `P` detection:
+
+1. Press `D` and enter a regex with named capture groups that matches your log format
+2. nless prompts: "Save as log format? Enter name (Esc to skip)"
+3. Type a name (e.g. "My App Log") and press ++enter++
+
+The format is saved to `~/.config/nless/log_formats.json` and will be checked first (with higher priority) the next time you press `P`. See [Custom Log Formats](configuration.md#custom-log-formats) for details on editing the file directly.
+
+---
+
+## 15. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 

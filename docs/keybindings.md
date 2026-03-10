@@ -104,6 +104,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 |-----|--------|
 | `D` | Swap the delimiter on the fly (common delimiters, regex with named capture groups, `raw`, `json`, or `  ` for double-space aligned output like kubectl) |
 | `d` | Split a column into more columns using a columnar delimiter (`json`, regex with named capture groups, or any string) |
+| `P` | Auto-detect a known log format (syslog, Apache, Spring Boot, etc.) and apply it as a regex delimiter |
 
 ## JSON
 
