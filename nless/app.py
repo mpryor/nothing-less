@@ -50,6 +50,7 @@ from .types import CliArgs, Filter, MetadataColumn
 from .app_columns import ColumnOpsMixin
 from .app_filters import FilterMixin
 from .app_groups import GroupMixin
+from .regex_wizard import RegexWizardMixin
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ logger = logging.getLogger(__name__)
 _TAB_SWITCH_KEYS = frozenset(str(i) for i in range(1, 10))
 
 
-class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
+class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
     inherit_bindings = False
     ENABLE_COMMAND_PALETTE = False
     _TAB_LABEL_RE = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
@@ -79,6 +80,7 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         # Named nless_theme to avoid conflict with Textual's App.theme reactive.
         self.nless_theme = resolve_theme(cli_theme=cli_args.theme)
         self.nless_keymap = resolve_keymap(cli_keymap=cli_args.keymap)
+        self._regex_wizard_state = None
         self._next_pane_id = 2
         self._next_group_id = 2
         init_buffer = NlessBuffer(
@@ -541,6 +543,8 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
         """Handle key events."""
         if event.key == "escape" and isinstance(self.focused, Input):
             if isinstance(self.focused.parent, AutocompleteInput):
+                if self.focused.parent.id == "regex_wizard_name_input":
+                    self._regex_wizard_state = None
                 self.focused.parent.remove()
             else:
                 self.focused.remove()
@@ -622,6 +626,8 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.handle_rename_buffer_submitted(event)
         elif event.input.id == "time_window_input":
             self.handle_time_window_submitted(event)
+        elif event.input.id == "regex_wizard_name_input":
+            self._handle_regex_wizard_name_submitted(event)
 
     def handle_search_submitted(self, event: AutocompleteInput.Submitted) -> None:
         input_value = event.value
@@ -693,7 +699,17 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
     def handle_delimiter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         event.input.remove()
-        self._get_current_buffer().switch_delimiter(event.value)
+        value = event.value
+        if value and value not in ("raw", "json", "\\t", "space", "space+"):
+            try:
+                pattern = re.compile(rf"{value}")
+                if pattern.groups > len(pattern.groupindex):
+                    self._start_regex_wizard(value, pattern, "delimiter")
+                    return
+            except re.error as e:
+                self.notify(f"Invalid regex: {e}", severity="error")
+                return
+        self._get_current_buffer().switch_delimiter(value)
 
     def refresh_buffer_and_focus(
         self,
