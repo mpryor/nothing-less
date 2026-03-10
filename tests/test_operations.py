@@ -2389,6 +2389,79 @@ class TestWriteBuffer:
             assert obj["name"] == "Alice"
 
 
+class TestColumnAggregations:
+    def test_numeric_aggregations(self):
+        from nless.operations import compute_column_aggregations
+
+        class FakeBuffer:
+            displayed_rows = [["Alice", "30"], ["Bob", "25"], ["Carol", "45"]]
+
+        result = compute_column_aggregations(FakeBuffer(), 1)
+        assert "Count: 3" in result
+        assert "Distinct: 3" in result
+        assert "Sum: 100" in result
+        assert "Min: 25" in result
+        assert "Max: 45" in result
+
+    def test_non_numeric_aggregations(self):
+        from nless.operations import compute_column_aggregations
+
+        class FakeBuffer:
+            displayed_rows = [["Alice", "NYC"], ["Bob", "SF"], ["Carol", "NYC"]]
+
+        result = compute_column_aggregations(FakeBuffer(), 1)
+        assert "Count: 3" in result
+        assert "Distinct: 2" in result
+        assert "Sum" not in result
+        assert "Avg" not in result
+
+    def test_mixed_numeric_non_numeric(self):
+        from nless.operations import compute_column_aggregations
+
+        class FakeBuffer:
+            displayed_rows = [["Alice", "30"], ["Bob", "N/A"], ["Carol", "45"]]
+
+        result = compute_column_aggregations(FakeBuffer(), 1)
+        assert "Count: 3" in result
+        assert "Sum: 75" in result
+        assert "1 non-numeric skipped" in result
+
+    def test_empty_buffer(self):
+        from nless.operations import compute_column_aggregations
+
+        class FakeBuffer:
+            displayed_rows = []
+
+        result = compute_column_aggregations(FakeBuffer(), 0)
+        assert result is None
+
+    def test_column_index_out_of_range(self):
+        from nless.operations import compute_column_aggregations
+
+        class FakeBuffer:
+            displayed_rows = [["Alice"]]
+
+        result = compute_column_aggregations(FakeBuffer(), 5)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_aggregations_action(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,45,LA"])
+            await _wait(pilot, app)
+
+            # Move cursor to age column (column 1)
+            data_table = buf.query_one(".nless-view")
+            data_table.cursor_column = 1
+            await pilot.pause()
+
+            buf.action_aggregations()
+            await pilot.pause()
+            # Verify it doesn't crash — notification content is tested above
+
+
 class TestViewExcludedLines:
     @pytest.mark.asyncio
     async def test_tilde_after_deleting_prior_buffer(self, cli_args):

@@ -86,6 +86,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `s` | Toggle ascending/descending sort on the current column |
+| `a` | Show aggregations for the current column (count, distinct, sum, avg, min, max) |
 
 ## Output
 

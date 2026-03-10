@@ -213,6 +213,7 @@ mkdir -p ~/.config/nless/keymaps
 | `buffer.move_column_left` | `<` | Move column left |
 | `app.toggle_arrival` | `A` | Toggle arrival timestamps |
 | `buffer.sort` | `s` | Sort column |
+| `buffer.aggregations` | `a` | Show column aggregations |
 | `app.mark_unique` | `U` | Mark column as pivot key |
 | `app.delimiter` | `D` | Change delimiter |
 | `app.column_delimiter` | `d` | Split column |

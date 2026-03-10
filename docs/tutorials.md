@@ -110,6 +110,12 @@ nless orders.csv
 3. Press `s` again to sort descending (`▼`)
 4. Press `s` once more to clear the sort
 
+**Column aggregations:**
+
+1. Press `c` and select `quantity` to jump to that column
+2. Press `a` — a notification shows count, distinct, sum, avg, min, and max for the visible rows
+3. Try filtering first (`f` on `status` for `shipped`), then press `a` again — aggregations update to reflect only filtered rows
+
 **Exclude rows:**
 
 1. Press `c` and select `status`

@@ -99,9 +99,14 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
-        "Sorting",
+        "Sorting & Analysis",
         [
             ("buffer.sort", "s", "Sort column"),
+            (
+                "buffer.aggregations",
+                "a",
+                "Column aggregations (count, sum, avg, min, max)",
+            ),
         ],
     ),
     (
