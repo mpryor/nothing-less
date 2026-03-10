@@ -121,6 +121,7 @@ class NlessBuffer(
         self._all_source_lines: list[str] | None = None  # unfiltered history for ~
         self.displayed_rows = []
         self.first_log_line = ""  # used to determine columns when delimiter is set
+        self._preamble_lines: list[str] = []  # lines skipped by find_header_index
         self.current_columns: list[Column] = []
         self.current_filters: list[Filter] = cli_args.filters if cli_args else []
         self.search_term = None
@@ -267,6 +268,7 @@ class NlessBuffer(
             new_buffer.first_row_parsed = self.first_row_parsed
             new_buffer.displayed_rows = []
             new_buffer.first_log_line = self.first_log_line
+            new_buffer._preamble_lines = list(self._preamble_lines)
             new_buffer.current_columns = deepcopy(self.current_columns)
             new_buffer.current_filters = deepcopy(self.current_filters)
             new_buffer.search_term = self.search_term

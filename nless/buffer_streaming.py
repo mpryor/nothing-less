@@ -160,6 +160,9 @@ class StreamingMixin:
 
             header_idx = find_header_index(log_lines, self.delimiter)
             if header_idx > 0:
+                # Preserve skipped preamble lines so they're available when
+                # switching to raw mode (otherwise they'd be permanently lost).
+                self._preamble_lines = log_lines[:header_idx]
                 log_lines = log_lines[header_idx:]
 
         if not self.first_row_parsed:
