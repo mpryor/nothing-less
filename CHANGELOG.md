@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.0 (2026-03-10)
+
+### Feat
+
+- auto-detect log formats with P, custom format persistence, and regex wizard docs
+- regex delimiter builder wizard for unnamed capture groups
+- add autocomplete suggestions to time window prompt
+
+### Fix
+
+- delimiter inference picks space over comma for CSV with spaces in data
+
 ## 1.5.0 (2026-03-09)
 
 ### Features
