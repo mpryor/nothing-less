@@ -3,3 +3,4 @@ __pycache__
 example_data
 dist/
 site/
+.claude/
