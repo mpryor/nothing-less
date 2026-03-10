@@ -4,8 +4,8 @@ import re
 import sys
 from threading import Thread
 
-
 from nless.app import NlessApp
+from nless.batch import run_batch
 from nless.version import get_version
 
 from .input import StdinLineStream
@@ -84,6 +84,19 @@ def parse_args(argv=None) -> CliArgs:
         help="Start in raw pager mode (no delimiter parsing)",
         default=False,
     )
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Skip the TUI — apply transforms and write to stdout",
+        default=False,
+    )
+    parser.add_argument(
+        "--output-format",
+        "-o",
+        choices=["csv", "tsv", "json", "raw"],
+        help="Output format for pipe/batch output (default: csv)",
+        default="csv",
+    )
 
     args = parser.parse_args(argv)
 
@@ -143,6 +156,8 @@ def parse_args(argv=None) -> CliArgs:
         time_window=args.time_window,
         columns=args.columns,
         raw=args.raw,
+        no_tui=args.no_tui,
+        output_format=args.output_format,
     )
     cli_args.filename = args.filename
     return cli_args
@@ -150,6 +165,25 @@ def parse_args(argv=None) -> CliArgs:
 
 def main():
     cli_args = parse_args()
+
+    stdout_is_pipe = not sys.stdout.isatty()
+    has_transforms = bool(
+        cli_args.filters or cli_args.unique_keys or cli_args.sort_by or cli_args.columns
+    )
+    batch_mode = cli_args.no_tui or (stdout_is_pipe and has_transforms)
+
+    if batch_mode:
+        run_batch(cli_args)
+        sys.exit(0)
+
+    cli_args.pipe_output = stdout_is_pipe
+
+    # Save the original stdout pipe fd BEFORE redirecting stdout to stderr,
+    # so Textual renders the TUI to the terminal, not the pipe.
+    pipe_fd = None
+    if stdout_is_pipe:
+        pipe_fd = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+        sys.stdout = sys.stderr
 
     new_fd = sys.stdin.fileno()
 
@@ -181,6 +215,13 @@ def main():
     try:
         app.run()
     finally:
+        if pipe_fd:
+            from nless.operations import write_buffer_to_fd
+
+            write_buffer_to_fd(
+                app._get_current_buffer(), pipe_fd, cli_args.output_format
+            )
+            pipe_fd.close()
         if tty_file is not None:
             tty_file.close()
         os._exit(0)  # Hard exit: daemon I/O threads may block atexit join

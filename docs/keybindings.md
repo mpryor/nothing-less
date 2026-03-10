@@ -9,7 +9,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `1`–`9` | Select the buffer at the corresponding index |
 | `L` | Select the next buffer |
 | `H` | Select the previous buffer |
-| `q` | Close the current active buffer, or quit if all buffers are closed |
+| `q` | Close the current active buffer, or quit if all buffers are closed. When stdout is a pipe, the current buffer is auto-written to stdout on quit. |
 | `N` | Create a new buffer from the original data |
 | `r` | Rename the current buffer |
 

@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{tailing}{loading}{behind}"
+DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{pipe}{tailing}{loading}{behind}"
 
 
 def build_status_text(
@@ -39,6 +39,7 @@ def build_status_text(
     skipped_rows: int = 0,
     behind: bool = False,
     buffered_rows: int = 0,
+    pipe_output: bool = False,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -109,6 +110,10 @@ def build_status_text(
     if behind:
         behind_text = "[yellow]⚠[/yellow] "
 
+    pipe_text = ""
+    if pipe_output:
+        pipe_text = "[bold]⇥ Pipe[/bold] "
+
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
         pending = buffered_rows - total_rows
@@ -140,6 +145,7 @@ def build_status_text(
         "tailing": tailing_text,
         "loading": loading_text,
         "behind": behind_text,
+        "pipe": pipe_text,
         "keymap": keymap_name,
         "theme": theme_name,
     }

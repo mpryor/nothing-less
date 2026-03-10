@@ -145,6 +145,42 @@ class TestExcludeFilterArgs:
         assert cli_args.filters[1].exclude is True
 
 
+class TestNoTuiFlag:
+    def test_no_tui_flag(self):
+        cli_args = parse_args(["--no-tui"])
+        assert cli_args.no_tui is True
+
+    def test_no_tui_default_false(self):
+        cli_args = parse_args([])
+        assert cli_args.no_tui is False
+
+
+class TestOutputFormatFlag:
+    def test_output_format_csv(self):
+        cli_args = parse_args(["--output-format", "csv"])
+        assert cli_args.output_format == "csv"
+
+    def test_output_format_tsv(self):
+        cli_args = parse_args(["-o", "tsv"])
+        assert cli_args.output_format == "tsv"
+
+    def test_output_format_json(self):
+        cli_args = parse_args(["-o", "json"])
+        assert cli_args.output_format == "json"
+
+    def test_output_format_raw(self):
+        cli_args = parse_args(["-o", "raw"])
+        assert cli_args.output_format == "raw"
+
+    def test_output_format_default_csv(self):
+        cli_args = parse_args([])
+        assert cli_args.output_format == "csv"
+
+    def test_output_format_invalid_exits(self):
+        with pytest.raises(SystemExit):
+            parse_args(["-o", "xml"])
+
+
 class TestMainFileErrors:
     def _mock_stdin(self, monkeypatch):
         """Mock sys.stdin to have a valid fileno in test environment."""

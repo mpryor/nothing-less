@@ -4,6 +4,7 @@
 
 ### Feat
 
+- **Improved pipe support** — nless now works as a middle stage in Unix pipelines. Interactive pipe mode auto-writes the current buffer to stdout on quit; `--no-tui` batch mode applies CLI transforms (`-f`, `-s`, `-u`, `-c`) without opening the TUI; `--output-format` / `-o` controls output format (`csv`, `tsv`, `json`, `raw`)
 - **Column pinning** — press `m` to pin/unpin columns to the left side of the screen; pinned columns stay visible during horizontal scrolling, with a visual separator and `P` label in the header
 - auto-detect log formats with P, custom format persistence, and regex wizard docs
 - regex delimiter builder wizard for unnamed capture groups

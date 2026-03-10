@@ -1321,6 +1321,7 @@ class NlessBuffer(
             skipped_rows=self._total_skipped,
             behind=self._bp_behind,
             buffered_rows=len(self.raw_rows),
+            pipe_output=getattr(self.app, "pipe_output", False),
         )
         self.app.query_one("#status_bar", Static).update(text)
 

@@ -73,6 +73,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
     ) -> None:
         super().__init__()
         self.cli_args = cli_args
+        self.pipe_output = cli_args.pipe_output
+        self.output_format = cli_args.output_format
         self.input_history = []
         self.config = NlessConfig()
         self.show_help = show_help
