@@ -51,7 +51,7 @@ from .app_columns import ColumnOpsMixin
 from .app_filters import FilterMixin
 from .app_groups import GroupMixin
 from .buffer_delimiter import _sample_lines
-from .logformats import detect_log_format, save_custom_format
+from .logformats import detect_log_format, load_custom_formats, save_custom_format
 from .regex_wizard import RegexWizardMixin
 
 logger = logging.getLogger(__name__)
@@ -503,7 +503,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         """Bring up search input to highlight matching text."""
         self._create_prompt("Type search term and press Enter", "search_input")
 
-    def _create_prompt(self, placeholder, id, provider=None):
+    def _create_prompt(self, placeholder, id, provider=None, save_history=True):
         history = [h["val"] for h in self.input_history if h["id"] == id]
         if provider is None:
             if id in ("write_to_file_input", "open_file_input"):
@@ -512,18 +512,24 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 provider = ShellCommandSuggestionProvider(history)
             else:
                 provider = HistorySuggestionProvider(history)
+        if not save_history:
+            history = []
         input = AutocompleteInput(
             placeholder=placeholder,
             id=id,
             classes="bottom-input",
             history=history,
             provider=provider,
-            on_add=lambda val: self.input_history.append({"id": id, "val": val}),
+            on_add=lambda val: self.input_history.append({"id": id, "val": val})
+            if save_history
+            else None,
             on_remove=lambda val: (
                 self.input_history.remove({"id": id, "val": val})
                 if {"id": id, "val": val} in self.input_history
                 else None
-            ),
+            )
+            if save_history
+            else None,
         )
         tabbed_content = self._get_active_tabbed_content()
         active_tab = tabbed_content.active
@@ -574,6 +580,11 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             if isinstance(self.focused.parent, AutocompleteInput):
                 if self.focused.parent.id == "regex_wizard_name_input":
                     self._regex_wizard_state = None
+                elif self.focused.parent.id == "save_log_format_input":
+                    pattern = getattr(self, "_pending_log_format_pattern", None)
+                    if pattern:
+                        self._pending_log_format_pattern = None
+                        self._get_current_buffer().switch_delimiter(pattern)
                 self.focused.parent.remove()
             else:
                 self.focused.remove()
@@ -737,40 +748,46 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 if pattern.groups > len(pattern.groupindex):
                     self._start_regex_wizard(value, pattern, "delimiter")
                     return
-            except re.error as e:
-                self.notify(f"Invalid regex: {e}", severity="error")
-                return
-        self._get_current_buffer().switch_delimiter(value)
-        # Offer to save regex with named groups as a custom log format
-        if value and value not in ("raw", "json", "\\t", "space", "space+"):
-            try:
-                pattern = re.compile(rf"{value}")
+                # Regex with named groups — apply directly if already saved,
+                # otherwise ask to save
                 if pattern.groupindex:
+                    existing = [
+                        f for f in load_custom_formats() if f.pattern.pattern == value
+                    ]
+                    if existing:
+                        buf = self._get_current_buffer()
+                        buf.switch_delimiter(value)
+                        buf.delimiter_name = existing[0].name
+                        return
                     self._pending_log_format_pattern = value
                     self._create_prompt(
                         "Save as log format? Enter name (Esc to skip)",
                         "save_log_format_input",
+                        save_history=False,
                     )
-            except re.error:
-                pass
+                    return
+            except re.error as e:
+                self.notify(f"Invalid regex: {e}", severity="error")
+                return
+        self._get_current_buffer().switch_delimiter(value)
 
     def handle_save_log_format_submitted(
         self, event: AutocompleteInput.Submitted
     ) -> None:
         event.input.remove()
-        name = event.value.strip()
-        if not name:
-            return
         pattern = getattr(self, "_pending_log_format_pattern", None)
         if not pattern:
             return
         self._pending_log_format_pattern = None
-        try:
-            save_custom_format(name, pattern)
-            self._get_current_buffer().delimiter_name = name
-            self.notify(f"Saved log format: {name}")
-        except OSError as e:
-            self.notify(f"Failed to save: {e}", severity="error")
+        self._get_current_buffer().switch_delimiter(pattern)
+        name = event.value.strip()
+        if name:
+            try:
+                save_custom_format(name, pattern)
+                self._get_current_buffer().delimiter_name = name
+                self.notify(f"Saved log format: {name}")
+            except OSError as e:
+                self.notify(f"Failed to save: {e}", severity="error")
 
     def refresh_buffer_and_focus(
         self,

@@ -772,8 +772,8 @@ If no known format matches (e.g. CSV data), nless shows "No known log format det
 
 If your application uses a non-standard log format, you can save it for future `P` detection:
 
-1. Press `D` and enter a regex with named capture groups that matches your log format
-2. nless prompts: "Save as log format? Enter name (Esc to skip)"
+1. Press `D` and enter a regex that matches your log format (named or unnamed capture groups both work — the regex wizard will help you name any unnamed groups)
+2. After the delimiter is applied, nless prompts: "Save as log format? Enter name (Esc to skip)"
 3. Type a name (e.g. "My App Log") and press ++enter++
 
 The format is saved to `~/.config/nless/log_formats.json` and will be checked first (with higher priority) the next time you press `P`. See [Custom Log Formats](configuration.md#custom-log-formats) for details on editing the file directly.

@@ -698,6 +698,10 @@ class TestDelimiterChange:
             )
             await _wait(pilot, app)
 
+            # Dismiss the "Save as log format?" prompt
+            await pilot.press("escape")
+            await _wait(pilot, app)
+
             assert isinstance(buf.delimiter, re.Pattern)
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert col_names == ["host", "level"]

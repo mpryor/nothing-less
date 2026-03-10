@@ -221,4 +221,19 @@ class RegexWizardMixin:
         if context == "column_delimiter":
             self._apply_column_delimiter(named_regex)
         else:
-            self._get_current_buffer().switch_delimiter(named_regex)
+            from .logformats import load_custom_formats
+
+            existing = [
+                f for f in load_custom_formats() if f.pattern.pattern == named_regex
+            ]
+            if existing:
+                buf = self._get_current_buffer()
+                buf.switch_delimiter(named_regex)
+                buf.delimiter_name = existing[0].name
+            else:
+                self._pending_log_format_pattern = named_regex
+                self._create_prompt(
+                    "Save as log format? Enter name (Esc to skip)",
+                    "save_log_format_input",
+                    save_history=False,
+                )
