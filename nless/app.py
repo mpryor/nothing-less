@@ -643,14 +643,22 @@ class NlessApp(ColumnOpsMixin, FilterMixin, GroupMixin, App):
                     counts[val] = counts.get(val, 0) + 1
         return sorted(counts, key=lambda v: counts[v], reverse=True)
 
+    _TIME_WINDOW_OPTIONS = ["off", "30s", "1m", "5m", "5m+", "15m", "15m+", "1h", "1h+"]
+
     def action_time_window(self) -> None:
         """Set a time window to only show rows from the last N minutes/hours/seconds."""
         curr = self._get_current_buffer()
         current = self._format_window(curr.time_window, curr.rolling_time_window)
         hint = f"e.g. 5m, 1h, 30s — append + for rolling (current: {current})"
+        history = [
+            h["val"] for h in self.input_history if h["id"] == "time_window_input"
+        ]
         self._create_prompt(
             f"Enter time window — {hint}",
             "time_window_input",
+            provider=StaticSuggestionProvider(
+                self._TIME_WINDOW_OPTIONS, history=history
+            ),
         )
 
     @staticmethod
