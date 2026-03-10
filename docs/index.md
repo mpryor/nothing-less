@@ -20,7 +20,7 @@
 - **Vi-like keybindings** — familiar to any Vim user, minimize keypresses to analyze a dataset
 - **Kubernetes-friendly** — built for K8s use-cases like parsing streams from kubectl
 - **Tabular data toolkit** — filter, sort, search, pivot, and reshape data on the fly
-- **JSON & log parsing** — convert unstructured data streams into tabular data
+- **JSON & log parsing** — convert unstructured data streams into tabular data; auto-detect 19 common log formats with `P` (syslog, Apache, Spring Boot, Rails, and more)
 - **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
 - **Buffer groups** — open additional files or run shell commands into separate buffer groups, switch between them with `{`/`}`
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly

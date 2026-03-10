@@ -121,6 +121,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         [
             ("app.delimiter", "D", "Change delimiter"),
             ("app.column_delimiter", "d", "Split column"),
+            ("app.detect_log_format", "P", "Auto-detect log format"),
         ],
     ),
     (

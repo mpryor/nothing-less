@@ -2,80 +2,55 @@
 
 ## 1.5.0 (2026-03-09)
 
-### Feat
+### Features
 
-- fast incremental raw mode, ScrollView-based RawPager, and header detection
-- rewrite RawPager to use RichLog with cursor overlay and fix streaming bugs
-- raw pager mode with on-demand columnar parsing
-- add cross-version performance history and benchmark suite
-- coalesce chained deferred rebuilds during streaming
-- add back pressure detection and status bar indicators
+- **Raw pager mode** — `--raw` flag or auto-detected when no delimiter is found; renders unstructured text in a virtual-rendering ScrollView optimized for million-line files
+- **Fast incremental raw loading** — raw mode uses chunked incremental loading, showing data immediately instead of buffering everything
+- **Header detection** — files with leading non-tabular lines (e.g. a JSON preamble before CSV data) automatically skip to the correct header row
+- **Pretty-printed JSON flattening** — multi-line JSON objects and arrays are collapsed into JSONL for tabular display
+- **Delimiter consistency scoring** — improved delimiter inference with cross-line field count agreement, reducing false positives on source code and config files
+- **Cross-version performance benchmarks** — automated performance history tracking across releases
+- **Back pressure detection** — status bar indicators when the streaming pipeline is under load
+- **Coalesced deferred rebuilds** — chained table rebuilds during streaming are batched for smoother updates
+- Show delimiter history in autocomplete dropdown
 
-### Fix
+### Performance
 
-- raw pager rendering issues
-- remove zebra striping from raw pager mode
-- escape Rich markup in raw pager lines
-- update stream_sort_100k perf baseline to 2.10s
+- Populate parsed-row cache during incremental loading instead of recomputing on scroll
+- Optimize streaming rebuild pipeline to reduce redundant work
 
-### Perf
+### Fixes
 
-- populate parsed-row cache during incremental loading
-- optimize streaming rebuild pipeline
+- `~` (unparsed logs) no longer crashes when the source buffer has been closed
+- `@` time window ceiling resets correctly when switching windows
+- Raw pager uses themed background color (`row_even_bg`) to visually distinguish from normal `less`
+- Escape Rich markup in raw pager lines so tags like `[INFO]` render as text
+- Remove zebra striping from raw pager mode for cleaner appearance
 
 ## 1.4.0 (2026-03-09)
 
-### Feat
-
-- **Raw pager mode** — `--raw` flag or auto-detected; renders unstructured text in a dedicated ScrollView-based pager with virtual rendering for fast loading of million-line files
-- **Fast incremental raw loading** — raw mode uses the same chunked incremental path as CSV, showing data immediately instead of buffering everything
-- **Header detection** — files with leading non-tabular lines (e.g. JSON preamble before CSV data) now skip to the correct header line automatically
-- **Pretty-printed JSON flattening** — multi-line JSON objects/arrays are collapsed into JSONL for tabular display
-- **Delimiter consistency scoring** — improved delimiter inference with cross-line field count agreement, reducing false positives on source code and config files
-- show history in delimiter autocomplete dropdown
-
-### Perf
-
-- populate parsed-row cache during incremental loading
-- coalesce chained deferred rebuilds during streaming
-- optimize streaming rebuild pipeline with back pressure detection
-
-### Fix
-
-- ~ operator with deleted buffers and @ time window ceiling
-- raw pager uses themed background color (`row_even_bg`) to visually distinguish from normal `less`
+*This was a short-lived release; its planned features shipped in v1.5.0 instead.*
 
 ## 1.3.0 (2026-03-06)
 
-### Feat
+### Features
 
-- add --tail, --time-window, and --columns CLI arguments
-- ~ shows all excluded logs (filters + parse failures, not just parse)
-- chained ~ buffers exclude lines from all ancestor delimiters
-- unparsed buffer (~) stays updated with streaming data
-- ~ creates a new raw buffer from unparsed logs instead of a popup screen
-- show skipped row count in status bar, suppress repeated mismatch warnings
-- smarter delimiter inference with auto-switch on mismatch
-- delimiter fixes, empty-input guards, space+ option, status bar
-- queue user actions during data loading instead of rejecting them
-- flash message when delimiter change clears active filters
-- arrival timestamps, time window filter, and rolling window
+- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` metadata column with `A`
+- **Time window filtering** — press `@` to show only rows from the last N seconds/minutes/hours (e.g. `5m`, `1h`, `30s`); append `+` for rolling windows that continuously drop expired rows
+- **CLI arguments** — `--tail` to start in tail mode, `--time-window`/`-w` to set a time window on startup, `--columns`/`-c` to filter visible columns with a regex
+- **Excluded lines rework** — `~` now shows all excluded rows (both parse failures and filter removals, not just parse failures); chained `~` buffers accumulate exclusions from all ancestor buffers; unparsed buffer stays updated with streaming data
+- **Smarter delimiter inference** — auto-switch when a mismatch is detected mid-stream; show skipped row count in status bar
+- **Double-space delimiter** (`space+`) — `D` → `space+` or `  ` for data like kubectl output where single spaces appear within field values
+- **Action queueing** — user actions (filter, sort, etc.) during a loading operation are queued and applied when loading completes, instead of being rejected
+- Flash notification when a delimiter change clears active filters
 
-### Fix
+### Fixes
 
-- prevent double lines when switching delimiter to raw
-- filters now match text that looks like Rich markup tags (e.g. [INFO])
-- update 5 stale tests to match current behavior
-- catch parse errors in view_unparsed_logs for JSON/CSV delimiters
-- JSON delimiter switch from raw/regex uses first data row as header
-- one-shot time window, cursor scroll behind header, page up/down
-
-### Refactor
-
-- extract mixins from god objects, fix bugs, and improve test suite
-- improve state management and fix code smells across codebase
-- consolidate delimiter auto-switch logic and fix review findings
-- extract shared auto-switch method, remove redundant state
+- Prevent double lines when switching delimiter to raw
+- Filters now match text that looks like Rich markup tags (e.g. `[INFO]`, `[error]`)
+- JSON delimiter switch from raw/regex uses first data row as header instead of losing it
+- `view_unparsed_logs` handles parse errors gracefully for JSON/CSV delimiters
+- One-shot time window no longer re-evaluates; cursor no longer scrolls behind the header row; page up/down works correctly at boundaries
 
 ## 1.2.0 (2026-03-05)
 
@@ -83,25 +58,21 @@
 
 - **Buffer groups** — open multiple files or shell commands in separate groups, switch with `{`/`}`
 - **Open file** — press `O` to open a file from within the app with path autocomplete
-- **Configurable keymaps** — ship with vim, less, and emacs presets; custom keymaps via `~/.config/nless/keymaps/`; switch with `K`
-- **Theming system** — 10 built-in themes with custom theme support via `~/.config/nless/themes/`; switch with `T`
-- **Customizable status bar** — format string with Rich markup and theme color variables
-- **Config viewer** — press `?` and navigate to the Config tab to see current settings
+- **Configurable keymaps** — 3 built-in presets (vim, less, emacs); custom keymaps via `~/.config/nless/keymaps/`; switch interactively with `K`
+- **Theming system** — 10 built-in color themes (Dracula, Nord, Gruvbox, Solarized, Catppuccin, and more); custom themes via `~/.config/nless/themes/`; switch interactively with `T`
+- **Customizable status bar** — format string with Rich markup and theme color variables in `config.json`
+- **Config viewer** — press `?` and navigate to the Config tab to see current settings and file path
 - **Stream status icons** — animated `⏵` for running commands, `✓` on completion, `📄` for files
-- **Loading indicators** — spinner and progress feedback for heavy operations (filtering, sorting)
+- **Loading indicators** — spinner and progress feedback for heavy operations (filtering, sorting, pivoting)
 
 ### Performance
 
-- Optimize sort pipeline for 100K+ rows
+- Optimize sort pipeline for 100K+ row datasets
 
 ### Fixes
 
 - Fix resize handling and status bar spacing
 - Fix shell command stream race condition causing doubled lines
-
-### Refactor
-
-- Extract data processing, operations, status bar, and unparsed logs into separate modules
 
 ## 1.1.1 (2026-03-04)
 
@@ -113,7 +84,7 @@
 
 ### Features
 
-- **Pivot focused view** — pivoting now hides non-key columns for a cleaner summary; columns reappear when new data streams in
+- **Pivot focused view** — pivoting now hides non-key columns for a cleaner summary; columns reappear automatically when new data streams in
 - **Exclude filters** — press `e`/`E` to exclude rows matching a value (inverse of `f`/`F`)
 - **Reset highlights** — press `x` to clear new-line highlighting after reviewing streamed data
 - **Documentation site** — full docs at [mpryor.github.io/nothing-less](https://mpryor.github.io/nothing-less/)
@@ -126,22 +97,39 @@
 
 ## 1.0.0 (2026-03-03)
 
-Initial stable release with all MVP features.
+Initial stable release.
+
+- **Tabular data pager** with vi-like keybindings built on the Textual framework
+- **Delimiter inference** — auto-detects CSV, TSV, pipe, space-aligned, and JSON formats
+- **Regex delimiters** — parse unstructured data with `D` using Python named capture groups
+- **Column delimiters** — split a column into sub-columns with `d` using JSON, regex, or string delimiters
+- **JSON support** — `D` → `json` for object log lines; `J` to extract nested JSON fields as columns
+- **Filtering** — `f`/`F` to filter by column, `|` to filter across all columns, `&` to apply search as filter
+- **Searching** — `/` to search, `*` to search by cursor word, `n`/`p` to navigate matches
+- **Sorting** — `s` to toggle ascending/descending sort with numeric-aware ordering
+- **Pivoting** — `U` to group by column with a `count` column; ++enter++ to drill into grouped data
+- **Streaming** — real-time data from stdin pipes with new-line highlighting and tail mode (`t`)
+- **Shell commands** — `!` to run a command and pipe output into a new buffer
+- **Multiple buffers** — `N` to create, `L`/`H` to switch, `1`–`9` to jump, `q` to close
+- **Clipboard** — `y` to copy cell contents
+- **Export** — `W` to write the current view to a file or stdout (`-`)
+- **CLI flags** — `--delimiter`, `--filters`, `--exclude-filters`, `--unique`, `--sort-by`
 
 ## 0.7.0 (2026-03-03)
 
 ### Performance
 
-- Move data processing and column-width computation off the main thread
-- Non-blocking heavy operations with loading indicator
-- Filter early on buffer copy and subscribe without replay
-- Add automated performance regression tests
+- Move data processing and column-width computation off the main thread so the UI stays responsive during large loads
+- Non-blocking heavy operations (filter, sort, pivot) with loading indicator
+- Filter rows early during buffer copy instead of copying everything then filtering
+- Subscribe to streams without replaying history, reducing memory and startup time
+- Add automated performance regression tests with baseline tracking
 
 ## 0.6.0 (2025-10-08)
 
 ### Features
 
-- Numeric-aware sorting — columns with numbers sort numerically instead of lexicographically
+- **Numeric-aware sorting** — columns containing numbers sort numerically instead of lexicographically (e.g. `2` before `10`)
 
 ## 0.5.3 (2025-10-07)
 
@@ -192,7 +180,7 @@ Initial stable release with all MVP features.
 - Run external shell commands with `!` and pipe output into a new buffer
 - Add CI/CD pipeline with GitHub Actions
 - Add ruff pre-commit hooks for formatting and linting
-- Add `NlessSelect` widget with type-based completion and arrow selection
+- Add `NlessSelect` filterable dropdown widget
 
 ## 0.1.12 (2025-09-30)
 
@@ -210,7 +198,7 @@ Initial stable release with all MVP features.
 
 ### Features
 
-- Column delimiters — split a column into sub-columns with `d` using JSON, regex, or string delimiters
+- **Column delimiters** — split a column into sub-columns with `d` using JSON, regex, or string delimiters
 
 ## 0.1.9
 
@@ -222,7 +210,7 @@ Initial stable release with all MVP features.
 
 ### Features
 
-- **JSON support** — `D` delimiter supports `json` for object log lines and full JSON files; column delimiter `d` supports JSON; `J` to extract JSON fields as columns
+- **JSON support** — `D` delimiter supports `json` for object log lines and full JSON files; column delimiter `d` supports JSON; `J` to extract nested JSON fields as columns
 - Page up/down with `ctrl+u`/`ctrl+d` (`d` moved to column delimiter)
 - `--version` flag
 - Improved automatic buffer naming

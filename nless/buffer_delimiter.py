@@ -61,6 +61,8 @@ class DelimiterMixin:
         """Return a human-readable label for the current delimiter."""
         if self.delimiter is None:
             return None
+        if self.delimiter_name:
+            return self.delimiter_name
         return self._format_delimiter_label(self.delimiter)
 
     def _reset_delimiter_state(self: NlessBuffer) -> None:
@@ -122,6 +124,7 @@ class DelimiterMixin:
             prev_delimiter = self.delimiter
 
             self._reset_delimiter_state()
+            self.delimiter_name = None
             delimiter = self._parse_delimiter_input(delimiter_input)
 
             if isinstance(delimiter, re.Pattern):

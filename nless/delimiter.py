@@ -58,7 +58,7 @@ def split_line(
     elif isinstance(delimiter, re.Pattern):
         match = delimiter.match(line)
         if match:
-            cells = [*match.groups()]
+            cells = [v if v is not None else "" for v in match.groups()]
         else:
             cells = []
     else:
