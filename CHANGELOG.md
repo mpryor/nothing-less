@@ -4,12 +4,15 @@
 
 ### Feat
 
+- **Column pinning** — press `m` to pin/unpin columns to the left side of the screen; pinned columns stay visible during horizontal scrolling, with a visual separator and `P` label in the header
 - auto-detect log formats with P, custom format persistence, and regex wizard docs
 - regex delimiter builder wizard for unnamed capture groups
 - add autocomplete suggestions to time window prompt
 
 ### Fix
 
+- preserve preamble lines skipped by find_header_index on delimiter switch
+- scan for matching lines when manually switching delimiter
 - delimiter inference picks space over comma for CSV with spaces in data
 
 ## 1.5.0 (2026-03-09)

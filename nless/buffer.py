@@ -97,6 +97,12 @@ class NlessBuffer(
             "Reset new-line highlights",
             id="buffer.reset_highlights",
         ),
+        Binding(
+            "m",
+            "pin_column",
+            "Pin/unpin column to the left",
+            id="buffer.pin_column",
+        ),
     ]
 
     def __init__(
@@ -613,6 +619,64 @@ class NlessBuffer(
 
     def action_move_column_right(self) -> None:
         self.action_move_column(1)
+
+    def action_pin_column(self) -> None:
+        """Pin or unpin the currently selected column to the left."""
+        if self.raw_mode:
+            return
+        data_table = self.query_one(".nless-view")
+        selected_column = self._get_column_at_position(data_table.cursor_column)
+        if not selected_column:
+            return
+        if selected_column.name in [m.value for m in MetadataColumn]:
+            return  # can't pin/unpin metadata columns
+
+        if selected_column.pinned:
+            # Unpin: move to just after last remaining pinned column
+            old_pos = selected_column.render_position
+            selected_column.pinned = False
+            selected_column.labels.discard("P")
+            pinned_count = sum(
+                1 for c in self.current_columns if c.pinned and not c.hidden
+            )
+            # Shift pinned columns that were to the right of this one left
+            for c in self.current_columns:
+                if c is selected_column:
+                    continue
+                if c.pinned and c.render_position > old_pos:
+                    c.render_position -= 1
+            # Place unpinned column right after all pinned columns
+            selected_column.render_position = pinned_count
+            # Shift non-pinned columns at or after that position right
+            for c in self.current_columns:
+                if c is selected_column or c.pinned:
+                    continue
+                if not c.hidden and c.render_position >= pinned_count:
+                    c.render_position += 1
+        else:
+            # Pin: remove from old position, insert at end of pinned zone
+            old_pos = selected_column.render_position
+            pinned_count = sum(
+                1 for c in self.current_columns if c.pinned and not c.hidden
+            )
+            selected_column.pinned = True
+            selected_column.labels.add("P")
+            # Shift non-pinned columns between pinned_count..old_pos-1 right
+            # (they're being displaced by the new pinned column taking a slot)
+            for c in self.current_columns:
+                if c is selected_column or c.pinned or c.hidden:
+                    continue
+                if pinned_count <= c.render_position < old_pos:
+                    c.render_position += 1
+            # Place at the end of pinned columns
+            selected_column.render_position = pinned_count
+
+        new_pos = selected_column.render_position
+        self.invalidate_caches()
+        self._deferred_update_table(
+            callback=lambda: data_table.move_cursor(column=new_pos),
+            reason="Pinning column",
+        )
 
     def action_toggle_tail(self) -> None:
         self.is_tailing = not self.is_tailing

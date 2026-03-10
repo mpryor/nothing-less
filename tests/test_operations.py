@@ -544,6 +544,129 @@ class TestMoveColumn:
 
 
 # ---------------------------------------------------------------------------
+# Pin / unpin column
+# ---------------------------------------------------------------------------
+
+
+class TestPinColumn:
+    @pytest.mark.asyncio
+    async def test_pin_column(self, cli_args):
+        """Pinning a column should move it to the left and set fixed_columns."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b,c", "1,2,3", "4,5,6"])
+            await _wait(pilot, app)
+
+            # Move cursor to column "b" (render_position=1)
+            dt = buf.query_one(Datatable)
+            dt.move_cursor(column=1)
+            await _wait(pilot, app)
+
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            col_b = next(c for c in buf.current_columns if c.name == "b")
+            assert col_b.pinned is True
+            assert "P" in col_b.labels
+            # Pinned column should be at position 0
+            assert col_b.render_position == 0
+            # "a" should have shifted right to position 1
+            col_a = next(c for c in buf.current_columns if c.name == "a")
+            assert col_a.render_position == 1
+            # "c" stays at position 2
+            col_c = next(c for c in buf.current_columns if c.name == "c")
+            assert col_c.render_position == 2
+            # Datatable should reflect 1 fixed column
+            assert dt.fixed_columns == 1
+
+    @pytest.mark.asyncio
+    async def test_unpin_column(self, cli_args):
+        """Unpinning should move the column back after pinned columns."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b,c", "1,2,3", "4,5,6"])
+            await _wait(pilot, app)
+
+            # Pin column "a"
+            dt = buf.query_one(Datatable)
+            dt.move_cursor(column=0)
+            await _wait(pilot, app)
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            col_a = next(c for c in buf.current_columns if c.name == "a")
+            assert col_a.pinned is True
+
+            # Now unpin it
+            dt.move_cursor(column=0)
+            await _wait(pilot, app)
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            assert col_a.pinned is False
+            assert "P" not in col_a.labels
+            assert dt.fixed_columns == 0
+
+    @pytest.mark.asyncio
+    async def test_pin_multiple_columns(self, cli_args):
+        """Pinning multiple columns should stack them on the left."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b,c,d", "1,2,3,4"])
+            await _wait(pilot, app)
+
+            dt = buf.query_one(Datatable)
+
+            # Pin "a" (at position 0)
+            dt.move_cursor(column=0)
+            await _wait(pilot, app)
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            # Pin "c" (now at position 2 since a shifted to 0)
+            dt.move_cursor(column=2)
+            await _wait(pilot, app)
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            col_a = next(c for c in buf.current_columns if c.name == "a")
+            col_c = next(c for c in buf.current_columns if c.name == "c")
+            assert col_a.pinned and col_c.pinned
+            assert dt.fixed_columns == 2
+            # Both should be in positions 0-1
+            pinned_positions = sorted([col_a.render_position, col_c.render_position])
+            assert pinned_positions == [0, 1]
+
+    @pytest.mark.asyncio
+    async def test_cannot_move_pinned_past_unpinned(self, cli_args):
+        """Column reorder should not swap pinned and unpinned columns."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["a,b,c", "1,2,3"])
+            await _wait(pilot, app)
+
+            # Pin "a"
+            dt = buf.query_one(Datatable)
+            dt.move_cursor(column=0)
+            await _wait(pilot, app)
+            buf.action_pin_column()
+            await _wait(pilot, app)
+
+            # Try to move pinned "a" right — should be blocked
+            dt.move_cursor(column=0)
+            await _wait(pilot, app)
+            buf.action_move_column_right()
+            await _wait(pilot, app)
+
+            col_a = next(c for c in buf.current_columns if c.name == "a")
+            assert col_a.render_position == 0  # didn't move
+
+
+# ---------------------------------------------------------------------------
 # Deferred update generation counter
 # ---------------------------------------------------------------------------
 

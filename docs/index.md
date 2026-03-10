@@ -25,6 +25,7 @@
 - **Buffer groups** — open additional files or run shell commands into separate buffer groups, switch between them with `{`/`}`
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
 - **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
+- **Column pinning** — pin columns to the left with `m` so they stay visible during horizontal scrolling
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
 - **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
 - **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
