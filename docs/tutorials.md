@@ -48,6 +48,7 @@ Within a group, buffers work as described above — filter, pivot, and create ne
 | **Pivot / Unique key** | Mark columns with `U` to group rows by their values, adding a `count` column. Multiple `U` presses create composite keys. |
 | **Filter** | A regex applied to a column (or all columns) to show only matching rows. |
 | **Exclude filter** | The inverse — hides rows matching the pattern. |
+| **Pinned column** | A column frozen to the left side of the screen with `m`. Pinned columns stay visible during horizontal scrolling — useful for keeping identifiers (timestamp, name, ID) in view while exploring wide datasets. Shown with a `P` label in the header. |
 | **Tail mode** | Keeps the cursor pinned to the bottom so you always see the latest data as it streams in (`t`). |
 | **Highlights** | New rows from streaming sources appear highlighted in green. Press `x` to clear. |
 
@@ -590,11 +591,22 @@ With 10 columns, scrolling to find the right one is slow. Use `c` to jump direct
 
 To show all columns again, press `C` and type `all`.
 
+**Pin columns to keep them visible:**
+
+With wide datasets, important columns like `first_name` scroll off screen as you explore. Pin them to the left:
+
+1. Press `c` and select `first_name`, then press `m` — the column moves to the left and stays fixed while other columns scroll
+2. Press `c` and select `department`, then press `m` — now both `first_name` and `department` are pinned
+3. Scroll right with `l` — pinned columns stay visible with a separator on the left, while unpinned columns scroll normally
+4. To unpin, press `c` to jump to a pinned column and press `m` again
+
+Pinned columns show a `P` label in the header so you can tell which columns are frozen.
+
 **Reorder columns:**
 
 1. Press `c` and select `salary` to jump straight to it
 2. Press `<` to move it left, `>` to move it right
-3. Rearrange columns to your preferred layout
+3. Rearrange columns to your preferred layout — pinned columns can be reordered among themselves, but can't be moved past the pinned/unpinned boundary
 
 **Combine with other features:**
 

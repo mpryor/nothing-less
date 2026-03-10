@@ -45,6 +45,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | Key | Action |
 |-----|--------|
 | `C` | Prompt for a regex filter to selectively display columns, or `all` to see all columns |
+| `m` | Pin or unpin the current column to the left side of the screen — pinned columns stay visible during horizontal scrolling |
 | `>` | Move the current column one to the right |
 | `<` | Move the current column one to the left |
 | `A` | Toggle the `_arrival` metadata column showing when each row was received |
