@@ -127,6 +127,25 @@ class DelimiterMixin:
             self.delimiter_name = None
             delimiter = self._parse_delimiter_input(delimiter_input)
 
+            # Restore original file order when preamble lines were skipped
+            # by find_header_index during initial load.  This ensures the
+            # original first line is available as a header candidate for the
+            # new delimiter, and the old "header" (which was really a data
+            # line) goes back into raw_rows.
+            if self._preamble_lines:
+                old_first = self.first_log_line
+                self.first_log_line = self._preamble_lines[0]
+                restore = self._preamble_lines[1:] + [old_first]
+                ts = (
+                    self._arrival_timestamps[0]
+                    if self._arrival_timestamps
+                    else time.time()
+                )
+                for i, line in enumerate(restore):
+                    self.raw_rows.insert(i, line)
+                    self._arrival_timestamps.insert(i, ts)
+                self._preamble_lines = []
+
             if isinstance(delimiter, re.Pattern):
                 self.delimiter = delimiter
                 self.current_columns = self._make_columns(
@@ -137,6 +156,12 @@ class DelimiterMixin:
                     prev_delimiter, re.Pattern
                 ):
                     self.raw_rows.insert(0, self.first_log_line)
+                    ts = (
+                        self._arrival_timestamps[0]
+                        if self._arrival_timestamps
+                        else time.time()
+                    )
+                    self._arrival_timestamps.insert(0, ts)
                 should_update = True
             else:
                 self.delimiter = delimiter
@@ -148,6 +173,12 @@ class DelimiterMixin:
                         prev_delimiter, delimiter, parsed_full_json_file
                     ):
                         self.raw_rows.insert(0, self.first_log_line)
+                        ts = (
+                            self._arrival_timestamps[0]
+                            if self._arrival_timestamps
+                            else time.time()
+                        )
+                        self._arrival_timestamps.insert(0, ts)
 
                     self.current_columns = self._make_columns(list(new_header))
                     self._ensure_arrival_column(self.current_columns)

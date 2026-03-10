@@ -725,6 +725,154 @@ class TestDelimiterChange:
             assert len(buf.raw_rows) == raw_count_before + 1
 
     @pytest.mark.asyncio
+    async def test_switch_to_raw_preserves_header(self):
+        """Header line must appear in displayed_rows after switching to raw mode.
+
+        Reproduces: standard delimiter where first line is the header;
+        switching to raw via 'D' must reinsert the header as a data row.
+        """
+        space_args = CliArgs(delimiter=" ", filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=space_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            lines = [
+                "name age city",
+                "Alice 30 NYC",
+                "Bob 25 SF",
+                "Charlie 35 LA",
+                "Dave 40 CHI",
+            ]
+            _load(buf, lines)
+            await _wait(pilot, app)
+
+            assert buf.first_log_line == lines[0]
+            assert len(buf.displayed_rows) == 4  # data rows only
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "raw"
+            )
+            await _wait(pilot, app)
+
+            # Header should be reinserted into raw_rows
+            assert buf.first_log_line in buf.raw_rows
+
+            # All 5 lines (header + 4 data) must appear in displayed_rows
+            displayed_text = [strip_markup(r[0]) for r in buf.displayed_rows]
+            assert len(displayed_text) == 5, (
+                f"Expected 5 rows, got {len(displayed_text)}: {displayed_text}"
+            )
+            assert lines[0] in displayed_text, (
+                f"Header line missing from displayed_rows: {displayed_text}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_switch_to_raw_preserves_header_inferred(self):
+        """Same as above but with inferred (not forced) delimiter."""
+        args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            lines = [
+                "name age city",
+                "Alice 30 NYC",
+                "Bob 25 SF",
+                "Charlie 35 LA",
+                "Dave 40 CHI",
+            ]
+            _load(buf, lines)
+            await _wait(pilot, app)
+
+            assert buf.first_log_line == lines[0]
+            original_header = buf.first_log_line
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "raw"
+            )
+            await _wait(pilot, app)
+
+            displayed_text = [strip_markup(r[0]) for r in buf.displayed_rows]
+            # Original header must appear somewhere in displayed output
+            assert original_header in displayed_text, (
+                f"Header '{original_header}' missing from displayed_rows: {displayed_text}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_switch_to_raw_preserves_skipped_preamble(self):
+        """Header skipped by find_header_index must reappear in raw mode.
+
+        Reproduces: CSV with quoted commas inferred as space-delimited.
+        The CSV header has 2 space-separated tokens while data lines have
+        42, so find_header_index skips it.  Switching to raw must recover it.
+        """
+        args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            header = "timestamp,message,description,long message"
+            lines = [
+                header,
+                '2024-06-01T12:00:00Z,"route=GET /api/data, status=200, response_time=150ms", desc one,"long msg one"',
+                '2024-06-01T12:01:00Z,"route=POST /api/data, status=201, response_time=300ms", desc two,"long msg two"',
+                '2024-06-01T12:02:00Z,"route=GET /api/data, status=500, response_time=50ms", desc three,"long msg three"',
+                '2024-06-01T12:03:00Z,"route=GET /api/data, status=200, response_time=100ms", desc four,"long msg four"',
+            ]
+            _load(buf, lines)
+            await _wait(pilot, app)
+
+            # Header was skipped by find_header_index (space != consensus)
+            assert buf.first_log_line != header
+            assert buf._preamble_lines == [header]
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "raw"
+            )
+            await _wait(pilot, app)
+
+            displayed_text = [strip_markup(r[0]) for r in buf.displayed_rows]
+            assert header in displayed_text, (
+                f"Preamble header missing from raw output: {displayed_text[:3]}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_switch_to_correct_delimiter_restores_preamble_as_header(self):
+        """Switching to comma after space mis-inference uses preamble as header.
+
+        When find_header_index skips the CSV header (wrong field count for
+        space), switching to comma should restore it as first_log_line so
+        the correct column names are used.
+        """
+        args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            header = "timestamp,message,description,long message"
+            lines = [
+                header,
+                '2024-06-01T12:00:00Z,"route=GET /api/data, status=200, response_time=150ms", desc one,"long msg one"',
+                '2024-06-01T12:01:00Z,"route=POST /api/data, status=201, response_time=300ms", desc two,"long msg two"',
+                '2024-06-01T12:02:00Z,"route=GET /api/data, status=500, response_time=50ms", desc three,"long msg three"',
+                '2024-06-01T12:03:00Z,"route=GET /api/data, status=200, response_time=100ms", desc four,"long msg four"',
+            ]
+            _load(buf, lines)
+            await _wait(pilot, app)
+
+            assert buf._preamble_lines == [header]
+
+            await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
+            await _wait(pilot, app)
+
+            # Preamble should now be the header
+            assert buf.first_log_line == header
+            col_names = [
+                strip_markup(c.name)
+                for c in buf.current_columns
+                if not c.hidden and c.name != MetadataColumn.ARRIVAL.value
+            ]
+            assert col_names == ["timestamp", "message", "description", "long message"]
+            # All 4 data lines should be displayed
+            assert len(buf.displayed_rows) == 4
+
+    @pytest.mark.asyncio
     async def test_tab_escape_delimiter(self, cli_args):
         app = NlessApp(cli_args=cli_args, starting_stream=None)
         async with app.run_test(size=(120, 40)) as pilot:
