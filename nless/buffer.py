@@ -103,6 +103,12 @@ class NlessBuffer(
             "Pin/unpin column to the left",
             id="buffer.pin_column",
         ),
+        Binding(
+            "a",
+            "aggregations",
+            "Show column aggregations",
+            id="buffer.aggregations",
+        ),
     ]
 
     def __init__(
@@ -739,6 +745,24 @@ class NlessBuffer(
                     col.labels.discard("▼")
 
         self._deferred_update_table(reason="Sorting")
+
+    def action_aggregations(self) -> None:
+        from .operations import compute_column_aggregations
+
+        data_table = self.query_one(".nless-view")
+        selected_column = self._get_column_at_position(data_table.cursor_column)
+        if not selected_column:
+            self.notify("No column selected", severity="error")
+            return
+
+        col_name = strip_markup(selected_column.name)
+        render_idx = data_table.cursor_column
+        result = compute_column_aggregations(self, render_idx)
+        if result is None:
+            self.notify(f"No data in column '{col_name}'", severity="warning")
+            return
+
+        self.notify(f"[bold]{col_name}[/bold]: {result}", timeout=10)
 
     def _filter_rows(
         self, expected_cell_count: int

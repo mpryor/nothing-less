@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import replace
 from typing import IO, TYPE_CHECKING
 
-from .dataprocessing import strip_markup
+from .dataprocessing import _looks_numeric, strip_markup
 from .types import Column, MetadataColumn
 
 if TYPE_CHECKING:
@@ -187,3 +187,58 @@ def write_buffer(
 
     with open(output_path, "w") as f:
         write_buffer_to_fd(current_buffer, f, output_format)
+
+
+def compute_column_aggregations(
+    current_buffer: NlessBuffer, column_index: int
+) -> str | None:
+    """Compute aggregations for a column and return a formatted summary string.
+
+    Returns None if the column has no data.
+    """
+    rows = current_buffer.displayed_rows
+    if not rows:
+        return None
+
+    raw_values = []
+    for row in rows:
+        if column_index < len(row):
+            raw_values.append(strip_markup(str(row[column_index])))
+
+    if not raw_values:
+        return None
+
+    total = len(raw_values)
+    distinct = len(set(raw_values))
+
+    numeric_values = []
+    for v in raw_values:
+        if _looks_numeric(v):
+            try:
+                numeric_values.append(float(v))
+            except (ValueError, TypeError):
+                pass
+
+    parts = [f"Count: {total:,}", f"Distinct: {distinct:,}"]
+
+    if numeric_values:
+        s = sum(numeric_values)
+        avg = s / len(numeric_values)
+        mn = min(numeric_values)
+        mx = max(numeric_values)
+
+        def _fmt(n: float) -> str:
+            return f"{n:,.0f}" if n == int(n) else f"{n:,.4g}"
+
+        parts.extend(
+            [
+                f"Sum: {_fmt(s)}",
+                f"Avg: {_fmt(avg)}",
+                f"Min: {_fmt(mn)}",
+                f"Max: {_fmt(mx)}",
+            ]
+        )
+        if len(numeric_values) < total:
+            parts.append(f"({total - len(numeric_values):,} non-numeric skipped)")
+
+    return " | ".join(parts)
