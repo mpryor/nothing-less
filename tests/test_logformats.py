@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from nless.logformats import (
     LOG_FORMATS,
     LogFormat,
@@ -208,6 +210,13 @@ class TestLogFormatPatterns:
 
 
 class TestDetectLogFormat:
+    @staticmethod
+    @pytest.fixture(autouse=True)
+    def _isolate_custom_formats(tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "nless.logformats.LOG_FORMATS_FILE", str(tmp_path / "log_formats.json")
+        )
+
     def test_detects_syslog(self):
         lines = [
             "Jan  5 14:23:01 myhost sshd[12345]: Accepted publickey",
