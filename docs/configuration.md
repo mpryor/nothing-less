@@ -26,7 +26,7 @@ All files are created automatically on first use. If a file is missing or contai
 | `show_getting_started` | `bool` | `true` | Show the getting started modal on first launch |
 | `theme` | `string` | `"default"` | Color theme name (built-in or custom) |
 | `keymap` | `string` | `"vim"` | Keymap preset name (built-in or custom) |
-| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} \| {unique}{time_window}{skipped}{tailing}{loading}"` | Status bar format string |
+| `status_format` | `string` | `"{sort} \| {filter} \| {search} \| {position} \| {unique}{time_window}{skipped}{pipe}{tailing}{loading}{behind}"` | Status bar format string |
 
 Example:
 
@@ -227,6 +227,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.show_tab_next` | `L` | Next buffer |
 | `app.show_tab_previous` | `H` | Previous buffer |
 | `app.close_active_buffer` | `q` | Close buffer / quit |
+| `app.pipe_and_exit` | `Q` | Pipe current buffer to stdout & exit |
 | `app.rename_buffer` | `r` | Rename buffer |
 | `app.show_group_next` | `}` | Next group |
 | `app.show_group_previous` | `{` | Previous group |
@@ -267,6 +268,8 @@ The status bar format can be customized using a format string with named variabl
 | `{time_window}` | `Window: 5m` or empty |
 | `{delimiter}` | `Delim: csv` or empty |
 | `{skipped}` | `Skipped: 42` or empty |
+| `{pipe}` | `⇥ Pipe (150 rows) · Q to send` or empty |
+| `{behind}` | `⚠` when input is arriving faster than processing, or empty |
 | `{tailing}` | `\| Tailing` (themed) or empty |
 | `{loading}` | `\| ⠋ Filtering 1,000 rows` or `\| ✔ Filtered 1,000 → 500 rows` (themed) or empty |
 | `{keymap}` | `vim` |

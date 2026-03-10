@@ -91,6 +91,12 @@ def parse_args(argv=None) -> CliArgs:
         default=False,
     )
     parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Force TUI mode even when stdout is piped with transforms",
+        default=False,
+    )
+    parser.add_argument(
         "--output-format",
         "-o",
         choices=["csv", "tsv", "json", "raw"],
@@ -157,6 +163,7 @@ def parse_args(argv=None) -> CliArgs:
         columns=args.columns,
         raw=args.raw,
         no_tui=args.no_tui,
+        tui=args.tui,
         output_format=args.output_format,
     )
     cli_args.filename = args.filename
@@ -170,7 +177,9 @@ def main():
     has_transforms = bool(
         cli_args.filters or cli_args.unique_keys or cli_args.sort_by or cli_args.columns
     )
-    batch_mode = cli_args.no_tui or (stdout_is_pipe and has_transforms)
+    batch_mode = cli_args.no_tui or (
+        stdout_is_pipe and has_transforms and not cli_args.tui
+    )
 
     if batch_mode:
         run_batch(cli_args)

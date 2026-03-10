@@ -145,6 +145,16 @@ class TestExcludeFilterArgs:
         assert cli_args.filters[1].exclude is True
 
 
+class TestTuiFlag:
+    def test_tui_flag(self):
+        cli_args = parse_args(["--tui"])
+        assert cli_args.tui is True
+
+    def test_tui_default_false(self):
+        cli_args = parse_args([])
+        assert cli_args.tui is False
+
+
 class TestNoTuiFlag:
     def test_no_tui_flag(self):
         cli_args = parse_args(["--no-tui"])

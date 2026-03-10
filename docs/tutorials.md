@@ -819,7 +819,7 @@ When stdout is a pipe but no CLI transforms are specified, nless opens the TUI n
 nless orders.csv | sort -t, -k2 | uniq
 ```
 
-A **⇥ Pipe** indicator appears in the status bar to remind you that output goes to the pipe on quit.
+The status bar shows **⇥ Pipe (N rows) · Q to send** to remind you that output goes to the pipe on quit. Press `Q` to pipe the current buffer and exit immediately — this is a shortcut that skips closing tabs one-by-one when you have multiple buffers open.
 
 ### Auto-batch detection
 
@@ -828,6 +828,12 @@ When stdout is a pipe **and** CLI transforms are present, nless automatically us
 ```bash
 # Auto-batch: stdout is a pipe + transforms present
 cat data.csv | nless -f 'region=US' -s 'revenue=desc' | head -10
+```
+
+To override auto-batch and force the TUI open (so you can explore before piping), use `--tui`:
+
+```bash
+cat data.csv | nless --tui -f 'region=US' -s 'revenue=desc' | head -10
 ```
 
 ### Output formats

@@ -10,6 +10,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `L` | Select the next buffer |
 | `H` | Select the previous buffer |
 | `q` | Close the current active buffer, or quit if all buffers are closed. When stdout is a pipe, the current buffer is auto-written to stdout on quit. |
+| `Q` | Pipe current buffer to stdout and exit immediately — skips closing tabs one-by-one. Same as `q` in non-pipe mode. |
 | `N` | Create a new buffer from the original data |
 | `r` | Rename the current buffer |
 

@@ -252,6 +252,51 @@ class TestBehindIndicator:
         assert "⚠" in text
 
 
+class TestPipeIndicator:
+    def _defaults(self, **overrides):
+        defaults = dict(
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            search_term=None,
+            search_matches_count=0,
+            current_match_index=-1,
+            total_rows=100,
+            total_cols=5,
+            current_row=1,
+            current_col=1,
+            is_tailing=False,
+            unique_column_names=set(),
+            loading_reason=None,
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_pipe_indicator_with_row_count(self):
+        text = build_status_text(
+            **self._defaults(), pipe_output=True, pipe_row_count=150
+        )
+        assert "⇥ Pipe (150 rows)" in text
+        assert "Q to send" in text
+
+    def test_pipe_indicator_zero_rows(self):
+        text = build_status_text(**self._defaults(), pipe_output=True, pipe_row_count=0)
+        assert "⇥ Pipe" in text
+        assert "(0 rows)" not in text
+        assert "Q to send" in text
+
+    def test_pipe_indicator_hidden_when_not_piping(self):
+        text = build_status_text(**self._defaults(), pipe_output=False)
+        assert "⇥ Pipe" not in text
+        assert "Q to send" not in text
+
+    def test_pipe_indicator_large_row_count(self):
+        text = build_status_text(
+            **self._defaults(), pipe_output=True, pipe_row_count=1_000_000
+        )
+        assert "1,000,000 rows" in text
+
+
 class TestPipePendingBytes:
     @patch("nless.input.fcntl.ioctl")
     def test_returns_bytes(self, mock_ioctl):

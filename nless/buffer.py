@@ -1322,6 +1322,7 @@ class NlessBuffer(
             behind=self._bp_behind,
             buffered_rows=len(self.raw_rows),
             pipe_output=getattr(self.app, "pipe_output", False),
+            pipe_row_count=len(self.displayed_rows),
         )
         self.app.query_one("#status_bar", Static).update(text)
 

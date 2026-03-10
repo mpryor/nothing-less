@@ -40,6 +40,7 @@ def build_status_text(
     behind: bool = False,
     buffered_rows: int = 0,
     pipe_output: bool = False,
+    pipe_row_count: int = 0,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -112,7 +113,8 @@ def build_status_text(
 
     pipe_text = ""
     if pipe_output:
-        pipe_text = "[bold]⇥ Pipe[/bold] "
+        row_info = f" ({pipe_row_count:,} rows)" if pipe_row_count > 0 else ""
+        pipe_text = f"[bold]⇥ Pipe{row_info}[/bold] · Q to send "
 
     if loading_reason:
         spinner = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
