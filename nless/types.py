@@ -33,6 +33,7 @@ class CliArgs:
     columns: str | None = None
     raw: bool = False
     no_tui: bool = False
+    tui: bool = False
     pipe_output: bool = False  # computed at runtime: stdout is a pipe
     output_format: str = "csv"  # csv, tsv, json, raw
 

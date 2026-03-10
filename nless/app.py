@@ -135,6 +135,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             "Close Active Buffer",
             id="app.close_active_buffer",
         ),
+        Binding("Q", "pipe_and_exit", "Pipe to stdout & exit", id="app.pipe_and_exit"),
         Binding("/", "search", "Search (all columns, by prompt)", id="app.search"),
         Binding(
             "&",
@@ -883,6 +884,10 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
         with open(os.path.expanduser(self.HISTORY_FILE), "w") as f:
             json.dump(self.input_history, f)
+
+    def action_pipe_and_exit(self) -> None:
+        """Pipe current buffer to stdout and exit immediately."""
+        self.exit()
 
     def action_close_active_buffer(self) -> None:
         if len(self.buffers) == 1:

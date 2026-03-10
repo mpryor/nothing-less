@@ -89,6 +89,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Time window filtering** - show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
 - **Raw pager mode** - `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
 - **Excluded lines** - view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
+- **Pipe mode** - use nless as a pipeline stage; interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode
 
 <details>
 <summary>Full keybinding reference</summary>
@@ -98,6 +99,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `L` - select the next buffer
 - `H` - select the previous buffer
 - `q` - close the current active buffer, or the program if all buffers are closed
+- `Q` - pipe current buffer to stdout and exit immediately (pipe mode shortcut)
 - `N` - create a new buffer from the original data
 - `r` - rename the current buffer
 
@@ -124,6 +126,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Column visibility**:
 - `C` - prompt for a regex filter to selectively display columns, or `all` to see all columns
+- `m` - pin or unpin the current column to the left side of the screen
 - `>` - move the current column one to the right
 - `<` - move the current column one to the left
 - `A` - toggle the `_arrival` metadata column showing when each row was received
@@ -174,6 +177,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 **Delimiter/file parsing**:
 - `D` - swap the delimiter on the fly (common delimiters, regex with named capture groups, `raw`, `json`, or `  ` for double-space aligned output like kubectl)
 - `d` - split a column into more columns using a columnar delimiter (`json`, regex with named capture groups, or any string)
+- `P` - auto-detect a known log format and apply it as a regex delimiter
 
 **Help**:
 - `?` - show the help screen with all keybindings

@@ -59,6 +59,7 @@ Once data is loaded, press `?` to view all keybindings.
 | `--columns` | `-c` | Regex to filter visible columns on startup (e.g. `name\|status`) |
 | `--raw` | | Start in raw pager mode (no delimiter parsing) |
 | `--no-tui` | | Skip the TUI — apply transforms and write to stdout |
+| `--tui` | | Force TUI mode even when stdout is piped with transforms |
 | `--output-format` | `-o` | Output format for pipe/batch output: `csv` (default), `tsv`, `json`, `raw` |
 
 ### Examples
@@ -127,4 +128,10 @@ Interactive pipe — explore data, then pass it downstream on quit:
 
 ```bash
 nless orders.csv | sort -t, -k2 | uniq
+```
+
+Force TUI mode when piping with transforms (overrides auto-batch):
+
+```bash
+cat data.csv | nless --tui -f 'status=shipped' | wc -l
 ```
