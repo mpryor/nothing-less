@@ -865,7 +865,49 @@ Control the output format with `--output-format` / `-o`:
 
 ---
 
-## 16. Putting It All Together
+## 16. Multiple Regex Highlights
+
+nless lets you pin multiple search patterns as persistent colored highlights, making it easy to visually distinguish different patterns in your data simultaneously.
+
+Using the `app.log` from the previous tutorial, or any log file:
+
+```bash
+nless app.log
+```
+
+**Pin search terms as highlights with color picker:**
+
+1. Press `/`, type `ERROR`, press ++enter++ — matches are highlighted with the search style
+2. Press `+` — a color picker appears with 8 colors (red, orange, yellow, green, cyan, purple, pink, blue-grey)
+3. Select **red** — ERROR is pinned as a red persistent highlight, and the search clears
+4. Press `/`, type `WARN`, press ++enter++ — WARN matches are highlighted
+5. Press `+`, select **orange** — WARN is pinned as an orange highlight
+6. Both ERROR (red) and WARN (orange) are now visible simultaneously
+
+**Navigate between highlight matches:**
+
+1. Press `-` — a list of pinned highlights appears, each showing its match count and 🎨 / 🗑 options
+2. Select **ERROR (3)** — ERROR becomes the active search, and the cursor jumps to the first match
+3. Press `n` to jump to the next ERROR match, `p` for the previous one
+4. Press `-` again, select **WARN** — now `n`/`p` navigate between WARN matches instead
+
+**Recolor a highlight:**
+
+1. Press `-` and select **🎨 ERROR** — a color picker appears
+2. Select **yellow** — ERROR is now highlighted in yellow instead of red
+
+**Remove a single highlight:**
+
+1. Press `-` and select **🗑 WARN** — a confirmation prompt appears
+2. Select **Yes** — the WARN highlight is removed, ERROR remains
+
+**Clear all highlights:**
+
+Press `+` when no search is active to clear all pinned highlights at once.
+
+---
+
+## 17. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 

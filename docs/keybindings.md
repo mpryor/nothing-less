@@ -72,7 +72,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `&` | Apply the current search as a filter across all columns |
 | `@` | Set a time window to show only recent rows (e.g. `5m`, `1h`, `30s`). Append `+` for rolling mode (e.g. `5m+`) |
 
-## Searching
+## Searching & Highlighting
 
 | Key | Action |
 |-----|--------|
@@ -80,6 +80,8 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `*` | Search all columns for the current highlighted cell value |
 | `n` | Jump to the next match |
 | `p` | Jump to previous match |
+| `+` | Pin the current search as a persistent highlight — opens a color picker to choose the highlight color. Duplicate patterns are blocked. Press `+` with no active search to clear all highlights. |
+| `-` | Select a pinned highlight to navigate between its matches with `n`/`p`, select the 🎨 option to recolor it, or select the 🗑 option to remove it. Each highlight shows its match count. |
 
 ## Sorting
 

@@ -27,18 +27,36 @@ class NlessSelect(Static):
                 rich_log.write(k)
         rich_log.scroll_to(y=self.highlight_index)
 
+    def _is_separator(self, index: int) -> bool:
+        return (
+            index < len(self.filtered_options)
+            and self.filtered_options[index][1] == "separator"
+        )
+
+    def _skip_separators(self, direction: int) -> None:
+        """Advance highlight_index past any separator rows."""
+        n = len(self.filtered_options)
+        if n == 0:
+            return
+        attempts = 0
+        while self._is_separator(self.highlight_index) and attempts < n:
+            self.highlight_index = (self.highlight_index + direction) % n
+            attempts += 1
+
     def on_key(self, event):
         if event.key == "down":
             if self.highlight_index < len(self.filtered_options) - 1:
                 self.highlight_index += 1
             else:
                 self.highlight_index = 0
+            self._skip_separators(1)
             self._write_options()
         elif event.key == "up":
             if self.highlight_index > 0:
                 self.highlight_index -= 1
             else:
                 self.highlight_index = len(self.filtered_options) - 1
+            self._skip_separators(-1)
             self._write_options()
         elif event.key == "escape":
             self.remove()
@@ -54,13 +72,20 @@ class NlessSelect(Static):
 
         self.filtered_options = []
         for k, v in self.options:
+            if v == "separator":
+                if not self.filter:
+                    self.filtered_options.append((k, v))
+                continue
             if self.filter and self.filter not in k.lower():
                 continue
             self.filtered_options.append((k, v))
+        self._skip_separators(1)
         self._write_options()
 
     def on_input_submitted(self, event: Input.Submitted):
         if not self.filtered_options:
+            return
+        if self._is_separator(self.highlight_index):
             return
         self.post_message(
             Select.Changed(self, self.filtered_options[self.highlight_index][1])
