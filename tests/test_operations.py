@@ -2276,6 +2276,118 @@ class TestWriteBuffer:
             assert len(lines) == 1
             assert "name" in lines[0]
 
+    def test_infer_output_format(self):
+        from nless.operations import _infer_output_format
+
+        assert _infer_output_format("out.json") == "json"
+        assert _infer_output_format("out.jsonl") == "json"
+        assert _infer_output_format("out.tsv") == "tsv"
+        assert _infer_output_format("out.csv") == "csv"
+        assert _infer_output_format("out.txt") == "raw"
+        assert _infer_output_format("out.log") == "raw"
+        assert _infer_output_format("out.xyz") == "csv"
+        assert _infer_output_format("out") == "csv"
+        assert _infer_output_format("/dev/stdout") == "csv"
+
+    @pytest.mark.asyncio
+    async def test_write_json_output(self, cli_args, tmp_path):
+        import json as json_mod
+
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.json")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            assert len(lines) == 2  # JSON Lines, no header row
+            obj = json_mod.loads(lines[0])
+            assert obj["name"] == "Alice"
+            assert obj["age"] == "30"
+
+    @pytest.mark.asyncio
+    async def test_write_tsv_output(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.tsv")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                content = f.read()
+            assert "\t" in content
+            assert "name" in content.split("\n")[0]
+
+    @pytest.mark.asyncio
+    async def test_write_raw_output(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.txt")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            # Raw format: no header row, tab-separated values
+            assert len(lines) == 2
+            assert "Alice" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_write_unknown_extension_defaults_to_csv(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.xyz")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            # CSV: header + 2 data rows
+            assert len(lines) == 3
+            assert "name" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_write_jsonl_extension(self, cli_args, tmp_path):
+        import json as json_mod
+
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.jsonl")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+            assert len(lines) == 1
+            obj = json_mod.loads(lines[0])
+            assert obj["name"] == "Alice"
+
 
 class TestViewExcludedLines:
     @pytest.mark.asyncio

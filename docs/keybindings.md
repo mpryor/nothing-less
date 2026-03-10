@@ -91,7 +91,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 
 | Key | Action |
 |-----|--------|
-| `W` | Prompt for a file to write the current buffer to (`-` writes to stdout) |
+| `W` | Prompt for a file to write the current buffer to — format is inferred from extension (`.csv`, `.tsv`, `.json`, `.jsonl`, `.txt`, `.log`); `-` writes CSV to stdout |
 | `y` | Copy the contents of the currently highlighted cell to the clipboard |
 
 ## Shell Commands

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import time
 from collections import defaultdict
 from dataclasses import replace
@@ -157,16 +158,32 @@ def write_buffer_to_fd(
         pass
 
 
-def write_buffer(current_buffer: NlessBuffer, output_path: str) -> None:
+def _infer_output_format(path: str) -> str:
+    """Infer output format from file extension."""
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".json": "json",
+        ".jsonl": "json",
+        ".tsv": "tsv",
+        ".csv": "csv",
+        ".txt": "raw",
+        ".log": "raw",
+    }.get(ext, "csv")
+
+
+def write_buffer(
+    current_buffer: NlessBuffer,
+    output_path: str,
+    output_format: str | None = None,
+) -> None:
     if output_path == "-":
         output_path = "/dev/stdout"
         while current_buffer.app.is_running:
             time.sleep(0.1)
         time.sleep(0.1)
 
+    if output_format is None:
+        output_format = _infer_output_format(output_path)
+
     with open(output_path, "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(current_buffer._get_visible_column_labels())
-        for row in current_buffer.displayed_rows:
-            plain_row = [strip_markup(str(cell)) for cell in row]
-            writer.writerow(plain_row)
+        write_buffer_to_fd(current_buffer, f, output_format)
