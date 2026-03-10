@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **nless** is a Python TUI pager for exploring and analyzing tabular data with vi-like keybindings, built on the Textual framework. It reads from stdin, files, or shell command output.
 
+## Working Style
+
+- When fixing bugs, try the SIMPLEST approach first. If the first fix doesn't work after 2 attempts, stop and ask for guidance.
+- Run `poetry run pytest -m "not perf"` after making changes to verify nothing is broken.
+
 ## Development Commands
 
 ```bash
@@ -47,20 +52,10 @@ Input (stdin/file/command) → StdinLineStream (async, threaded)
 
 ### Key Modules
 
-- **cli.py** — Entry point (`main()`). Parses CLI args, sets up input stream on a background thread, launches the Textual app. Redirects `/dev/tty` for terminal input when reading piped stdin.
 - **app.py** (`NlessApp`) — Main Textual App. Manages multiple buffers (tab-like), keybindings, actions (filter, search, sort, pivot, JSON extraction, shell commands).
-- **buffer.py** (`NlessBuffer`) — Core state for each view: columns, filters, sorting, unique keys, search state, row data. Uses `copy()` for buffer duplication (copy-on-write pattern for history).
-- **delimiter.py** — Delimiter inference (`infer_delimiter()`) and line splitting (`split_line()`). Supports CSV, TSV, space-aligned, JSON, regex with named capture groups, and nested delimiters.
-- **input.py** — `StdinLineStream` (non-blocking I/O with `select()`, handles files and pipes, JSON-specific buffering) and `ShellCommandLineStream`. Publisher pattern with subscribers.
-- **types.py** — Core dataclasses: `Filter`, `CliArgs`, `Column`, `MetadataColumn`.
-- **datatable.py** — Custom performance-optimized ScrollView-based table rendering.
-- **rawpager.py** (`RawPager`) — ScrollView-based raw text pager with virtual rendering for unstructured/raw mode. Same interface as Datatable so NlessBuffer can swap transparently.
-- **config.py** — User preferences stored in `~/.config/nless/` as JSON.
-- **autocomplete.py** (`AutocompleteInput`) — Custom Input widget with command history navigation.
-- **help.py** (`HelpScreen`) — Keybindings help screen.
-- **gettingstarted.py** (`GettingStartedScreen`) — First-run getting started modal.
-- **nlessselect.py** (`NlessSelect`) — Custom filterable select/dropdown widget.
-- **version.py** — Version retrieval via `importlib.metadata`.
+- **buffer.py** (`NlessBuffer`) — Core state for each view: columns, filters, sorting, unique keys, search state, row data. Copy-on-write for history.
+- **delimiter.py** — Delimiter inference and line splitting. Supports CSV, TSV, space-aligned, JSON, regex with named capture groups, and nested delimiters.
+- **input.py** — `StdinLineStream` (non-blocking I/O with `select()`, files/pipes, JSON buffering) and `ShellCommandLineStream`. Publisher pattern with subscribers.
 
 ### Patterns
 
@@ -82,11 +77,7 @@ The GitHub repo tracks all planned work:
 
 - **Project board**: [nless Roadmap](https://github.com/users/mpryor/projects/2) (linked to this repo)
 - **Issues**: All feature requests and bugs are tracked as GitHub issues with labels (`priority: critical/high/medium/low`, `area: *`)
-- **Milestones**: Issues are organized into release milestones:
-  - `v1.2 — Foundation` — Core infrastructure (bug fixes, raw pager, arrival timestamp, pipe support, column pinning)
-  - `v1.3 — Analysis & Streaming` — Data analysis and log tooling (highlights, log formats, aggregations, multi-stream, saved views)
-  - `v1.4 — Extensibility & UX` — Config profiles, session persistence, alerting, mouse support
-  - `v2.0 — Platform` — nless as a framework (multi-pane, data editing, joins)
+- **Milestones**: Issues are organized into release milestones (check via `gh api repos/mpryor/nothing-less/milestones`)
 
 ### "What's next?" workflow
 
