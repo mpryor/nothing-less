@@ -341,6 +341,8 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
     delimiter_scores = {d: 0 for d in common_delimiters}
     # Track field counts per delimiter for cross-line consistency check
     delimiter_field_counts: dict[str, list[int]] = {d: [] for d in common_delimiters}
+    # Track whether the first non-empty line splits on each delimiter
+    first_line_splits: dict[str, bool] = {d: False for d in common_delimiters}
     non_empty_lines = 0
 
     for line in sample_lines:
@@ -363,6 +365,8 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
             n_fields = len(parts)
             if n_fields > 1:
                 delimiter_field_counts[delimiter].append(n_fields)
+                if non_empty_lines == 1:
+                    first_line_splits[delimiter] = True
 
             # Score based on number of fields and consistency
             if n_fields > 1:
@@ -389,6 +393,11 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
     # prose, and config files produce wildly varying split counts.
     for delimiter, counts in delimiter_field_counts.items():
         if non_empty_lines >= 2:
+            # A delimiter that doesn't split the first line (header) but
+            # splits later lines is not a tabular delimiter — zero it.
+            if not first_line_splits[delimiter] and len(counts) > 0:
+                delimiter_scores[delimiter] = 0
+                continue
             # If half or fewer non-empty lines split, weak signal
             if len(counts) <= non_empty_lines * 0.5:
                 delimiter_scores[delimiter] = 0
