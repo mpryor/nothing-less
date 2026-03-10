@@ -193,7 +193,19 @@ class ColumnOpsMixin:
         self: NlessApp, event: AutocompleteInput.Submitted
     ) -> None:
         event.input.remove()
-        self._apply_column_delimiter(event.value)
+        value = event.value
+        if value and value not in ("json", "\\t", "space", "space+"):
+            try:
+                pattern = re.compile(rf"{value}")
+                if pattern.groups > len(pattern.groupindex):
+                    self._start_regex_wizard(value, pattern, "column_delimiter")
+                    return
+            except re.error as e:
+                self._get_current_buffer().notify(
+                    f"Invalid regex: {e}", severity="error"
+                )
+                return
+        self._apply_column_delimiter(value)
 
     def _apply_column_delimiter(self: NlessApp, new_col_delimiter: str) -> None:
         if not new_col_delimiter:
