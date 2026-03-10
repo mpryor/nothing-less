@@ -629,7 +629,17 @@ nless orders.csv
 2. Press `c` and select `quantity`, then press `s` to sort
 3. Press `W`, type `shipped-orders.csv`, press ++enter++
 
-The file is written as CSV with only the visible columns and filtered rows.
+The output format is inferred from the file extension:
+
+| Extension | Format |
+|-----------|--------|
+| `.csv` | CSV (comma-separated) |
+| `.tsv` | TSV (tab-separated) |
+| `.json`, `.jsonl` | JSON Lines (one object per row) |
+| `.txt`, `.log` | Raw (tab-separated, no header) |
+| anything else | CSV (default) |
+
+So `shipped-orders.json` would write JSON Lines, `shipped-orders.tsv` would write tab-separated, etc.
 
 **Copy a single cell:**
 

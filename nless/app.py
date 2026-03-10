@@ -298,7 +298,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
     def action_write_to_file(self) -> None:
         """Write the current view to a file."""
         self._create_prompt(
-            "Type output file path (e.g. /tmp/output.csv)", "write_to_file_input"
+            "Type output file path (.csv, .tsv, .json, .txt)", "write_to_file_input"
         )
 
     @property
