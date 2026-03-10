@@ -1,9 +1,13 @@
 """Tests for streaming data into the app via add_logs and _add_rows_incremental."""
 
+import os
+import threading
+import time
+
 import pytest
 
 from nless.app import NlessApp
-from nless.input import LineStream
+from nless.input import LineStream, StdinLineStream
 from nless.types import CliArgs
 
 
@@ -246,3 +250,111 @@ class TestLineStreamIntegration:
 
             buf = app.buffers[0]
             assert len(buf.displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_delimiter_inference_with_header_and_data(self, cli_args):
+        """Delimiter inference works correctly when header + data arrive together.
+
+        The input-level first-batch accumulation in StdinLineStream.run()
+        guarantees that subscribers always see header + data lines in the
+        same batch, so infer_delimiter can use cross-line consistency
+        checks to pick the right delimiter.
+        """
+        stream = LineStream()
+        app = NlessApp(cli_args=cli_args, starting_stream=stream)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait(pilot, app)
+            buf = app.buffers[0]
+
+            # Header + data arrive together (as guaranteed by input-level batching)
+            stream.notify(["name,age,city", "Alice,30,NYC"])
+            await _wait(pilot, app)
+
+            assert buf.delimiter == ","
+            assert buf.first_row_parsed
+            assert len(buf.displayed_rows) == 1
+
+            # Subsequent lines work normally
+            stream.notify(["Bob,25,SF"])
+            await _wait(pilot, app)
+
+            assert len(buf.displayed_rows) == 2
+
+
+class TestPipeDelimiterInference:
+    """Test delimiter inference via real pipes (reproduces slow-streaming bug)."""
+
+    CSV_LINES = [
+        "id,name,city,description,status\n",
+        '1,"Smith, John","New York City","Works in finance dept",active\n',
+        '2,"Doe, Jane","San Francisco","Leads the engineering team here",active\n',
+        '3,"Brown, Bob","Los Angeles","Senior VP of operations dept",inactive\n',
+        '4,"Wilson, Carol","Chicago","Managing director for sales",active\n',
+        '5,"Davis, Eve","Seattle","Principal engineer in platform",active\n',
+    ]
+
+    def _run_pipe_test(self, write_delay: float) -> str:
+        """Feed CSV lines through a real pipe and return the inferred delimiter."""
+        r_fd, w_fd = os.pipe()
+        cli_args = CliArgs(delimiter=None, filters=[], unique_keys=set(), sort_by=None)
+        stream = StdinLineStream(cli_args, file_name=None, new_fd=r_fd)
+
+        # Track the delimiter from the first subscriber callback
+        results = []
+        ready = threading.Event()
+
+        def on_lines(lines):
+            from nless.delimiter import infer_delimiter
+
+            results.append(infer_delimiter(lines))
+
+        stream.subscribe("test", on_lines, lambda: ready.is_set())
+
+        def writer():
+            for line in self.CSV_LINES:
+                os.write(w_fd, line.encode())
+                if write_delay:
+                    time.sleep(write_delay)
+            os.close(w_fd)
+
+        w_thread = threading.Thread(target=writer, daemon=True)
+        w_thread.start()
+        io_thread = threading.Thread(target=stream.run, daemon=True)
+        io_thread.start()
+
+        # Simulate app startup delay (subscriber becomes ready after I/O starts)
+        time.sleep(0.3)
+        ready.set()
+
+        w_thread.join(timeout=5)
+        io_thread.join(timeout=5)
+        time.sleep(0.1)
+
+        assert results, "No subscriber callbacks received"
+        return results[0]
+
+    def test_pipe_no_delay(self):
+        """Lines piped all at once should infer comma, not space."""
+        assert self._run_pipe_test(0.0) == ","
+
+    def test_pipe_slow_streaming(self):
+        """Lines arriving one at a time (like while-read-sleep) should infer comma."""
+        assert self._run_pipe_test(0.05) == ","
+
+    def test_csv_with_spaces_in_data_infers_comma(self):
+        """CSV where data has more spaces than commas must still infer comma.
+
+        This is the root cause of the slow-streaming bug: data lines with
+        quoted fields containing spaces (e.g. city names, descriptions)
+        have more spaces than commas, causing infer_delimiter to pick space
+        when the header (which has zero spaces) isn't weighted properly.
+        """
+        from nless.delimiter import infer_delimiter
+
+        lines = [line.rstrip("\n") for line in self.CSV_LINES]
+        # All lines together — must infer comma even though data has more spaces
+        assert infer_delimiter(lines) == ","
+        # Just header — must infer comma
+        assert infer_delimiter(lines[:1]) == ","
+        # Header + 1 data line — must infer comma
+        assert infer_delimiter(lines[:2]) == ","
