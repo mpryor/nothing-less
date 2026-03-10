@@ -681,6 +681,107 @@ class TestDelimiterChange:
             assert "age" in col_names
 
     @pytest.mark.asyncio
+    async def test_change_delimiter_to_json_with_preamble(self):
+        """Switching to JSON skips non-JSON preamble lines and finds first valid JSON."""
+        raw_args = CliArgs(delimiter="raw", filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=raw_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "# this is a comment",
+                    "some other preamble",
+                    '{"name":"Alice","age":30}',
+                    '{"name":"Bob","age":25}',
+                ],
+            )
+            await _wait(pilot, app)
+            assert buf.delimiter == "raw"
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "json"
+            )
+            await _wait(pilot, app)
+
+            assert buf.delimiter == "json"
+            col_names = [c.name for c in buf.current_columns if not c.hidden]
+            assert "name" in col_names
+            assert "age" in col_names
+            # 2 preamble lines saved (comment + other preamble)
+            assert len(buf._preamble_lines) == 2
+            assert buf.displayed_rows, "Should have at least 1 data row"
+
+    @pytest.mark.asyncio
+    async def test_change_delimiter_to_json_from_csv_with_preamble(self):
+        """Switching CSV -> JSON when first_log_line is CSV header, not JSON."""
+        args = CliArgs(delimiter=",", filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "name,age",
+                    '{"name":"Alice","age":30}',
+                    '{"name":"Bob","age":25}',
+                ],
+            )
+            await _wait(pilot, app)
+            assert buf.delimiter == ","
+            assert buf.first_log_line == "name,age"
+
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "json"
+            )
+            await _wait(pilot, app)
+
+            assert buf.delimiter == "json"
+            col_names = [c.name for c in buf.current_columns if not c.hidden]
+            assert "name" in col_names
+            assert "age" in col_names
+            # CSV header saved as preamble
+            assert "name,age" in buf._preamble_lines
+            # Both JSON lines displayed (in JSON mode, header line is also data)
+            assert len(buf.displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_json_to_raw_roundtrip_no_duplicates(self):
+        """Switching json→raw must not duplicate lines or lose preamble."""
+        args = CliArgs(delimiter="raw", filters=[], unique_keys=set(), sort_by=None)
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "not json preamble",
+                    '{"id":1,"msg":"hello"}',
+                    '{"id":2,"msg":"world"}',
+                ],
+            )
+            await _wait(pilot, app)
+
+            # Switch to json — preamble saved
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "json"
+            )
+            await _wait(pilot, app)
+            assert buf.delimiter == "json"
+            assert "not json preamble" in buf._preamble_lines
+
+            # Switch back to raw — all 3 original lines visible, no dupes
+            await _submit_prompt(
+                app, pilot, "action_delimiter", "delimiter_input", "raw"
+            )
+            await _wait(pilot, app)
+            assert buf.delimiter == "raw"
+            displayed = [strip_markup(r[0]) for r in buf.displayed_rows]
+            assert len(displayed) == 3, f"Expected 3, got {len(displayed)}: {displayed}"
+            assert len(set(displayed)) == 3, f"Duplicates found: {displayed}"
+            assert "not json preamble" in displayed
+
+    @pytest.mark.asyncio
     async def test_regex_named_groups_delimiter(self, cli_args):
         raw_args = CliArgs(delimiter="raw", filters=[], unique_keys=set(), sort_by=None)
         app = NlessApp(cli_args=raw_args, starting_stream=None)

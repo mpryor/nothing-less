@@ -135,7 +135,23 @@ class DelimiterMixin:
             if self._preamble_lines:
                 old_first = self.first_log_line
                 self.first_log_line = self._preamble_lines[0]
-                restore = self._preamble_lines[1:] + [old_first]
+                # In JSON/raw/regex modes, first_log_line is already in
+                # raw_rows (every line is data).  Don't re-add it.
+                already_in_raw = self.raw_rows and self.raw_rows[0] == old_first
+                # For headerless new delimiters (raw/json/regex), the
+                # restored first_log_line must also appear as a data row.
+                new_is_headerless = (
+                    delimiter == "raw"
+                    or delimiter == "json"
+                    or isinstance(delimiter, re.Pattern)
+                )
+                restore = (
+                    list(self._preamble_lines)
+                    if new_is_headerless
+                    else self._preamble_lines[1:]
+                )
+                if not already_in_raw:
+                    restore.append(old_first)
                 ts = (
                     self._arrival_timestamps[0]
                     if self._arrival_timestamps
@@ -186,10 +202,17 @@ class DelimiterMixin:
 
         if should_update:
             self.raw_mode = self.delimiter == "raw"
+            n_preamble = len(self._preamble_lines)
 
             def callback():
                 if had_filters:
                     self._flash_status("Filters cleared — delimiter changed")
+                if n_preamble:
+                    self.notify(
+                        f"{n_preamble} line{'s' if n_preamble != 1 else ''}"
+                        " not matching delimiter, skipped (press ~ to view)",
+                        severity="warning",
+                    )
 
             self._deferred_update_table(reason="Changing delimiter", callback=callback)
         return should_update
@@ -205,54 +228,7 @@ class DelimiterMixin:
             return ["log"], False
 
         if delimiter == "json":
-            # Try first_log_line as JSON header
-            try:
-                return list(json.loads(self.first_log_line).keys()), False
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-
-            # When coming from raw/regex, first_log_line isn't a data row —
-            # try the first raw_row instead
-            if (
-                prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern)
-            ) and self.raw_rows:
-                try:
-                    header = list(json.loads(self.raw_rows[0]).keys())
-                    self.first_log_line = self.raw_rows.pop(0)
-                    return header, False
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass
-
-            # Fallback: try to read all logs as one JSON payload
-            try:
-                all_logs = ""
-                if prev_delimiter != "raw" and not isinstance(
-                    prev_delimiter, re.Pattern
-                ):
-                    all_logs = self.first_log_line + "\n"
-                all_logs += "\n".join(self.raw_rows)
-                buffer_json = json.loads(all_logs)
-                if (
-                    isinstance(buffer_json, list)
-                    and len(buffer_json) > 0
-                    and isinstance(buffer_json[0], dict)
-                ):
-                    header = list(buffer_json[0].keys())
-                    self.raw_rows = [json.dumps(item) for item in buffer_json]
-                elif isinstance(buffer_json, dict):
-                    header = list(buffer_json.keys())
-                    self.raw_rows = [json.dumps(buffer_json)]
-                else:
-                    self.notify(
-                        "Failed to parse JSON logs: no valid JSON found",
-                        severity="error",
-                    )
-                    return None
-                self.first_log_line = self.raw_rows[0]
-                return header, True
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                self.notify(f"Failed to parse JSON logs: {e}", severity="error")
-                return None
+            return self._resolve_json_header(prev_delimiter)
 
         if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
             header = split_line(
@@ -268,6 +244,71 @@ class DelimiterMixin:
             self.delimiter,
             self.current_columns,
         ), False
+
+    def _resolve_json_header(self: NlessBuffer, prev_delimiter):
+        """Resolve header columns for JSON delimiter.
+
+        Scans first_log_line then raw_rows for the first valid JSON dict.
+        Lines before the first match are saved as preamble (recoverable
+        via ~ or delimiter switch).  Falls back to parsing the entire
+        buffer as a single JSON payload.
+
+        Returns (header_list, parsed_full_json_file) or None on error.
+        """
+        # Build candidate list: first_log_line + raw_rows, avoiding the
+        # duplicate that exists in raw/regex mode (where first_log_line
+        # is also raw_rows[0]).
+        first_in_raw = self.raw_rows and self.raw_rows[0] == self.first_log_line
+        candidates = (
+            self.raw_rows if first_in_raw else [self.first_log_line] + self.raw_rows
+        )
+
+        for i, line in enumerate(candidates):
+            try:
+                header = list(json.loads(line).keys())
+                # Save non-matching lines before this one as preamble
+                if i > 0:
+                    self._preamble_lines.extend(candidates[:i])
+                self.first_log_line = line
+                # Trim raw_rows and timestamps to start after the match.
+                # When first_in_raw, candidates[i] == raw_rows[i].
+                # Otherwise candidates[0] is first_log_line, so
+                # raw_rows starts at candidates[1] → raw index = i - 1.
+                raw_start = i + 1 if first_in_raw else max(0, i)
+                self.raw_rows = self.raw_rows[raw_start:]
+                self._arrival_timestamps = self._arrival_timestamps[raw_start:]
+                return header, False
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        # Fallback: try to read all logs as one JSON payload
+        try:
+            all_logs = ""
+            if prev_delimiter != "raw" and not isinstance(prev_delimiter, re.Pattern):
+                all_logs = self.first_log_line + "\n"
+            all_logs += "\n".join(self.raw_rows)
+            buffer_json = json.loads(all_logs)
+            if (
+                isinstance(buffer_json, list)
+                and len(buffer_json) > 0
+                and isinstance(buffer_json[0], dict)
+            ):
+                header = list(buffer_json[0].keys())
+                self.raw_rows = [json.dumps(item) for item in buffer_json]
+            elif isinstance(buffer_json, dict):
+                header = list(buffer_json.keys())
+                self.raw_rows = [json.dumps(buffer_json)]
+            else:
+                self.notify(
+                    "Failed to parse JSON logs: no valid JSON found",
+                    severity="error",
+                )
+                return None
+            self.first_log_line = self.raw_rows[0]
+            return header, True
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            self.notify(f"Failed to parse JSON logs: {e}", severity="error")
+            return None
 
     @staticmethod
     def _should_reinsert_header_as_data(
