@@ -182,6 +182,12 @@ def main():
     # so Textual renders the TUI to the terminal, not the pipe.
     pipe_fd = None
     if stdout_is_pipe:
+        try:
+            size = os.get_terminal_size(sys.stderr.fileno())
+            os.environ["COLUMNS"] = str(size.columns)
+            os.environ["LINES"] = str(size.lines)
+        except OSError:
+            pass  # stderr isn't a terminal either; let defaults apply
         pipe_fd = os.fdopen(os.dup(sys.stdout.fileno()), "w")
         sys.stdout = sys.stderr
 
