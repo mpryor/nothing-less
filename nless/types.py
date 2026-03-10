@@ -32,6 +32,9 @@ class CliArgs:
     time_window: str | None = None
     columns: str | None = None
     raw: bool = False
+    no_tui: bool = False
+    pipe_output: bool = False  # computed at runtime: stdout is a pipe
+    output_format: str = "csv"  # csv, tsv, json, raw
 
 
 @dataclass

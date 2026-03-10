@@ -26,7 +26,7 @@ class NlessConfig:
     theme: str = "default"
     keymap: str = "vim"
     status_format: str = (
-        "{sort} | {filter} | {search} | {position} {unique}{tailing}{loading}"
+        "{sort} | {filter} | {search} | {position} {unique}{pipe}{tailing}{loading}"
     )
 
 
@@ -39,7 +39,7 @@ def load_config() -> NlessConfig:
         "show_getting_started": True,
         "theme": "default",
         "keymap": "vim",
-        "status_format": "{sort} | {filter} | {search} | {position} {unique}{tailing}{loading}",
+        "status_format": "{sort} | {filter} | {search} | {position} {unique}{pipe}{tailing}{loading}",
     }
     data = _load_config_json_file(CONFIG_FILE, defaults)
     # Only pass known fields to avoid errors from stale config keys

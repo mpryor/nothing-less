@@ -58,6 +58,8 @@ Once data is loaded, press `?` to view all keybindings.
 | `--time-window` | `-w` | Show only rows within a time window (e.g. `5m`, `1h`, `30s`). Append `+` for rolling (e.g. `5m+`) |
 | `--columns` | `-c` | Regex to filter visible columns on startup (e.g. `name\|status`) |
 | `--raw` | | Start in raw pager mode (no delimiter parsing) |
+| `--no-tui` | | Skip the TUI — apply transforms and write to stdout |
+| `--output-format` | `-o` | Output format for pipe/batch output: `csv` (default), `tsv`, `json`, `raw` |
 
 ### Examples
 
@@ -113,4 +115,16 @@ Combine options with piped input:
 
 ```bash
 kubectl get pods -w | nless -d '  ' -f 'STATUS=Running' -s 'NAME=asc'
+```
+
+Use nless as a pipeline stage (batch mode):
+
+```bash
+nless data.csv --no-tui -f 'status=shipped' -s 'date=desc' -o tsv | wc -l
+```
+
+Interactive pipe — explore data, then pass it downstream on quit:
+
+```bash
+nless orders.csv | sort -t, -k2 | uniq
 ```

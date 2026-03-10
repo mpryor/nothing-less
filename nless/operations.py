@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import time
 from collections import defaultdict
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 from .dataprocessing import strip_markup
 from .types import Column, MetadataColumn
@@ -125,6 +126,35 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
             if col_name in new_buffer._pivot_hidden_columns:
                 col.hidden = False
         new_buffer._pivot_hidden_columns.clear()
+
+
+def write_buffer_to_fd(
+    current_buffer: NlessBuffer, fd: IO[str], output_format: str = "csv"
+) -> None:
+    """Write the current buffer contents to a file descriptor.
+
+    Unlike write_buffer, this does not wait for app.is_running — it writes
+    immediately, intended for use during app exit (pipe output).
+    """
+    headers = current_buffer._get_visible_column_labels()
+    rows = current_buffer.displayed_rows
+
+    try:
+        if output_format == "json":
+            for row in rows:
+                obj = {h: strip_markup(str(cell)) for h, cell in zip(headers, row)}
+                fd.write(json.dumps(obj) + "\n")
+        elif output_format == "raw":
+            for row in rows:
+                fd.write("\t".join(strip_markup(str(cell)) for cell in row) + "\n")
+        else:
+            delim = "\t" if output_format == "tsv" else ","
+            writer = csv.writer(fd, delimiter=delim)
+            writer.writerow(headers)
+            for row in rows:
+                writer.writerow([strip_markup(str(cell)) for cell in row])
+    except BrokenPipeError:
+        pass
 
 
 def write_buffer(current_buffer: NlessBuffer, output_path: str) -> None:

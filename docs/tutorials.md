@@ -792,7 +792,58 @@ The format is saved to `~/.config/nless/log_formats.json` and will be checked fi
 
 ---
 
-## 15. Putting It All Together
+## 15. Pipe Workflows
+
+nless can participate in Unix pipelines — not just as a data sink, but as a middle stage where you interactively explore, filter, and transform data before passing it downstream.
+
+### Batch mode with `--no-tui`
+
+Use `--no-tui` to skip the TUI entirely. nless reads the data, applies any CLI transforms (`-f`, `-s`, `-u`, `-c`), and writes the result to stdout:
+
+```bash
+# Filter and sort a CSV, output as TSV
+nless data.csv --no-tui -f 'status=shipped' -s 'date=desc' -o tsv
+```
+
+```bash
+# Extract specific columns from JSON lines
+cat events.jsonl | nless --no-tui -c 'timestamp|level|message' -o json
+```
+
+### Interactive pipe mode
+
+When stdout is a pipe but no CLI transforms are specified, nless opens the TUI normally. When you quit (`q`), the current buffer is automatically written to stdout:
+
+```bash
+# Explore interactively, then pipe the result to another tool
+nless orders.csv | sort -t, -k2 | uniq
+```
+
+A **⇥ Pipe** indicator appears in the status bar to remind you that output goes to the pipe on quit.
+
+### Auto-batch detection
+
+When stdout is a pipe **and** CLI transforms are present, nless automatically uses batch mode (no TUI):
+
+```bash
+# Auto-batch: stdout is a pipe + transforms present
+cat data.csv | nless -f 'region=US' -s 'revenue=desc' | head -10
+```
+
+### Output formats
+
+Control the output format with `--output-format` / `-o`:
+
+| Format | Description |
+|--------|-------------|
+| `csv` | (default) Comma-separated values with header row |
+| `tsv` | Tab-separated values with header row |
+| `json` | One JSON object per line (JSON Lines) |
+| `raw` | Original lines as-is, no column parsing |
+
+---
+
+## 16. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 
