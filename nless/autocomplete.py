@@ -44,8 +44,8 @@ class AutocompleteInput(Static):
     def __init__(
         self,
         *args,
-        on_add: Callable[[str], None],
-        on_remove: Callable[[str], None],
+        on_add: Callable[[str], None] | None = None,
+        on_remove: Callable[[str], None] | None = None,
         history: list[str] | None = None,
         provider: SuggestionProvider | None = None,
         placeholder: str = "",
@@ -54,8 +54,8 @@ class AutocompleteInput(Static):
         super().__init__(*args, **kwargs)
         self.history = history or []
         self.history_index = len(self.history)
-        self.on_add = on_add
-        self.on_remove = on_remove
+        self.on_add = on_add or (lambda _: None)
+        self.on_remove = on_remove or (lambda _: None)
         self.placeholder = placeholder
         self.provider = provider or HistorySuggestionProvider(self.history)
         self._suggestions: list[str] = []
