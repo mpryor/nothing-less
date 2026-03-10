@@ -90,10 +90,14 @@ class ColumnMixin:
         return cache.get(col_name)
 
     def _get_column_at_position(self: NlessBuffer, position: int) -> Column | None:
-        """Get the column at a given render position, or None."""
-        for col in self.current_columns:
-            if col.render_position == position:
-                return col
+        """Get the visible column at a given cursor index, or None."""
+        visible = [
+            col
+            for col in sorted(self.current_columns, key=lambda c: c.render_position)
+            if not col.hidden
+        ]
+        if 0 <= position < len(visible):
+            return visible[position]
         return None
 
     def _get_visible_column_labels(self: NlessBuffer) -> list[str]:
