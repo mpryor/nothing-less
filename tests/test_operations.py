@@ -2560,3 +2560,291 @@ class TestViewExcludedLines:
             assert len(app.buffers) > before, (
                 "~ should find excluded lines, not say 'all logs are being shown'"
             )
+
+
+class TestPinSearchAsHighlight:
+    @pytest.mark.asyncio
+    async def test_pin_search_creates_highlight_and_clears_search(self, cli_args):
+        """Pressing + with an active search shows color picker; selecting a color pins the highlight."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,35,LA"])
+            await _wait(pilot, app)
+
+            # Search for Alice
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            assert buf.search_term is not None
+
+            # Pin the search as a highlight — opens color picker
+            app.action_add_highlight()
+            await _wait(pilot, app)
+
+            # Select the first color (red) by pressing Enter
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Search should be cleared, highlight should be added
+            assert buf.search_term is None
+            assert len(buf.regex_highlights) == 1
+            pattern, color = buf.regex_highlights[0]
+            assert pattern.pattern == "Alice"
+            assert color == "#ff5555"  # First color in palette (red)
+
+    @pytest.mark.asyncio
+    async def test_pin_multiple_highlights(self, cli_args):
+        """Multiple + presses let user pick different colors."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,35,LA"])
+            await _wait(pilot, app)
+
+            # Pin Alice as red (first color)
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Pin Bob — navigate down to orange, then select
+            buf._perform_search("Bob")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            assert len(buf.regex_highlights) == 2
+            assert buf.regex_highlights[0][1] == "#ff5555"  # red
+            assert buf.regex_highlights[1][1] == "#ffb86c"  # orange
+            assert buf.search_term is None
+
+    @pytest.mark.asyncio
+    async def test_plus_with_no_search_clears_highlights(self, cli_args):
+        """Pressing + with no active search prompts then clears all highlights."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            # Add a highlight first
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+            assert len(buf.regex_highlights) == 1
+
+            # Press + with no search — confirm clear
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")  # confirm "Yes"
+            await _wait(pilot, app)
+            assert len(buf.regex_highlights) == 0
+
+    @pytest.mark.asyncio
+    async def test_plus_with_no_search_cancel_keeps_highlights(self, cli_args):
+        """Pressing + then selecting No keeps highlights."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            # Add a highlight first
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+            assert len(buf.regex_highlights) == 1
+
+            # Press + with no search — select No
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("down")  # move to "No"
+            await pilot.press("enter")
+            await _wait(pilot, app)
+            assert len(buf.regex_highlights) == 1
+
+    @pytest.mark.asyncio
+    async def test_navigate_highlight_sets_search(self, cli_args):
+        """Pressing - and selecting a highlight sets it as the active search."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Alice,40,LA"])
+            await _wait(pilot, app)
+
+            # Pin Alice as a highlight
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+            assert buf.search_term is None
+
+            # Navigate to Alice highlight
+            app.action_navigate_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Alice should now be the active search
+            assert buf.search_term is not None
+            assert buf.search_term.pattern == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_navigate_no_highlights_shows_message(self, cli_args):
+        """Pressing - with no highlights does not error."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC"])
+            await _wait(pilot, app)
+
+            assert len(buf.regex_highlights) == 0
+            # Should not raise
+            app.action_navigate_highlight()
+            await _wait(pilot, app)
+
+    @pytest.mark.asyncio
+    async def test_delete_highlight_from_menu(self, cli_args):
+        """Pressing - and selecting a trash row removes that highlight."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Alice,40,LA"])
+            await _wait(pilot, app)
+
+            # Pin Alice as a highlight
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Pin Bob as a highlight
+            buf._perform_search("Bob")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            assert len(buf.regex_highlights) == 2
+            assert buf.regex_highlights[0][0].pattern == "Alice"
+            assert buf.regex_highlights[1][0].pattern == "Bob"
+
+            # Open navigate menu, select trash row for Alice
+            # Menu order per highlight: navigate, 🎨 recolor, 🗑 delete
+            app.action_navigate_highlight()
+            await _wait(pilot, app)
+            await pilot.press("down")  # move to 🎨 Alice
+            await pilot.press("down")  # move to 🗑 Alice
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Confirmation prompt appears — select Yes
+            await pilot.press("enter")  # Yes is already highlighted
+            await _wait(pilot, app)
+
+            # Only Bob should remain
+            assert len(buf.regex_highlights) == 1
+            assert buf.regex_highlights[0][0].pattern == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_recolor_highlight_from_menu(self, cli_args):
+        """Pressing - and selecting a 🎨 row opens color picker; selecting a color recolors the highlight."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            # Pin Alice as a highlight (first color)
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")  # pick first color
+            await _wait(pilot, app)
+
+            original_color = buf.regex_highlights[0][1]
+
+            # Open navigate menu, select 🎨 Alice (second option = index 1)
+            app.action_navigate_highlight()
+            await _wait(pilot, app)
+            await pilot.press("down")  # 🎨 Alice
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Now in color picker — pick second color
+            await pilot.press("down")
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            assert len(buf.regex_highlights) == 1
+            assert buf.regex_highlights[0][0].pattern == "Alice"
+            assert buf.regex_highlights[0][1] != original_color
+
+    @pytest.mark.asyncio
+    async def test_match_count_in_highlight_menu(self, cli_args):
+        """The - menu shows match counts for each highlight pattern."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Alice,40,LA"])
+            await _wait(pilot, app)
+
+            # Pin Alice as a highlight
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Verify match count via the helper method
+            pattern = buf.regex_highlights[0][0]
+            count = app._count_highlight_matches(buf, pattern)
+            assert count == 2, f"Expected 2 rows matching 'Alice', got {count}"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_highlight_prevented(self, cli_args):
+        """Pinning the same pattern twice is blocked; only one highlight remains."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            # Pin Alice as a highlight
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            assert len(buf.regex_highlights) == 1
+
+            # Try to pin Alice again
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")
+            await _wait(pilot, app)
+
+            # Should still be just 1 highlight
+            assert len(buf.regex_highlights) == 1

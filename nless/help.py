@@ -90,12 +90,22 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
-        "Searching",
+        "Searching & Highlighting",
         [
             ("app.search", "/", "Search"),
             ("buffer.search_cursor_word", "*", "Search cursor word"),
             ("buffer.next_search", "n", "Next match"),
             ("buffer.previous_search", "p", "Previous match"),
+            (
+                "app.add_highlight",
+                "+",
+                "Pin search as highlight (clears all if no search)",
+            ),
+            (
+                "app.navigate_highlight",
+                "-",
+                "Navigate, recolor, or remove pinned highlights",
+            ),
         ],
     ),
     (
