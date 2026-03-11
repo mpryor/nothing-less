@@ -653,11 +653,11 @@ class NlessBuffer(
                     c.render_position -= 1
             # Place unpinned column right after all pinned columns
             selected_column.render_position = pinned_count
-            # Shift non-pinned columns at or after that position right
+            # Shift non-pinned columns between target and old position right
             for c in self.current_columns:
                 if c is selected_column or c.pinned:
                     continue
-                if not c.hidden and c.render_position >= pinned_count:
+                if not c.hidden and pinned_count <= c.render_position < old_pos:
                     c.render_position += 1
         else:
             # Pin: remove from old position, insert at end of pinned zone
