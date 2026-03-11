@@ -155,9 +155,9 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
-        "Unparsed Logs",
+        "Excluded Lines",
         [
-            ("buffer.view_unparsed_logs", "~", "View unparsed logs"),
+            ("buffer.view_unparsed_logs", "~", "View excluded lines"),
         ],
     ),
     (
