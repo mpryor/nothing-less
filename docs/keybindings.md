@@ -10,7 +10,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `L` | Select the next buffer |
 | `H` | Select the previous buffer |
 | `q` | Close the current active buffer, or quit if all buffers are closed. When stdout is a pipe, the current buffer is auto-written to stdout on quit. |
-| `Q` | Pipe current buffer to stdout and exit immediately — skips closing tabs one-by-one. Same as `q` in non-pipe mode. |
+| `Q` | Quit immediately — exit without closing tabs one-by-one. In pipe mode, pipes the current buffer to stdout. |
 | `N` | Create a new buffer from the original data |
 | `r` | Rename the current buffer |
 
@@ -136,6 +136,12 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 |-----|--------|
 | `T` | Open the theme selector to switch color schemes |
 | `K` | Open the keymap selector to switch keybinding presets |
+
+## Sessions
+
+| Key | Action |
+|-----|--------|
+| `S` | Open the session menu — save, load, rename, or delete sessions. When opening a file that matches a saved session, nless prompts to restore it. |
 
 ## Help
 

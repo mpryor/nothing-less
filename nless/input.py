@@ -64,7 +64,7 @@ class LineStream:
 
     def notify(self, lines: list[str]) -> None:
         self.lines.extend(lines)
-        for subscriber, is_ready, callback in self.subscribers:
+        for subscriber, is_ready, callback in list(self.subscribers):
             while not is_ready():
                 time.sleep(0.1)
             try:
@@ -76,6 +76,7 @@ class LineStream:
 class ShellCommandLineStream(LineStream):
     def __init__(self, command: str):
         super().__init__()
+        self._command = command
         self._process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -106,6 +107,7 @@ class StdinLineStream(LineStream):
         new_fd: int | None,
     ):
         super().__init__()
+        self._cli_args = cli_args
         self._opened_file = None
         if file_name is not None:
             file_name = os.path.expanduser(file_name)

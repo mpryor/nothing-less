@@ -835,7 +835,7 @@ When stdout is a pipe but no CLI transforms are specified, nless opens the TUI n
 nless orders.csv | sort -t, -k2 | uniq
 ```
 
-The status bar shows **⇥ Pipe (N rows) · Q to send** to remind you that output goes to the pipe on quit. Press `Q` to pipe the current buffer and exit immediately — this is a shortcut that skips closing tabs one-by-one when you have multiple buffers open.
+The status bar shows **⇥ Pipe (N rows) · Q to send** to remind you that output goes to the pipe on quit. Press `Q` to quit immediately — in pipe mode this sends the current buffer to stdout; outside pipe mode it's a quick way to exit without closing tabs one-by-one.
 
 ### Auto-batch detection
 
@@ -907,7 +907,55 @@ Press `+` when no search is active to clear all pinned highlights at once.
 
 ---
 
-## 17. Putting It All Together
+## 17. Sessions
+
+Sessions let you save and restore your complete workspace — filters, sort order, column visibility, highlights, delimiter, search terms, cursor position, and more — so you can pick up where you left off instantly.
+
+Using the `app.log` from the previous tutorials, or any data file:
+
+```bash
+nless app.log
+```
+
+**Save a session:**
+
+1. Set up your view — apply some filters, sort a column, pin a few highlights
+2. Press `S` — the session menu opens
+3. Select **Save current session…** — a text prompt appears
+4. Type `error-investigation` and press ++enter++ — the session is saved to `~/.config/nless/sessions/error-investigation.json`
+
+**Load a session:**
+
+1. Press `S` — the session menu shows your saved sessions (sorted by most recently used) with their data sources and group counts
+2. Select **error-investigation** — all your filters, sort, highlights, search term, cursor position, and column settings are restored
+
+**Auto-restore on file open:**
+
+1. Close nless and reopen the same file: `nless app.log`
+2. nless detects a saved session matching this file and prompts: "Session 'error-investigation' found for this file. Load it?"
+3. Select **Yes** — your full workspace is restored automatically
+
+**Load from CLI:**
+
+```bash
+nless --session error-investigation app.log
+```
+
+This skips the prompt and loads the session directly.
+
+**Rename a session:**
+
+1. Press `S` — select the ✏️ option next to a session
+2. Type the new name and press ++enter++
+
+**Delete a session:**
+
+1. Press `S` — select the 🗑 option next to a session
+2. Confirm deletion — the session is removed
+
+---
+
+## 18. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
 

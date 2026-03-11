@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import json
 import logging
@@ -38,6 +39,17 @@ from nless.suggestions import (
 )
 
 from .config import NlessConfig, load_config, load_input_history, save_config
+from .session import (
+    Session,
+    capture_buffer_state,
+    apply_buffer_state,
+    find_session_for_source,
+    delete_session,
+    load_sessions,
+    load_session_by_name,
+    rename_session,
+    save_session,
+)
 from .procutil import get_stdin_source
 from .dataprocessing import strip_markup
 from .help import HelpScreen
@@ -135,7 +147,12 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             "Close Active Buffer",
             id="app.close_active_buffer",
         ),
-        Binding("Q", "pipe_and_exit", "Pipe to stdout & exit", id="app.pipe_and_exit"),
+        Binding(
+            "Q",
+            "pipe_and_exit",
+            "Quit immediately (pipe & exit)",
+            id="app.pipe_and_exit",
+        ),
         Binding("/", "search", "Search (all columns, by prompt)", id="app.search"),
         Binding(
             "&",
@@ -233,6 +250,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             "Navigate highlight",
             id="app.navigate_highlight",
         ),
+        Binding("S", "session_menu", "Sessions", id="app.session_menu"),
     ]
 
     _pending_highlight_pattern: re.Pattern | None = None
@@ -402,6 +420,68 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 buf._deferred_update_table(reason="Highlighting")
                 buf.notify("Cleared all highlights")
             return
+        if event.control.id == "session_select":
+            value = str(event.value)
+            if value == "quick_save" and self._active_session_name:
+                session = self._capture_session(self._active_session_name)
+                save_session(session)
+                self.notify(f"Saved session: {self._active_session_name}")
+            elif value == "save":
+                self._create_prompt("Session name", "session_name_input")
+            elif value.startswith("load:"):
+                idx = int(value.removeprefix("load:"))
+                sessions = load_sessions()
+                if idx < len(sessions):
+                    self.run_worker(self._load_session(sessions[idx]))
+                    self.notify(f"Loaded session: {sessions[idx].name}")
+            elif value.startswith("rename:"):
+                idx = int(value.removeprefix("rename:"))
+                sessions = load_sessions()
+                if idx < len(sessions):
+                    self._pending_session_rename_idx = idx
+                    self._create_prompt("New session name", "session_rename_input")
+            elif value.startswith("delete:"):
+                idx = int(value.removeprefix("delete:"))
+                sessions = load_sessions()
+                if idx < len(sessions):
+                    self._pending_session_delete_idx = idx
+                    session = sessions[idx]
+                    buf = self._get_current_buffer()
+                    select = NlessSelect(
+                        options=[("Yes", "yes"), ("No", "no")],
+                        prompt=f"Delete session '{session.name}'?",
+                        classes="dock-bottom",
+                        id="session_delete_confirm",
+                    )
+                    buf.mount(select)
+            return
+        if event.control.id == "session_delete_confirm":
+            idx = self._pending_session_delete_idx
+            self._pending_session_delete_idx = None
+            if str(event.value) == "yes" and idx is not None:
+                sessions = load_sessions()
+                if idx < len(sessions):
+                    name = sessions[idx].name
+                    delete_session(name)
+                    if self._active_session_name == name:
+                        self._active_session_name = None
+                    self.notify(f"Deleted session: {name}")
+            return
+        if event.control.id == "session_load_prompt":
+            if str(event.value) == "yes":
+                session = self._pending_auto_session
+                self._pending_auto_session = None
+                if session:
+                    self.run_worker(self._load_session(session))
+                    self.notify(f"Loaded session: {session.name}")
+            else:
+                self._pending_auto_session = None
+            return
+
+    _pending_session_delete_idx: int | None = None
+    _pending_session_rename_idx: int | None = None
+    _pending_auto_session: Session | None = None
+    _active_session_name: str | None = None
 
     def action_write_to_file(self) -> None:
         """Write the current view to a file."""
@@ -781,6 +861,39 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.handle_save_log_format_submitted(event)
         elif event.input.id == "regex_wizard_name_input":
             self._handle_regex_wizard_name_submitted(event)
+        elif event.input.id == "session_name_input":
+            self._handle_session_save_submitted(event)
+        elif event.input.id == "session_rename_input":
+            self._handle_session_rename_submitted(event)
+
+    def _handle_session_save_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
+        event.control.remove()
+        name = event.value.strip()
+        if not name:
+            return
+        session = self._capture_session(name)
+        save_session(session)
+        self._active_session_name = name
+        self.notify(f"Saved session: {name}")
+
+    def _handle_session_rename_submitted(
+        self, event: AutocompleteInput.Submitted
+    ) -> None:
+        event.control.remove()
+        new_name = event.value.strip()
+        idx = self._pending_session_rename_idx
+        self._pending_session_rename_idx = None
+        if not new_name or idx is None:
+            return
+        sessions = load_sessions()
+        if idx < len(sessions):
+            old_name = sessions[idx].name
+            rename_session(old_name, new_name)
+            if self._active_session_name == old_name:
+                self._active_session_name = new_name
+            self.notify(f"Renamed session: {old_name} → {new_name}")
 
     # ── Regex highlights ────────────────────────────────────────────────
 
@@ -871,6 +984,397 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             prompt="Select a highlight to navigate (n/p), recolor, or remove",
             classes="dock-bottom",
             id="highlight_navigate_select",
+        )
+        buf.mount(select)
+
+    # ── Sessions ───────────────────────────────────────────────────────
+
+    def _get_data_source(self) -> str | None:
+        """Return the data source identifier for the current group."""
+        group = self._current_group
+        name = group.name
+        # Strip icon prefixes
+        for prefix in ("📄 ", "⏵ ", "✓ "):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        if name == "stdin":
+            return None
+        return name
+
+    def action_session_menu(self) -> None:
+        """Open the session menu to save, load, or delete sessions."""
+        buf = self._get_current_buffer()
+        sessions = load_sessions()
+        if self._active_session_name:
+            options = [
+                (f"Save '{self._active_session_name}'", "quick_save"),
+                ("Save as new session…", "save"),
+            ]
+        else:
+            options = [("Save current session…", "save")]
+        if sessions:
+            options.append(("────", "separator"))
+            for i, session in enumerate(sessions):
+                sources = ", ".join(session.data_sources) or "global"
+                n_groups = len(session.groups)
+                groups_label = f"{n_groups} group{'s' if n_groups != 1 else ''}"
+                label = f"{session.name}  [{self.nless_theme.muted}]({sources} · {groups_label})[/{self.nless_theme.muted}]"
+                options.append((label, f"load:{i}"))
+                options.append((f"✏️  Rename {session.name}", f"rename:{i}"))
+                options.append((f"🗑  {session.name}", f"delete:{i}"))
+        select = NlessSelect(
+            options=options,
+            prompt="Sessions — save or load a session",
+            classes="dock-bottom",
+            id="session_select",
+        )
+        buf.mount(select)
+
+    def _get_tab_names(self, group) -> list[str]:
+        """Read tab label text for each buffer in a group."""
+        try:
+            container = self.query_one(f"#group_{group.group_id}")
+            tabbed_content = container.query_one(TabbedContent)
+            names = []
+            for tab in tabbed_content.query(Tab).results():
+                content = str(tab.content)
+                # Strip Rich markup and index number prefix
+                plain = re.sub(r"\[/?[^\]]*\]", "", content)
+                plain = re.sub(r"^\d+\s*", "", plain).strip()
+                names.append(plain)
+            return names
+        except NoMatches:
+            return []
+
+    def _capture_session(self, name: str) -> Session:
+        """Capture the full workspace state as a session."""
+        from .session import SessionGroup
+
+        groups = []
+        for group in self.groups:
+            tab_names = self._get_tab_names(group)
+            buf_states = []
+            for i, buf in enumerate(group.buffers):
+                state = capture_buffer_state(buf)
+                state.tab_name = tab_names[i] if i < len(tab_names) else ""
+                buf_states.append(state)
+            # Derive data source — prefer full resolved path from stream
+            data_source = None
+            if group.starting_stream and hasattr(group.starting_stream, "_cli_args"):
+                fn = (
+                    group.starting_stream._cli_args.filename
+                    if group.starting_stream._cli_args
+                    else None
+                )
+                if fn:
+                    data_source = os.path.abspath(fn)
+            if data_source is None and hasattr(group.starting_stream, "_command"):
+                data_source = f"⏵ {group.starting_stream._command}"
+            if data_source is None:
+                for prefix in ("📄 ", "⏵ ", "✓ "):
+                    if group.name.startswith(prefix):
+                        data_source = group.name[len(prefix) :]
+                        break
+            groups.append(
+                SessionGroup(
+                    name=group.name,
+                    data_source=data_source,
+                    buffers=buf_states,
+                    active_buffer_idx=group.curr_buffer_idx,
+                )
+            )
+        return Session(
+            name=name,
+            groups=groups,
+            active_group_idx=self.curr_group_idx,
+        )
+
+    async def _load_session(self, session: Session) -> None:
+        """Restore a full session — apply buffer states to the current group,
+        creating additional buffers as needed."""
+        if not session.groups:
+            return
+
+        # Close all groups beyond the first — session will recreate them.
+        while len(self.groups) > 1:
+            self.curr_group_idx = len(self.groups) - 1
+            self._close_current_group()
+
+        first_group_state = session.groups[0]
+        base_buf = self.groups[0].get_current_buffer()
+
+        # Check if the first group needs a different data source than
+        # what the base buffer currently has.
+        first_ds = first_group_state.data_source
+        current_source = None
+        if (
+            self.groups[0].starting_stream
+            and hasattr(self.groups[0].starting_stream, "_cli_args")
+            and self.groups[0].starting_stream._cli_args
+        ):
+            current_source = self.groups[0].starting_stream._cli_args.filename
+            if current_source:
+                current_source = os.path.abspath(current_source)
+
+        needs_file_load = (
+            first_ds
+            and not first_ds.startswith("⏵")
+            and os.path.exists(first_ds)
+            and current_source != first_ds
+        )
+
+        if needs_file_load:
+            # Load file data into the base buffer via a new stream
+            from .types import CliArgs as CliArgsType
+
+            new_cli = CliArgsType(
+                delimiter=None,
+                filters=[],
+                unique_keys=set(),
+                sort_by=None,
+                filename=first_ds,
+            )
+            try:
+                stream = StdinLineStream(new_cli, first_ds, None)
+                # Unsubscribe from old stream and reset buffer state so the
+                # first-parse path in add_logs re-runs for the new file.
+                if base_buf.line_stream:
+                    base_buf.line_stream.unsubscribe(base_buf)
+                base_buf.line_stream = stream
+                base_buf.first_row_parsed = False
+                base_buf.raw_rows.clear()
+                base_buf._arrival_timestamps.clear()
+                base_buf.displayed_rows.clear()
+                base_buf.delimiter = None
+                base_buf.delimiter_inferred = False
+                base_buf.raw_mode = False
+                base_buf.current_columns = []
+                base_buf.current_filters = []
+                base_buf.search_term = None
+                base_buf.sort_column = None
+                base_buf.sort_reverse = False
+                base_buf.unique_column_names = set()
+                base_buf.regex_highlights = []
+                base_buf._preamble_lines = []
+                try:
+                    base_buf.query_one(".nless-view").clear(columns=True)
+                except Exception:
+                    pass
+                if first_group_state.buffers:
+                    base_buf._pending_session_state = first_group_state.buffers[0]
+                stream.subscribe(base_buf, base_buf.add_logs, lambda: base_buf.mounted)
+                self.groups[0].starting_stream = stream
+                import threading
+
+                t = threading.Thread(target=stream.run, daemon=True)
+                t.start()
+                # Rename group
+                group_name = (
+                    first_group_state.name or f"📄 {os.path.basename(first_ds)}"
+                )
+                self.groups[0].name = group_name
+                if first_group_state.buffers and first_group_state.buffers[0].tab_name:
+                    self._rename_first_buffer(
+                        self.groups[0], first_group_state.buffers[0].tab_name
+                    )
+            except (FileNotFoundError, IsADirectoryError, PermissionError):
+                pass  # Fall through to normal state application
+        else:
+            # Apply first buffer state to the existing buffer
+            if first_group_state.buffers:
+                first_state = first_group_state.buffers[0]
+                apply_buffer_state(base_buf, first_state)
+                # Restore tab name for the first buffer
+                if first_state.tab_name:
+                    self._rename_first_buffer(self.groups[0], first_state.tab_name)
+
+        # Create additional buffers within the group.
+        # Defer state application — buffer isn't mounted yet, so
+        # _deferred_update_table would crash. on_mount will apply it.
+        active_idx = first_group_state.active_buffer_idx
+        remaining_first = list(enumerate(first_group_state.buffers[1:], start=1))
+        if remaining_first and needs_file_load:
+            # Wait for base buffer to receive file data before copying
+            for _ in range(200):
+                if base_buf.first_row_parsed:
+                    break
+                await asyncio.sleep(0.05)
+        for i, buf_state in remaining_first:
+            tab_name = buf_state.tab_name or f"buffer {i + 1}"
+            if "unparsed" in (buf_state.tab_name or ""):
+                stream_for_unparsed = self.groups[0].starting_stream
+                new_buffer = self._recreate_unparsed_buffer(
+                    base_buf,
+                    stream_for_unparsed,
+                    buf_state,
+                )
+                if new_buffer is None:
+                    continue
+            else:
+                new_buffer = base_buf.copy(pane_id=self._get_new_pane_id())
+                new_buffer._pending_session_state = buf_state
+            self.add_buffer(
+                new_buffer,
+                name=tab_name,
+                add_prev_index=False,
+                reason="Session loaded",
+                activate=False,
+            )
+
+        # Restore additional groups
+        if len(session.groups) > 1:
+            skipped = []
+            for group_state in session.groups[1:]:
+                ds = group_state.data_source
+                # Re-execute shell command groups
+                if ds and ds.startswith("⏵"):
+                    command = ds[len("⏵ ") :]
+                    try:
+                        line_stream = ShellCommandLineStream(command)
+                        new_buf = NlessBuffer(
+                            pane_id=self._get_new_pane_id(),
+                            cli_args=self.cli_args,
+                            line_stream=line_stream,
+                        )
+                        if group_state.buffers:
+                            new_buf._pending_session_state = group_state.buffers[0]
+                        group_name = group_state.name or f"⏵ {command}"
+                        await self.add_group(group_name, new_buf, stream=line_stream)
+                        line_stream.start()
+                        # Create additional buffers within this group
+                        grp_active_idx = group_state.active_buffer_idx
+                        remaining = list(enumerate(group_state.buffers[1:], start=1))
+                        if remaining:
+                            for _ in range(200):
+                                if new_buf.first_row_parsed:
+                                    break
+                                await asyncio.sleep(0.05)
+                        for i, buf_state in remaining:
+                            tab_name = buf_state.tab_name or f"buffer {i + 1}"
+                            if "unparsed" in (buf_state.tab_name or ""):
+                                extra_buf = self._recreate_unparsed_buffer(
+                                    new_buf,
+                                    line_stream,
+                                    buf_state,
+                                )
+                                if extra_buf is None:
+                                    continue
+                            else:
+                                extra_buf = new_buf.copy(
+                                    pane_id=self._get_new_pane_id()
+                                )
+                                extra_buf._pending_session_state = buf_state
+                            self.add_buffer(
+                                extra_buf,
+                                name=tab_name,
+                                add_prev_index=False,
+                                reason="Session loaded",
+                                activate=False,
+                            )
+                        group = self.groups[-1]
+                        group.curr_buffer_idx = min(
+                            grp_active_idx, len(group.buffers) - 1
+                        )
+                    except (
+                        OSError,
+                        ValueError,
+                        subprocess.SubprocessError,
+                    ) as e:
+                        skipped.append(f"{ds} (error: {e})")
+                    continue
+                if not ds:
+                    skipped.append(f"{group_state.name} (no source)")
+                    continue
+                if not os.path.exists(ds):
+                    skipped.append(f"{ds} (missing)")
+                    continue
+                # Open file as new group
+                from .types import CliArgs as CliArgsType
+
+                new_cli = CliArgsType(
+                    delimiter=None,
+                    filters=[],
+                    unique_keys=set(),
+                    sort_by=None,
+                    filename=ds,
+                )
+                try:
+                    stream = StdinLineStream(new_cli, ds, None)
+                except (FileNotFoundError, IsADirectoryError, PermissionError):
+                    skipped.append(f"{ds} (error)")
+                    continue
+                new_buf = NlessBuffer(
+                    pane_id=self._get_new_pane_id(),
+                    cli_args=new_cli,
+                    line_stream=stream,
+                )
+                if group_state.buffers:
+                    new_buf._pending_session_state = group_state.buffers[0]
+                import threading
+
+                t = threading.Thread(target=stream.run, daemon=True)
+                t.start()
+                group_name = group_state.name or f"📄 {os.path.basename(ds)}"
+                await self.add_group(group_name, new_buf, stream)
+                # Create additional buffers within this group
+                grp_active_idx = group_state.active_buffer_idx
+                remaining = list(enumerate(group_state.buffers[1:], start=1))
+                if remaining:
+                    # Wait for parent buffer to receive initial data so
+                    # copy() gets populated raw_rows.
+                    for _ in range(200):
+                        if new_buf.first_row_parsed:
+                            break
+                        await asyncio.sleep(0.05)
+                for i, buf_state in remaining:
+                    tab_name = buf_state.tab_name or f"buffer {i + 1}"
+                    if "unparsed" in (buf_state.tab_name or ""):
+                        extra_buf = self._recreate_unparsed_buffer(
+                            new_buf,
+                            stream,
+                            buf_state,
+                        )
+                        if extra_buf is None:
+                            continue
+                    else:
+                        extra_buf = new_buf.copy(pane_id=self._get_new_pane_id())
+                        extra_buf._pending_session_state = buf_state
+                    self.add_buffer(
+                        extra_buf,
+                        name=tab_name,
+                        add_prev_index=False,
+                        reason="Session loaded",
+                        activate=False,
+                    )
+                # Set curr_buffer_idx for this group (takes effect on group switch)
+                group = self.groups[-1]
+                group.curr_buffer_idx = min(grp_active_idx, len(group.buffers) - 1)
+            # Switch to the saved active group
+            target_idx = min(session.active_group_idx, len(self.groups) - 1)
+            if target_idx != self.curr_group_idx:
+                self._switch_to_group(target_idx)
+            if skipped:
+                self.notify(
+                    f"Skipped {len(skipped)} group(s): {', '.join(skipped)}",
+                    timeout=5,
+                )
+
+        # Set curr_buffer_idx for first group
+        if first_group_state.buffers:
+            self.groups[0].curr_buffer_idx = min(
+                active_idx, len(self.groups[0].buffers) - 1
+            )
+
+        self._active_session_name = session.name
+
+    def _show_session_load_prompt(self, session: Session) -> None:
+        """Show the auto-apply session prompt (called after DOM is ready)."""
+        buf = self._get_current_buffer()
+        select = NlessSelect(
+            options=[("Yes", "yes"), ("No", "no")],
+            prompt=f"Session '{session.name}' found for this file. Load it?",
+            classes="dock-bottom",
+            id="session_load_prompt",
         )
         buf.mount(select)
 
@@ -1001,9 +1505,11 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         offset: Offset,
         on_ready=None,
         reason="Loading",
+        activate: bool = True,
     ) -> None:
-        tabbed_content = self._get_active_tabbed_content()
-        tabbed_content.active = f"buffer{new_buffer.pane_id}"
+        if activate:
+            tabbed_content = self._get_active_tabbed_content()
+            tabbed_content.active = f"buffer{new_buffer.pane_id}"
         try:
             data_table = new_buffer.query_one(".nless-view")
         except NoMatches:
@@ -1015,10 +1521,12 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                     offset,
                     on_ready=on_ready,
                     reason=reason,
+                    activate=activate,
                 )
             )
             return
-        data_table.focus()
+        if activate:
+            data_table.focus()
 
         def _restore_position():
             new_buffer._restore_position(
@@ -1034,6 +1542,23 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         new_buffer._deferred_update_table(
             restore_position=False, callback=_restore_position, reason=reason
         )
+
+    def _recreate_unparsed_buffer(
+        self,
+        parent_buf: NlessBuffer,
+        stream: LineStream | None,
+        buf_state,
+    ) -> NlessBuffer | None:
+        """Re-derive an ~unparsed buffer from the parent during session restore."""
+        shown = parent_buf._make_shown_filter(include_ancestors=False)
+        all_lines = stream.lines if stream else parent_buf.raw_rows
+        excluded = [line for line in all_lines if not shown(line)]
+        if not excluded:
+            return None
+        extra_buf = NlessBuffer(pane_id=self._get_new_pane_id(), cli_args=None)
+        extra_buf.init_as_unparsed(excluded, shown, stream)
+        extra_buf._pending_session_state = buf_state
+        return extra_buf
 
     def _create_unparsed_buffer(
         self,
@@ -1054,6 +1579,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         add_prev_index: bool = True,
         on_ready=None,
         reason="Loading",
+        activate: bool = True,
     ) -> None:
         curr_data_table = self._get_current_buffer().query_one(".nless-view")
 
@@ -1066,7 +1592,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         )
         tabbed_content.add_pane(tab_pane)
         tab_pane.mount(new_buffer)
-        self.curr_buffer_idx = len(self.buffers) - 1
+        if activate:
+            self.curr_buffer_idx = len(self.buffers) - 1
         self.call_after_refresh(
             lambda: self.refresh_buffer_and_focus(
                 new_buffer,
@@ -1074,6 +1601,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 curr_data_table.scroll_offset,
                 on_ready=on_ready,
                 reason=reason,
+                activate=activate,
             )
         )
 
@@ -1181,6 +1709,29 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.apply_keymap(new_keymap.name, notify=False)
         elif new_keymap.bindings:
             self.set_keymap(new_keymap.bindings)
+
+        # Check for session to restore (deferred so DOM is fully ready)
+        if self.cli_args.session:
+            session = load_session_by_name(self.cli_args.session)
+            if session:
+                self._pending_auto_session = session
+                self.set_timer(
+                    0.3, lambda: self.run_worker(self._load_session(session))
+                )
+            else:
+                self.set_timer(
+                    0.3,
+                    lambda: self.notify(
+                        f"Session '{self.cli_args.session}' not found", severity="error"
+                    ),
+                )
+        else:
+            source = self._get_data_source()
+            if source:
+                session = find_session_for_source(source)
+                if session:
+                    self._pending_auto_session = session
+                    self.set_timer(0.3, lambda: self._show_session_load_prompt(session))
 
         if self.show_help and self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())

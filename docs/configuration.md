@@ -8,6 +8,7 @@ nless stores configuration and history files in `~/.config/nless/`.
 ~/.config/nless/
 ├── config.json          # User preferences
 ├── history.json         # Input history (managed automatically)
+├── sessions/            # Saved sessions (managed via S menu)
 ├── log_formats.json     # Custom log format patterns for P auto-detection
 ├── themes/              # Custom theme files
 │   └── my-theme.json
@@ -195,6 +196,8 @@ mkdir -p ~/.config/nless/keymaps
 | `buffer.search_cursor_word` | `*` | Search cursor word |
 | `buffer.next_search` | `n` | Next search match |
 | `buffer.previous_search` | `p` | Previous search match |
+| `app.add_highlight` | `+` | Pin search as highlight |
+| `app.navigate_highlight` | `-` | Navigate pinned highlights |
 | `app.filter` | `f` | Filter column |
 | `app.filter_cursor_word` | `F` | Filter by cursor word |
 | `app.exclude_filter` | `e` | Exclude from column |
@@ -228,7 +231,7 @@ mkdir -p ~/.config/nless/keymaps
 | `app.show_tab_next` | `L` | Next buffer |
 | `app.show_tab_previous` | `H` | Previous buffer |
 | `app.close_active_buffer` | `q` | Close buffer / quit |
-| `app.pipe_and_exit` | `Q` | Pipe current buffer to stdout & exit |
+| `app.pipe_and_exit` | `Q` | Quit immediately (pipe & exit) |
 | `app.rename_buffer` | `r` | Rename buffer |
 | `app.show_group_next` | `}` | Next group |
 | `app.show_group_previous` | `{` | Previous group |
@@ -269,6 +272,7 @@ The status bar format can be customized using a format string with named variabl
 | `{time_window}` | `Window: 5m` or empty |
 | `{delimiter}` | `Delim: csv` or empty |
 | `{skipped}` | `Skipped: 42` or empty |
+| `{session}` | `Session: my-session` or empty |
 | `{pipe}` | `⇥ Pipe (150 rows) · Q to send` or empty |
 | `{behind}` | `⚠` when input is arriving faster than processing, or empty |
 | `{tailing}` | `\| Tailing` (themed) or empty |
@@ -351,6 +355,39 @@ nless ships with 19 built-in log format patterns that `P` can detect:
 | ISO 8601 + Level + Logger | `2024-01-15 14:23:01,123 INFO com.example.Main message` |
 | ISO 8601 + Level | `2024-01-15T14:23:01 INFO message` |
 | Bracket Timestamp + Level | `[2024-01-15 14:23:01] [INFO] message` |
+
+---
+
+## Sessions
+
+**Location:** `~/.config/nless/sessions/`
+
+Sessions capture your full workspace state — all buffer groups, their filters, sort order, column visibility, highlights, delimiter, time windows, and more — so you can restore a view instantly. Each session is stored as an individual JSON file (e.g. `my-session.json`).
+
+**Managed via the `S` menu** — save, load, or delete sessions interactively. You don't need to edit these files manually.
+
+When you open a file that matches a saved session's data source, nless prompts you to restore it automatically.
+
+Each session stores:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Session name (user-provided) |
+| `groups` | List of buffer groups, each with a name, data source, and per-buffer state |
+| `active_group_idx` | Which group was active when saved |
+| `created_at` | ISO 8601 timestamp |
+| `updated_at` | ISO 8601 timestamp (auto-updated on save) |
+
+Per-buffer state includes: delimiter, sort column/direction, filters, column order/visibility/pinned, unique keys, regex highlights, time window, tail mode, search term, and cursor position.
+
+Sessions are sorted by most recently updated first.
+
+You can load a session directly from the CLI:
+
+```bash
+nless --session my-session file.csv
+nless -S my-session file.csv
+```
 
 ---
 

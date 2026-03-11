@@ -34,6 +34,7 @@ class CliArgs:
     raw: bool = False
     no_tui: bool = False
     tui: bool = False
+    session: str | None = None
     pipe_output: bool = False  # computed at runtime: stdout is a pipe
     output_format: str = "csv"  # csv, tsv, json, raw
 

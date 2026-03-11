@@ -41,6 +41,7 @@ def build_status_text(
     buffered_rows: int = 0,
     pipe_output: bool = False,
     pipe_row_count: int = 0,
+    session_name: str | None = None,
 ) -> str:
     """Build the status bar text from buffer/table state."""
     if theme is None:
@@ -107,6 +108,10 @@ def build_status_text(
     if skipped_rows > 0:
         skipped_text = f"[bold]Skipped[/bold]: {skipped_rows:,} "
 
+    session_text = ""
+    if session_name:
+        session_text = f"[bold]Session[/bold]: {session_name} "
+
     behind_text = ""
     if behind:
         behind_text = "[yellow]⚠[/yellow] "
@@ -148,6 +153,7 @@ def build_status_text(
         "loading": loading_text,
         "behind": behind_text,
         "pipe": pipe_text,
+        "session": session_text,
         "keymap": keymap_name,
         "theme": theme_name,
     }
