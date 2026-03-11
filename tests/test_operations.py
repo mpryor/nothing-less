@@ -2230,6 +2230,48 @@ class TestRawPagerMode:
             assert "\\[" in pager.rows[0][0]
             assert "\\[" in pager.rows[2][0]
 
+    @pytest.mark.asyncio
+    async def test_raw_mode_column_split_switches_to_datatable(self):
+        """Splitting a column in raw mode should switch from RawPager to DataTable."""
+        from nless.rawpager import RawPager
+
+        args = CliArgs(
+            delimiter="raw", filters=[], unique_keys=set(), sort_by=None, raw=True
+        )
+        app = NlessApp(cli_args=args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["hello world foo", "bar baz qux", "one two three"])
+            await _wait(pilot, app)
+
+            assert buf.raw_mode is True
+            assert isinstance(buf.query_one(".nless-view"), RawPager)
+
+            # Split column on space
+            await _submit_prompt(
+                app,
+                pilot,
+                "action_column_delimiter",
+                "column_delimiter_input",
+                "space",
+            )
+            await _wait(pilot, app)
+
+            # Should have switched out of raw mode
+            assert buf.raw_mode is False
+            widget = buf.query_one(".nless-view")
+            assert not isinstance(widget, RawPager), "Should have swapped to DataTable"
+
+            # Computed columns should exist
+            col_names = [c.name for c in buf.current_columns if not c.hidden]
+            assert "log-1" in col_names, f"log-1 missing: {col_names}"
+            assert "log-2" in col_names, f"log-2 missing: {col_names}"
+            assert "log-3" in col_names, f"log-3 missing: {col_names}"
+
+            # Rows should contain split data
+            assert len(buf.displayed_rows) == 3
+            assert buf.displayed_rows[0][1] == "hello"
+
 
 # ---------------------------------------------------------------------------
 # Write buffer to file
@@ -3438,6 +3480,7 @@ class TestSessionIntegration:
             await _wait(pilot2, app2)
 
             apply_buffer_state(buf2, state)
+            buf2._deferred_update_table(reason="Session loaded")
             await _wait(pilot2, app2)
 
             # Verify count column was added
@@ -3512,3 +3555,162 @@ class TestSessionIntegration:
             assert len(session.groups) == 2
             cmd_ds = session.groups[1].data_source
             assert cmd_ds == "⏵ echo hello", f"Expected '⏵ echo hello', got: {cmd_ds}"
+
+    @pytest.mark.asyncio
+    async def test_session_capture_computed_columns(self, cli_args):
+        """Capture state from a buffer with computed columns (column split)."""
+        from nless.session import capture_buffer_state
+        from nless.types import Column
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,info", "Alice,x:y", "Bob,a:b"])
+            await _wait(pilot, app)
+
+            # Manually add computed columns (simulating a column split on "info" with ":")
+            base_pos = len(buf.current_columns)
+            buf.current_columns.append(
+                Column(
+                    name="info-1",
+                    labels=set(),
+                    render_position=base_pos,
+                    data_position=base_pos,
+                    hidden=False,
+                    computed=True,
+                    col_ref="info",
+                    col_ref_index=0,
+                    delimiter=":",
+                )
+            )
+            buf.current_columns.append(
+                Column(
+                    name="info-2",
+                    labels=set(),
+                    render_position=base_pos + 1,
+                    data_position=base_pos + 1,
+                    hidden=False,
+                    computed=True,
+                    col_ref="info",
+                    col_ref_index=1,
+                    delimiter=":",
+                )
+            )
+
+            state = capture_buffer_state(buf)
+            assert len(state.computed_columns) == 2
+            cc1 = state.computed_columns[0]
+            assert cc1.name == "info-1"
+            assert cc1.col_ref == "info"
+            assert cc1.col_ref_index == 0
+            assert cc1.delimiter == ":"
+            assert cc1.delimiter_regex is None
+            assert cc1.json_ref == ""
+
+    @pytest.mark.asyncio
+    async def test_session_roundtrip_computed_columns(self, cli_args):
+        """Round-trip: capture → apply to fresh buffer → computed columns restored."""
+        from nless.session import apply_buffer_state, capture_buffer_state
+        from nless.types import Column
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,info", "Alice,x:y", "Bob,a:b"])
+            await _wait(pilot, app)
+
+            # Add computed columns
+            base_pos = len(buf.current_columns)
+            buf.current_columns.append(
+                Column(
+                    name="info-1",
+                    labels=set(),
+                    render_position=base_pos,
+                    data_position=base_pos,
+                    hidden=False,
+                    computed=True,
+                    col_ref="info",
+                    col_ref_index=0,
+                    delimiter=":",
+                )
+            )
+            buf.current_columns.append(
+                Column(
+                    name="info-2",
+                    labels=set(),
+                    render_position=base_pos + 1,
+                    data_position=base_pos + 1,
+                    hidden=False,
+                    computed=True,
+                    col_ref="info",
+                    col_ref_index=1,
+                    delimiter=":",
+                )
+            )
+
+            state = capture_buffer_state(buf)
+
+        # Restore into a fresh buffer
+        app2 = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app2.run_test(size=(120, 40)) as pilot2:
+            buf2 = app2.buffers[0]
+            _load(buf2, ["name,info", "Alice,x:y", "Bob,a:b"])
+            await _wait(pilot2, app2)
+
+            apply_buffer_state(buf2, state)
+            buf2._deferred_update_table(reason="Session loaded")
+            await _wait(pilot2, app2)
+
+            col_names = [c.name for c in buf2.current_columns]
+            assert "info-1" in col_names, f"info-1 missing: {col_names}"
+            assert "info-2" in col_names, f"info-2 missing: {col_names}"
+
+            # Verify computed column properties
+            info1 = next(c for c in buf2.current_columns if c.name == "info-1")
+            assert info1.computed is True
+            assert info1.col_ref == "info"
+            assert info1.col_ref_index == 0
+            assert info1.delimiter == ":"
+
+    def test_deserialize_session_without_computed_columns(self):
+        """Deserializing old session JSON without computed_columns key works."""
+        from nless.session import _deserialize_session
+
+        data = {
+            "name": "old-session",
+            "groups": [
+                {
+                    "name": "group1",
+                    "data_source": "test.csv",
+                    "buffers": [
+                        {
+                            "delimiter": ",",
+                            "delimiter_regex": None,
+                            "delimiter_name": "csv",
+                            "raw_mode": False,
+                            "sort_column": None,
+                            "sort_reverse": False,
+                            "filters": [],
+                            "columns": [
+                                {
+                                    "name": "col1",
+                                    "render_position": 0,
+                                    "hidden": False,
+                                    "pinned": False,
+                                }
+                            ],
+                            "unique_column_names": [],
+                            "highlights": [],
+                            "time_window": None,
+                            "rolling_time_window": False,
+                            "is_tailing": False,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        restored = _deserialize_session(data)
+        buf_state = restored.groups[0].buffers[0]
+        assert buf_state.computed_columns == []
+        assert buf_state.delimiter == ","

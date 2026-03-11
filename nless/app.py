@@ -1106,8 +1106,23 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.curr_group_idx = len(self.groups) - 1
             self._close_current_group()
 
+        # Close extra buffers (tabs) in the first group, keeping only the first.
+        self.curr_group_idx = 0
+        first_group = self.groups[0]
+        while len(first_group.buffers) > 1:
+            extra_buf = first_group.buffers[-1]
+            if extra_buf.line_stream:
+                extra_buf.line_stream.unsubscribe(extra_buf)
+            try:
+                tc = self._get_active_tabbed_content()
+                tc.remove_pane(f"buffer{extra_buf.pane_id}")
+            except Exception:
+                pass
+            first_group.buffers.pop()
+        first_group.curr_buffer_idx = 0
+
         first_group_state = session.groups[0]
-        base_buf = self.groups[0].get_current_buffer()
+        base_buf = first_group.get_current_buffer()
 
         # Check if the first group needs a different data source than
         # what the base buffer currently has.
@@ -1190,6 +1205,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             if first_group_state.buffers:
                 first_state = first_group_state.buffers[0]
                 apply_buffer_state(base_buf, first_state)
+                base_buf._deferred_update_table(reason="Session loaded")
                 # Restore tab name for the first buffer
                 if first_state.tab_name:
                     self._rename_first_buffer(self.groups[0], first_state.tab_name)

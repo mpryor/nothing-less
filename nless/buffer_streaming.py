@@ -201,10 +201,10 @@ class StreamingMixin:
 
                 apply_buffer_state(self, self._pending_session_state)
                 self._pending_session_state = None
-                # apply_buffer_state already called _deferred_update_table.
-                # Just add remaining lines to raw_rows and let the deferred
-                # rebuild display everything — the incremental path below
-                # would double-add rows that the rebuild also covers.
+                # apply_buffer_state only rebuilds caches — it does NOT call
+                # _deferred_update_table (that would invoke UI ops from this
+                # streaming thread and hang).  _needs_deferred_update below
+                # ensures the main thread triggers the rebuild.
                 now = time.time()
                 batch_timestamps = [now] * len(log_lines)
                 filtered, filtered_timestamps = self._filter_lines(
