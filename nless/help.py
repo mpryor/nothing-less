@@ -31,6 +31,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
             ("app.show_tab_next", "L", "Next buffer"),
             ("app.show_tab_previous", "H", "Previous buffer"),
             ("app.close_active_buffer", "q", "Close buffer or quit"),
+            ("app.pipe_and_exit", "Q", "Quit (pipe output if piped)"),
             ("app.add_buffer", "N", "New buffer"),
             ("app.rename_buffer", "r", "Rename buffer"),
         ],
