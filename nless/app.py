@@ -975,10 +975,14 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             if i > 0:
                 options.append(("────", "separator"))
             count = self._count_highlight_matches(buf, pattern)
-            label = f"[{color}]{pattern.pattern} ({count})[/{color}]"
+            label = f"[{color}]🔍 Navigate {pattern.pattern} ({count})[/{color}]"
             options.append((label, str(i)))
-            options.append((f"[{color}]🎨 {pattern.pattern}[/{color}]", f"recolor:{i}"))
-            options.append((f"[{color}]🗑  {pattern.pattern}[/{color}]", f"delete:{i}"))
+            options.append(
+                (f"[{color}]🎨 Recolor {pattern.pattern}[/{color}]", f"recolor:{i}")
+            )
+            options.append(
+                (f"[{color}]🗑  Delete {pattern.pattern}[/{color}]", f"delete:{i}")
+            )
         select = NlessSelect(
             options=options,
             prompt="Select a highlight to navigate (n/p), recolor, or remove",
@@ -1015,13 +1019,15 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         if sessions:
             options.append(("────", "separator"))
             for i, session in enumerate(sessions):
+                if i > 0:
+                    options.append(("────", "separator"))
                 sources = ", ".join(session.data_sources) or "global"
                 n_groups = len(session.groups)
                 groups_label = f"{n_groups} group{'s' if n_groups != 1 else ''}"
-                label = f"{session.name}  [{self.nless_theme.muted}]({sources} · {groups_label})[/{self.nless_theme.muted}]"
+                label = f"📂 Load {session.name}  [{self.nless_theme.muted}]({sources} · {groups_label})[/{self.nless_theme.muted}]"
                 options.append((label, f"load:{i}"))
                 options.append((f"✏️  Rename {session.name}", f"rename:{i}"))
-                options.append((f"🗑  {session.name}", f"delete:{i}"))
+                options.append((f"🗑  Delete {session.name}", f"delete:{i}"))
         select = NlessSelect(
             options=options,
             prompt="Sessions — save or load a session",
