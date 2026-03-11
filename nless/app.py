@@ -41,14 +41,20 @@ from nless.suggestions import (
 from .config import NlessConfig, load_config, load_input_history, save_config
 from .session import (
     Session,
+    View,
     capture_buffer_state,
+    capture_view_state,
     apply_buffer_state,
     find_session_for_source,
     delete_session,
+    delete_view,
     load_sessions,
     load_session_by_name,
+    load_views,
     rename_session,
+    rename_view,
     save_session,
+    save_view,
 )
 from .procutil import get_stdin_source
 from .dataprocessing import strip_markup
@@ -251,6 +257,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             id="app.navigate_highlight",
         ),
         Binding("S", "session_menu", "Sessions", id="app.session_menu"),
+        Binding("v", "view_menu", "Views", id="app.view_menu"),
     ]
 
     _pending_highlight_pattern: re.Pattern | None = None
@@ -477,11 +484,77 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             else:
                 self._pending_auto_session = None
             return
+        if event.control.id == "view_select":
+            value = str(event.value)
+            if value == "save":
+                self._create_prompt("View name", "view_name_input")
+            elif value == "undo":
+                buf = self._get_current_buffer()
+                if buf._pre_view_state is not None:
+                    # Restore raw data that was compacted by the view's filters
+                    if buf._pre_view_raw_rows is not None:
+                        buf.raw_rows = buf._pre_view_raw_rows
+                        buf._pre_view_raw_rows = None
+                    if buf._pre_view_timestamps is not None:
+                        buf._arrival_timestamps = buf._pre_view_timestamps
+                        buf._pre_view_timestamps = None
+                    buf._parsed_rows = None
+                    apply_buffer_state(buf, buf._pre_view_state)
+                    buf._pre_view_state = None
+                    buf._deferred_update_table(reason="View undone")
+                    self.notify("Restored previous state")
+            elif value.startswith("load:"):
+                idx = int(value.removeprefix("load:"))
+                views = load_views()
+                if idx < len(views):
+                    buf = self._get_current_buffer()
+                    buf._pre_view_state = capture_buffer_state(buf)
+                    buf._pre_view_raw_rows = list(buf.raw_rows)
+                    buf._pre_view_timestamps = list(buf._arrival_timestamps)
+                    skipped = apply_buffer_state(buf, views[idx].state)
+                    buf._deferred_update_table(reason="View loaded")
+                    msg = f"Loaded view: {views[idx].name}"
+                    if skipped:
+                        msg += f" ({len(skipped)} skipped: {', '.join(skipped)})"
+                    self.notify(msg)
+            elif value.startswith("rename:"):
+                idx = int(value.removeprefix("rename:"))
+                views = load_views()
+                if idx < len(views):
+                    self._pending_view_rename_idx = idx
+                    self._create_prompt("New view name", "view_rename_input")
+            elif value.startswith("delete:"):
+                idx = int(value.removeprefix("delete:"))
+                views = load_views()
+                if idx < len(views):
+                    self._pending_view_delete_idx = idx
+                    view = views[idx]
+                    buf = self._get_current_buffer()
+                    select = NlessSelect(
+                        options=[("Yes", "yes"), ("No", "no")],
+                        prompt=f"Delete view '{view.name}'?",
+                        classes="dock-bottom",
+                        id="view_delete_confirm",
+                    )
+                    buf.mount(select)
+            return
+        if event.control.id == "view_delete_confirm":
+            idx = self._pending_view_delete_idx
+            self._pending_view_delete_idx = None
+            if str(event.value) == "yes" and idx is not None:
+                views = load_views()
+                if idx < len(views):
+                    name = views[idx].name
+                    delete_view(name)
+                    self.notify(f"Deleted view: {name}")
+            return
 
     _pending_session_delete_idx: int | None = None
     _pending_session_rename_idx: int | None = None
     _pending_auto_session: Session | None = None
     _active_session_name: str | None = None
+    _pending_view_rename_idx: int | None = None
+    _pending_view_delete_idx: int | None = None
 
     def action_write_to_file(self) -> None:
         """Write the current view to a file."""
@@ -865,6 +938,10 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self._handle_session_save_submitted(event)
         elif event.input.id == "session_rename_input":
             self._handle_session_rename_submitted(event)
+        elif event.input.id == "view_name_input":
+            self._handle_view_save_submitted(event)
+        elif event.input.id == "view_rename_input":
+            self._handle_view_rename_submitted(event)
 
     def _handle_session_save_submitted(
         self, event: AutocompleteInput.Submitted
@@ -894,6 +971,30 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             if self._active_session_name == old_name:
                 self._active_session_name = new_name
             self.notify(f"Renamed session: {old_name} → {new_name}")
+
+    def _handle_view_save_submitted(self, event: AutocompleteInput.Submitted) -> None:
+        event.control.remove()
+        name = event.value.strip()
+        if not name:
+            return
+        buf = self._get_current_buffer()
+        state = capture_view_state(buf)
+        view = View(name=name, state=state)
+        save_view(view)
+        self.notify(f"Saved view: {name}")
+
+    def _handle_view_rename_submitted(self, event: AutocompleteInput.Submitted) -> None:
+        event.control.remove()
+        new_name = event.value.strip()
+        idx = self._pending_view_rename_idx
+        self._pending_view_rename_idx = None
+        if not new_name or idx is None:
+            return
+        views = load_views()
+        if idx < len(views):
+            old_name = views[idx].name
+            rename_view(old_name, new_name)
+            self.notify(f"Renamed view: {old_name} → {new_name}")
 
     # ── Regex highlights ────────────────────────────────────────────────
 
@@ -1011,11 +1112,11 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         sessions = load_sessions()
         if self._active_session_name:
             options = [
-                (f"Save '{self._active_session_name}'", "quick_save"),
-                ("Save as new session…", "save"),
+                (f"💾 Save '{self._active_session_name}'", "quick_save"),
+                ("💾 Save as new session…", "save"),
             ]
         else:
-            options = [("Save current session…", "save")]
+            options = [("💾 Save current session…", "save")]
         if sessions:
             options.append(("────", "separator"))
             for i, session in enumerate(sessions):
@@ -1033,6 +1134,29 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             prompt="Sessions — save or load a session",
             classes="dock-bottom",
             id="session_select",
+        )
+        buf.mount(select)
+
+    def action_view_menu(self) -> None:
+        """Open the view menu to save, load, rename, or delete views."""
+        buf = self._get_current_buffer()
+        views = load_views()
+        options: list[tuple[str, str]] = [("💾 Save current view…", "save")]
+        if buf._pre_view_state is not None:
+            options.append(("↩️  Undo last view", "undo"))
+        if views:
+            options.append(("────", "separator"))
+            for i, view in enumerate(views):
+                if i > 0:
+                    options.append(("────", "separator"))
+                options.append((f"📌 Load {view.name}", f"load:{i}"))
+                options.append((f"✏️  Rename {view.name}", f"rename:{i}"))
+                options.append((f"🗑  Delete {view.name}", f"delete:{i}"))
+        select = NlessSelect(
+            options=options,
+            prompt="Views — save or load a view",
+            classes="dock-bottom",
+            id="view_select",
         )
         buf.mount(select)
 

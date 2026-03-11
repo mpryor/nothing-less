@@ -32,6 +32,7 @@
 - **Excluded lines** — press `~` to see rows that failed to parse or were removed by filters, with chained accumulation
 - **Pipe mode** — use nless as a pipeline stage; `Q` quits immediately (piping output in pipe mode), batch mode with `--no-tui`, or `--tui` to force interactive mode
 - **Sessions** — save and restore your complete workspace state including filters, sort, highlights, delimiter, cursor position, and multiple buffer groups
+- **Views** — save reusable analysis patterns (filters, sort, columns) and apply them to any dataset; undo to restore your previous state
 - **Themes & keymaps** — 10 built-in color themes (Dracula, Nord, Gruvbox, and more) plus custom theme support; configurable keymap presets
 
 ## Demos
