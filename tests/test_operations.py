@@ -2848,3 +2848,667 @@ class TestPinSearchAsHighlight:
 
             # Should still be just 1 highlight
             assert len(buf.regex_highlights) == 1
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSerialization:
+    """Test session capture, serialization, and deserialization."""
+
+    def test_serialize_deserialize_roundtrip(self, tmp_path):
+        """A session can be serialized to JSON and deserialized back."""
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            SessionFilter,
+            SessionColumn,
+            SessionHighlight,
+            _serialize_session,
+            _deserialize_session,
+        )
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column="age",
+            sort_reverse=True,
+            filters=[SessionFilter(column="name", pattern="Alice", exclude=False)],
+            columns=[
+                SessionColumn(
+                    name="name", render_position=0, hidden=False, pinned=False
+                ),
+                SessionColumn(name="age", render_position=1, hidden=False, pinned=True),
+                SessionColumn(
+                    name="city", render_position=2, hidden=True, pinned=False
+                ),
+            ],
+            unique_column_names=["name"],
+            highlights=[SessionHighlight(pattern="Alice", color="#ff5555")],
+            time_window=300.0,
+            rolling_time_window=True,
+            is_tailing=False,
+        )
+        session = Session(
+            name="test-session",
+            groups=[
+                SessionGroup(
+                    name="📄 test.csv", data_source="test.csv", buffers=[state]
+                )
+            ],
+            active_group_idx=0,
+        )
+
+        data = _serialize_session(session)
+        restored = _deserialize_session(data)
+
+        assert restored.name == "test-session"
+        assert len(restored.groups) == 1
+        assert restored.groups[0].data_source == "test.csv"
+        buf = restored.groups[0].buffers[0]
+        assert buf.delimiter == ","
+        assert buf.sort_column == "age"
+        assert buf.sort_reverse is True
+        assert len(buf.filters) == 1
+        assert buf.filters[0].pattern == "Alice"
+        assert len(buf.columns) == 3
+        assert buf.columns[2].hidden is True
+        assert buf.columns[1].pinned is True
+        assert buf.highlights[0].pattern == "Alice"
+        assert buf.time_window == 300.0
+
+    def test_serialize_regex_delimiter(self):
+        """Regex delimiter patterns roundtrip correctly."""
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            _serialize_session,
+            _deserialize_session,
+        )
+
+        state = SessionBufferState(
+            delimiter=None,
+            delimiter_regex=r"(?P<ts>\d+) (?P<msg>.*)",
+            delimiter_name="custom",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        session = Session(
+            name="regex-test",
+            groups=[SessionGroup(name="stdin", data_source=None, buffers=[state])],
+        )
+
+        data = _serialize_session(session)
+        restored = _deserialize_session(data)
+        assert (
+            restored.groups[0].buffers[0].delimiter_regex == r"(?P<ts>\d+) (?P<msg>.*)"
+        )
+
+    def test_load_save_sessions(self, tmp_path, monkeypatch):
+        """Sessions can be saved to and loaded from a directory."""
+        import nless.session as session_mod
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            load_sessions,
+            save_session,
+        )
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        session = Session(
+            name="my-session",
+            groups=[
+                SessionGroup(
+                    name="📄 data.csv", data_source="data.csv", buffers=[state]
+                )
+            ],
+        )
+
+        save_session(session)
+        loaded = load_sessions()
+        assert len(loaded) == 1
+        assert loaded[0].name == "my-session"
+        assert loaded[0].groups[0].data_source == "data.csv"
+
+
+class TestSessionIntegration:
+    """Integration tests for session save/load via the app."""
+
+    @pytest.mark.asyncio
+    async def test_save_and_load_session(self, cli_args, tmp_path, monkeypatch):
+        """Save a session via S menu, then load it into a fresh buffer."""
+        import nless.session as session_mod
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,35,LA"])
+            await _wait(pilot, app)
+
+            # Set up some state
+            buf.action_sort()  # sort ascending on first column
+            await _wait(pilot, app)
+
+            # Pin a highlight
+            buf._perform_search("Alice")
+            await _wait(pilot, app)
+            app.action_add_highlight()
+            await _wait(pilot, app)
+            await pilot.press("enter")  # pick first color
+            await _wait(pilot, app)
+
+            # Save session via action
+            session = app._capture_session("test-session")
+            session_mod.save_session(session)
+
+            # Verify saved
+            loaded = session_mod.load_sessions()
+            assert len(loaded) == 1
+            assert loaded[0].name == "test-session"
+            assert len(loaded[0].groups) == 1
+            buf_state = loaded[0].groups[0].buffers[0]
+            assert buf_state.sort_column is not None
+            assert len(buf_state.highlights) == 1
+            assert buf_state.highlights[0].pattern == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_capture_includes_filters(self, cli_args):
+        """Captured session state includes active filters."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,35,LA"])
+            await _wait(pilot, app)
+
+            # Add a filter
+            buf.current_filters.append(
+                __import__("nless.types", fromlist=["Filter"]).Filter(
+                    column="name", pattern=re.compile("Alice"), exclude=False
+                )
+            )
+
+            session = app._capture_session("filter-test")
+            buf_state = session.groups[0].buffers[0]
+            assert len(buf_state.filters) == 1
+            assert buf_state.filters[0].pattern == "Alice"
+            assert buf_state.filters[0].column == "name"
+
+    @pytest.mark.asyncio
+    async def test_delete_session(self, cli_args, tmp_path, monkeypatch):
+        """Deleting a session removes its file."""
+        import nless.session as session_mod
+        from nless.session import Session, SessionGroup, SessionBufferState
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        session_mod.save_session(
+            Session(
+                name="keep",
+                groups=[SessionGroup(name="g", data_source=None, buffers=[state])],
+            ),
+        )
+        session_mod.save_session(
+            Session(
+                name="delete-me",
+                groups=[SessionGroup(name="g", data_source=None, buffers=[state])],
+            ),
+        )
+
+        sessions = session_mod.load_sessions()
+        assert len(sessions) == 2
+        session_mod.delete_session("delete-me")
+
+        sessions = session_mod.load_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].name == "keep"
+
+    @pytest.mark.asyncio
+    async def test_find_session_for_source(self, tmp_path, monkeypatch):
+        """find_session_for_source matches on basename."""
+        import nless.session as session_mod
+        from nless.session import Session, SessionGroup, SessionBufferState
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        session_mod.save_session(
+            Session(
+                name="my-view",
+                groups=[
+                    SessionGroup(
+                        name="📄 data.csv", data_source="data.csv", buffers=[state]
+                    )
+                ],
+            ),
+        )
+
+        # Match by basename
+        match = session_mod.find_session_for_source("data.csv")
+        assert match is not None
+        assert match.name == "my-view"
+
+        # Match by full path
+        match = session_mod.find_session_for_source("/home/user/data.csv")
+        assert match is not None
+
+        # No match
+        match = session_mod.find_session_for_source("other.csv")
+        assert match is None
+
+    def test_updated_at_and_sorting(self, tmp_path, monkeypatch):
+        """Sessions sort by updated_at descending (most recent first)."""
+        import time
+        import nless.session as session_mod
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            load_sessions,
+            save_session,
+        )
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        save_session(
+            Session(
+                name="older",
+                groups=[SessionGroup(name="a", data_source="a.csv", buffers=[state])],
+            )
+        )
+        time.sleep(0.01)
+        save_session(
+            Session(
+                name="newer",
+                groups=[SessionGroup(name="b", data_source="b.csv", buffers=[state])],
+            )
+        )
+
+        loaded = load_sessions()
+        assert len(loaded) == 2
+        assert loaded[0].name == "newer"
+        assert loaded[1].name == "older"
+        # updated_at should be populated
+        assert loaded[0].updated_at != ""
+        assert loaded[1].updated_at != ""
+
+    def test_roundtrip_new_fields(self):
+        """New fields (updated_at, search_term, cursor_row, cursor_column) survive roundtrip."""
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            _serialize_session,
+            _deserialize_session,
+        )
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+            search_term="error.*timeout",
+            cursor_row=42,
+            cursor_column=3,
+        )
+        session = Session(
+            name="test",
+            groups=[SessionGroup(name="g", data_source="f.csv", buffers=[state])],
+            updated_at="2025-01-01T00:00:00+00:00",
+        )
+
+        data = _serialize_session(session)
+        restored = _deserialize_session(data)
+
+        assert restored.updated_at == "2025-01-01T00:00:00+00:00"
+        buf = restored.groups[0].buffers[0]
+        assert buf.search_term == "error.*timeout"
+        assert buf.cursor_row == 42
+        assert buf.cursor_column == 3
+
+    def test_backward_compat_missing_new_fields(self):
+        """Deserialization of JSON missing new fields uses sensible defaults."""
+        from nless.session import _deserialize_session
+
+        data = {
+            "name": "old-session",
+            "groups": [
+                {
+                    "name": "g1",
+                    "data_source": "file.csv",
+                    "buffers": [
+                        {
+                            "delimiter": ",",
+                            "delimiter_regex": None,
+                            "delimiter_name": "csv",
+                            "raw_mode": False,
+                            "sort_column": None,
+                            "sort_reverse": False,
+                            "filters": [],
+                            "columns": [],
+                            "unique_column_names": [],
+                            "highlights": [],
+                            "time_window": None,
+                            "rolling_time_window": False,
+                            "is_tailing": False,
+                        }
+                    ],
+                }
+            ],
+            "created_at": "2024-06-01T00:00:00+00:00",
+        }
+        restored = _deserialize_session(data)
+        assert (
+            restored.updated_at == "2024-06-01T00:00:00+00:00"
+        )  # falls back to created_at
+        buf = restored.groups[0].buffers[0]
+        assert buf.search_term is None
+        assert buf.cursor_row == 0
+        assert buf.cursor_column == 0
+
+    def test_rename_session(self, tmp_path, monkeypatch):
+        """Renaming a session deletes old file and creates new one."""
+        import nless.session as session_mod
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            save_session,
+            load_sessions,
+            rename_session,
+        )
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        save_session(
+            Session(
+                name="old-name",
+                groups=[SessionGroup(name="g", data_source="f.csv", buffers=[state])],
+            )
+        )
+
+        rename_session("old-name", "new-name")
+
+        loaded = load_sessions()
+        assert len(loaded) == 1
+        assert loaded[0].name == "new-name"
+        assert loaded[0].groups[0].data_source == "f.csv"
+        # Old file should be gone
+        import os
+
+        assert not os.path.exists(os.path.join(sessions_dir, "old-name.json"))
+
+    def test_load_session_by_name(self, tmp_path, monkeypatch):
+        """load_session_by_name returns the correct session or None."""
+        import nless.session as session_mod
+        from nless.session import (
+            Session,
+            SessionGroup,
+            SessionBufferState,
+            save_session,
+            load_session_by_name,
+        )
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        save_session(
+            Session(
+                name="my-session",
+                groups=[SessionGroup(name="g", data_source="f.csv", buffers=[state])],
+            )
+        )
+
+        found = load_session_by_name("my-session")
+        assert found is not None
+        assert found.name == "my-session"
+
+        not_found = load_session_by_name("nonexistent")
+        assert not_found is None
+
+    def test_cli_session_arg(self):
+        """--session flag is parsed into CliArgs."""
+        from nless.cli import parse_args
+
+        cli = parse_args(["--session", "my-session", "file.csv"])
+        assert cli.session == "my-session"
+        assert cli.filename == "file.csv"
+
+        cli2 = parse_args(["-S", "other", "data.csv"])
+        assert cli2.session == "other"
+
+        cli3 = parse_args(["file.csv"])
+        assert cli3.session is None
+
+    @pytest.mark.asyncio
+    async def test_session_restore_unique_columns(
+        self, cli_args, tmp_path, monkeypatch
+    ):
+        """Session restore with composite unique keys adds count column."""
+        import nless.session as session_mod
+        from nless.session import apply_buffer_state, capture_buffer_state
+
+        sessions_dir = str(tmp_path / "sessions") + "/"
+        monkeypatch.setattr(session_mod, "SESSIONS_DIR", sessions_dir)
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Alice,30,NYC"])
+            await _wait(pilot, app)
+
+            # Mark 'name' as unique key
+            from nless.operations import handle_mark_unique
+
+            handle_mark_unique(buf, "name")
+            await _wait(pilot, app)
+
+            # Capture state
+            state = capture_buffer_state(buf)
+            assert state.unique_column_names == ["name"]
+            count_col = [c for c in state.columns if c.name == "count"]
+            assert len(count_col) == 1, "Count column should be in captured state"
+
+        # Restore into a fresh buffer
+        app2 = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app2.run_test(size=(120, 40)) as pilot2:
+            buf2 = app2.buffers[0]
+            _load(buf2, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Alice,30,NYC"])
+            await _wait(pilot2, app2)
+
+            apply_buffer_state(buf2, state)
+            await _wait(pilot2, app2)
+
+            # Verify count column was added
+            col_names = [c.name for c in buf2.current_columns]
+            assert "count" in col_names, f"Count column missing: {col_names}"
+            assert buf2.unique_column_names == {"name"}
+
+            # Verify dedup worked — should have 2 unique rows
+            assert len(buf2.displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_capture_session_file_group_absolute_path(self, tmp_path):
+        """_capture_session produces absolute path for file-opened groups."""
+        # Create a temporary CSV file
+        csv_file = tmp_path / "data.csv"
+        csv_file.write_text("name,age\nAlice,30\nBob,25\n")
+
+        from nless.input import StdinLineStream
+        from nless.types import CliArgs as CliArgsType
+
+        file_cli = CliArgsType(
+            delimiter=None,
+            filters=[],
+            unique_keys=set(),
+            sort_by=None,
+            filename=str(csv_file),
+        )
+        stream = StdinLineStream(file_cli, str(csv_file), None)
+        app = NlessApp(cli_args=file_cli, starting_stream=stream)
+
+        import threading
+
+        t = threading.Thread(target=stream.run, daemon=True)
+        t.start()
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait(pilot, app)
+
+            session = app._capture_session("path-test")
+            ds = session.groups[0].data_source
+
+            import os
+
+            assert ds is not None, "data_source should not be None"
+            assert os.path.isabs(ds), f"data_source should be absolute, got: {ds}"
+            assert ds == str(csv_file), f"Expected {csv_file}, got {ds}"
+
+    @pytest.mark.asyncio
+    async def test_capture_session_command_group_prefix(self, cli_args):
+        """_capture_session preserves ⏵ prefix for command groups."""
+        from nless.input import ShellCommandLineStream
+        from nless.buffer import NlessBuffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["col1,col2", "a,b"])
+            await _wait(pilot, app)
+
+            # Simulate adding a command group
+            line_stream = ShellCommandLineStream("echo hello")
+            new_buf = NlessBuffer(
+                pane_id=app._get_new_pane_id(),
+                cli_args=cli_args,
+                line_stream=line_stream,
+            )
+            await app.add_group("⏵ echo hello", new_buf, stream=line_stream)
+            line_stream.start()
+            await _wait(pilot, app)
+
+            session = app._capture_session("cmd-test")
+            assert len(session.groups) == 2
+            cmd_ds = session.groups[1].data_source
+            assert cmd_ds == "⏵ echo hello", f"Expected '⏵ echo hello', got: {cmd_ds}"

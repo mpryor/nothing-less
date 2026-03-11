@@ -167,6 +167,12 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
+        "Sessions",
+        [
+            ("app.session_menu", "S", "Save, load, or delete sessions"),
+        ],
+    ),
+    (
         "Help",
         [
             ("app.help", "?", "Show help"),

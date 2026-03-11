@@ -12,7 +12,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from .dataprocessing import strip_markup
+from .dataprocessing import highlight_regex_patterns, strip_markup
 from .delimiter import split_line
 from .operations import handle_mark_unique
 from .types import MetadataColumn, RowLengthMismatchError
@@ -173,11 +173,12 @@ class StreamingMixin:
             data_table.add_columns([str(p) for p in parts])
 
             # For non-special delimiters, first line is the header
-            if (
+            header_consumed = (
                 self.delimiter != "raw"
                 and not isinstance(self.delimiter, re.Pattern)
                 and self.delimiter != "json"
-            ):
+            )
+            if header_consumed:
                 log_lines = log_lines[1:]
 
             if self.unique_column_names:
@@ -194,6 +195,25 @@ class StreamingMixin:
 
             if self._cli_args and self._cli_args.time_window:
                 self._apply_initial_time_window(self._cli_args.time_window)
+
+            if self._pending_session_state is not None:
+                from .session import apply_buffer_state
+
+                apply_buffer_state(self, self._pending_session_state)
+                self._pending_session_state = None
+                # apply_buffer_state already called _deferred_update_table.
+                # Just add remaining lines to raw_rows and let the deferred
+                # rebuild display everything — the incremental path below
+                # would double-add rows that the rebuild also covers.
+                now = time.time()
+                batch_timestamps = [now] * len(log_lines)
+                filtered, filtered_timestamps = self._filter_lines(
+                    log_lines, batch_timestamps
+                )
+                self.raw_rows.extend(filtered)
+                self._arrival_timestamps.extend(filtered_timestamps)
+                self._needs_deferred_update = True
+                return
 
         now = time.time()
         batch_timestamps = [now] * len(log_lines)
@@ -430,6 +450,11 @@ class StreamingMixin:
         else:
             styled = new_rows
 
+        if self.regex_highlights:
+            styled = highlight_regex_patterns(
+                styled, self.regex_highlights, data_table.fixed_columns
+            )
+
         # Highlight new streaming rows green (skip initial load)
         if highlight and self.displayed_rows:
             styled = [[self._highlight_markup(c) for c in row] for row in styled]
@@ -473,6 +498,11 @@ class StreamingMixin:
         cells = self._highlight_search_matches(
             [cells], data_table.fixed_columns, row_offset=new_index
         )[0]
+
+        if self.regex_highlights:
+            cells = highlight_regex_patterns(
+                [cells], self.regex_highlights, data_table.fixed_columns
+            )[0]
 
         # Highlight new/updated rows green (dedup updates already have green from _handle_dedup_for_line)
         if not is_dedup_update and self.displayed_rows:

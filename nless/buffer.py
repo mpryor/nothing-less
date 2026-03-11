@@ -29,6 +29,7 @@ from .dataprocessing import (
     coerce_sort_key,
     coerce_to_numeric,
     find_sorted_insert_index,
+    highlight_regex_patterns,
     matches_all_filters,
     strip_markup,
     update_dedup_indices_after_insertion,
@@ -211,6 +212,14 @@ class NlessBuffer(
         # Back pressure tracking
         self._bp_timer = None
         self._bp_behind: bool = False
+
+        # User-defined regex highlights: list of (compiled_pattern, color)
+        self.regex_highlights: list[tuple[re.Pattern, str]] = []
+
+        # Deferred session state to apply once columns are parsed
+        self._pending_session_state = None
+        # Deferred cursor position from session restore
+        self._pending_cursor_position: tuple[int, int] | None = None
 
         # Chain-delay for coalescing deferred rebuilds during streaming
         self._chain_delay: float = self._CHAIN_DELAY_INITIAL
@@ -446,6 +455,11 @@ class NlessBuffer(
 
     def on_mount(self) -> None:
         self.mounted = True
+        if self._pending_session_state is not None and self.first_row_parsed:
+            from .session import apply_buffer_state
+
+            apply_buffer_state(self, self._pending_session_state)
+            self._pending_session_state = None
         if self._loading_reason:
             self._start_spinner()
         if not self._initial_load_done:
@@ -965,9 +979,12 @@ class NlessBuffer(
             "Deduplicating",
             "Filtering",
             "Pivoting",
+            "Highlighting",
         )
         if not any(reason.startswith(p) for p in _CACHE_SAFE):
             self._parsed_rows = None
+            self._cached_col_widths = None
+        elif reason.startswith("Highlighting"):
             self._cached_col_widths = None
         self._start_spinner()
         self._update_status_bar()
@@ -978,6 +995,12 @@ class NlessBuffer(
         cursor_y = data_table.cursor_row
         scroll_x = data_table.scroll_x
         scroll_y = data_table.scroll_y
+
+        # Override with session-saved cursor position if pending.
+        # Don't clear it here — clear in _apply_to_widgets after successful
+        # restore, so it survives superseded updates during session load.
+        if self._pending_cursor_position is not None:
+            cursor_y, cursor_x = self._pending_cursor_position
 
         def _process_data():
             """Pure-data work — no widget access."""
@@ -1039,6 +1062,12 @@ class NlessBuffer(
                     aligned_rows, fixed_columns
                 )
 
+                # Apply user-defined regex highlights
+                if self.regex_highlights:
+                    styled_rows = highlight_regex_patterns(
+                        styled_rows, self.regex_highlights, fixed_columns
+                    )
+
                 # Highlight rows affected by newly streamed lines
                 green_lines = self._green_lines
                 if green_lines and self.unique_column_names:
@@ -1058,15 +1087,17 @@ class NlessBuffer(
                 self._last_flushed_idx = len(self.raw_rows)
                 # Snapshot shared state for width computation outside the lock
                 cached_widths = self._cached_col_widths
-                has_search = bool(self.search_term)
+                has_markup_changes = bool(self.search_term) or bool(
+                    self.regex_highlights
+                )
 
             # Precompute column widths on the bg thread so the main thread
             # can use add_rows_precomputed (just extends + refresh).
-            # Reuse cached widths on sort-only rebuilds (no search → no
-            # markup changes → widths are stable).
+            # Reuse cached widths on sort-only rebuilds (no search/highlights
+            # → no markup changes → widths are stable).
             if (
                 cached_widths is not None
-                and not has_search
+                and not has_markup_changes
                 and len(cached_widths) == len(column_labels)
             ):
                 col_widths = cached_widths
@@ -1148,6 +1179,7 @@ class NlessBuffer(
                 self._update_status_bar()
                 if restore_position:
                     self._restore_position(dt, cursor_x, cursor_y, scroll_x, scroll_y)
+                    self._pending_cursor_position = None
                 if loaded_reason:
                     row_count = len(self.displayed_rows)
                     if row_count > 0:
@@ -1278,6 +1310,10 @@ class NlessBuffer(
         styled_rows = self._highlight_search_matches(
             aligned_rows, data_table.fixed_columns
         )
+        if self.regex_highlights:
+            styled_rows = highlight_regex_patterns(
+                styled_rows, self.regex_highlights, data_table.fixed_columns
+            )
 
         if rows_with_inconsistent_length:
             n_inconsistent = len(rows_with_inconsistent_length)
@@ -1347,6 +1383,7 @@ class NlessBuffer(
             buffered_rows=len(self.raw_rows),
             pipe_output=getattr(self.app, "pipe_output", False),
             pipe_row_count=len(self.displayed_rows),
+            session_name=getattr(self.app, "_active_session_name", None),
         )
         self.app.query_one("#status_bar", Static).update(text)
 

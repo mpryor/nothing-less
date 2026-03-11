@@ -103,6 +103,12 @@ def parse_args(argv=None) -> CliArgs:
         help="Output format for pipe/batch output (default: csv)",
         default="csv",
     )
+    parser.add_argument(
+        "--session",
+        "-S",
+        help="Load a saved session by name",
+        default=None,
+    )
 
     args = parser.parse_args(argv)
 
@@ -164,6 +170,7 @@ def parse_args(argv=None) -> CliArgs:
         raw=args.raw,
         no_tui=args.no_tui,
         tui=args.tui,
+        session=args.session,
         output_format=args.output_format,
     )
     cli_args.filename = args.filename

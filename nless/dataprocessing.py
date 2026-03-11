@@ -201,6 +201,37 @@ def highlight_search_matches(
     return result, new_matches
 
 
+def highlight_regex_patterns(
+    rows: list[list[str]],
+    patterns: list[tuple[re.Pattern, str]],
+    fixed_columns: int,
+) -> list[list[str]]:
+    """Apply multiple regex highlights with distinct colors.
+
+    Each entry in *patterns* is a ``(compiled_regex, color)`` pair.
+    Matches are wrapped in Rich markup tags with the corresponding color.
+    """
+    if not patterns:
+        return rows
+    result = []
+    for cells in rows:
+        highlighted_cells = list(cells)
+        for col_idx, cell in enumerate(cells):
+            if col_idx < fixed_columns:
+                continue
+            for pattern, color in patterns:
+                if pattern.search(str(cell)):
+                    open_tag = f"[{color}]"
+                    close_tag = f"[/{color}]"
+                    highlighted_cells[col_idx] = re.sub(
+                        pattern,
+                        lambda m, ot=open_tag, ct=close_tag: f"{ot}{m.group(0)}{ct}",
+                        highlighted_cells[col_idx],
+                    )
+        result.append(highlighted_cells)
+    return result
+
+
 def matches_all_filters(
     cells: list[str],
     filters: list[Filter],

@@ -7,6 +7,7 @@ from nless.dataprocessing import (
     coerce_sort_key,
     coerce_to_numeric,
     find_sorted_insert_index,
+    highlight_regex_patterns,
     highlight_search_matches,
     matches_all_filters,
     strip_markup,
@@ -230,6 +231,55 @@ class TestHighlightSearchMatches:
         )
         assert "[#fff on #ff9e64]hello[/#fff on #ff9e64]" in result[0][0]
         assert matches == [(0, 0)]
+
+
+class TestHighlightRegexPatterns:
+    def test_empty_patterns_returns_original(self):
+        rows = [["a", "b"], ["c", "d"]]
+        result = highlight_regex_patterns(rows, [], 0)
+        assert result is rows  # No copy when empty
+
+    def test_single_pattern(self):
+        rows = [["hello", "world"]]
+        pattern = re.compile("hello")
+        result = highlight_regex_patterns(rows, [(pattern, "#ff5555")], 0)
+        assert result[0][0] == "[#ff5555]hello[/#ff5555]"
+        assert result[0][1] == "world"
+
+    def test_multiple_patterns(self):
+        rows = [["hello world", "foo"]]
+        patterns = [
+            (re.compile("hello"), "#ff5555"),
+            (re.compile("world"), "#ffb86c"),
+        ]
+        result = highlight_regex_patterns(rows, patterns, 0)
+        assert "[#ff5555]hello[/#ff5555]" in result[0][0]
+        assert "[#ffb86c]world[/#ffb86c]" in result[0][0]
+
+    def test_skips_fixed_columns(self):
+        rows = [["hello", "world"]]
+        pattern = re.compile("hello")
+        result = highlight_regex_patterns(rows, [(pattern, "#ff5555")], 1)
+        assert result[0][0] == "hello"  # Fixed column not highlighted
+
+    def test_multiple_rows(self):
+        rows = [["ERROR foo", "bar"], ["baz", "ERROR qux"]]
+        pattern = re.compile("ERROR")
+        result = highlight_regex_patterns(rows, [(pattern, "#ff5555")], 0)
+        assert "[#ff5555]ERROR[/#ff5555]" in result[0][0]
+        assert "[#ff5555]ERROR[/#ff5555]" in result[1][1]
+
+    def test_no_match_unchanged(self):
+        rows = [["abc", "def"]]
+        pattern = re.compile("xyz")
+        result = highlight_regex_patterns(rows, [(pattern, "#ff5555")], 0)
+        assert result[0] == ["abc", "def"]
+
+    def test_partial_match(self):
+        rows = [["foobar", "baz"]]
+        pattern = re.compile("bar")
+        result = highlight_regex_patterns(rows, [(pattern, "#ff5555")], 0)
+        assert result[0][0] == "foo[#ff5555]bar[/#ff5555]"
 
 
 class TestMatchesAllFilters:
