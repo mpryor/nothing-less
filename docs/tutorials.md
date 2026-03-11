@@ -957,7 +957,7 @@ This skips the prompt and loads the session directly.
 
 ## 18. Putting It All Together
 
-This tutorial ties together regex parsing, filtering, pivoting, unparsed log handling, and export into a single investigation workflow. Create a file called `app.log`:
+This tutorial ties together regex parsing, filtering, pivoting, excluded lines, and export into a single investigation workflow. Create a file called `app.log`:
 
 ```
 2025-03-01 08:00:01 INFO  server started on port 8080
