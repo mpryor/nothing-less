@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.0 (2026-03-11)
+
+### Feat
+
+- menu UX — icons, labels, and separators
+- session save/restore for multi-group sessions
+- highlight menu enhancements — recolor, match counts, duplicate prevention
+- column aggregations — press `a` to show count, distinct, sum, avg, min, max
+- infer output format from file extension in W (write to file)
+- explicit pipe-and-exit with Q, --tui flag, and docs update
+- improved pipe support — interactive pipe mode, batch mode, and output formats (#35)
+- column pinning — press m to freeze columns to the left during horizontal scrolling
+- scan for matching lines when manually switching delimiter
+- prompt to save custom log format before applying delimiter
+
+### Fix
+
+- column unpin breaking render positions for < and > movement
+- use full terminal size when stdout is piped
+- preserve preamble lines skipped by find_header_index on delimiter switch
+- column selection by cursor index after filtering + splitting
+
 ## 1.7.0 (2026-03-10)
 
 ### Feat
