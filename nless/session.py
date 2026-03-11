@@ -6,7 +6,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -25,6 +25,16 @@ class SessionColumn:
     render_position: int
     hidden: bool
     pinned: bool
+
+
+@dataclass
+class SessionComputedColumn:
+    name: str
+    col_ref: str  # source column name
+    col_ref_index: int  # index within split result (-1 for JSON)
+    json_ref: str  # JSON path (empty string if not JSON)
+    delimiter: str | None = None  # string delimiter
+    delimiter_regex: str | None = None  # regex pattern string
 
 
 @dataclass
@@ -55,6 +65,7 @@ class SessionBufferState:
     time_window: float | None
     rolling_time_window: bool
     is_tailing: bool
+    computed_columns: list[SessionComputedColumn] = field(default_factory=list)
     tab_name: str = ""  # display name in the tab bar
     search_term: str | None = None
     cursor_row: int = 0
@@ -115,6 +126,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
 
     # Columns
     columns = []
+    computed_columns = []
     for col in buf.current_columns:
         columns.append(
             SessionColumn(
@@ -124,6 +136,23 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                 pinned=col.pinned,
             )
         )
+        if col.computed and (col.col_ref or col.json_ref):
+            cc_delim = None
+            cc_delim_regex = None
+            if isinstance(col.delimiter, re.Pattern):
+                cc_delim_regex = col.delimiter.pattern
+            elif isinstance(col.delimiter, str):
+                cc_delim = col.delimiter
+            computed_columns.append(
+                SessionComputedColumn(
+                    name=col.name,
+                    col_ref=col.col_ref,
+                    col_ref_index=col.col_ref_index,
+                    json_ref=col.json_ref,
+                    delimiter=cc_delim,
+                    delimiter_regex=cc_delim_regex,
+                )
+            )
 
     # Highlights
     highlights = []
@@ -150,6 +179,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
         filters=filters,
         columns=columns,
         unique_column_names=sorted(buf.unique_column_names),
+        computed_columns=computed_columns,
         highlights=highlights,
         time_window=buf.time_window,
         rolling_time_window=buf.rolling_time_window,
@@ -196,6 +226,54 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
             buf.switch_delimiter(delimiter_input)
         if state.delimiter_name:
             buf.delimiter_name = state.delimiter_name
+
+    # Replay computed columns (column splits & JSON extractions)
+    if state.computed_columns:
+        from .types import Column, MetadataColumn
+
+        existing_names = {c.name for c in buf.current_columns}
+        # Insert before ARRIVAL metadata so it stays last (mirrors _add_computed_columns)
+        arrival_col = next(
+            (c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value),
+            None,
+        )
+        base_position = (
+            arrival_col.data_position if arrival_col else len(buf.current_columns)
+        )
+        added = 0
+        for sc in state.computed_columns:
+            if sc.name in existing_names:
+                continue
+            if sc.col_ref and sc.col_ref not in existing_names:
+                continue
+            delim = (
+                re.compile(sc.delimiter_regex) if sc.delimiter_regex else sc.delimiter
+            )
+            buf.current_columns.append(
+                Column(
+                    name=sc.name,
+                    labels=set(),
+                    render_position=base_position + added,
+                    data_position=base_position + added,
+                    hidden=False,
+                    computed=True,
+                    delimiter=delim,
+                    col_ref=sc.col_ref,
+                    col_ref_index=sc.col_ref_index,
+                    json_ref=sc.json_ref,
+                )
+            )
+            existing_names.add(sc.name)
+            added += 1
+        # Push ARRIVAL to the end
+        if arrival_col and added > 0:
+            arrival_col.data_position = base_position + added
+            arrival_col.render_position = (
+                max(c.render_position for c in buf.current_columns) + 1
+            )
+        # Switch out of raw mode so DataTable renders the computed columns
+        if buf.raw_mode:
+            buf.raw_mode = False
 
     # Sort
     buf.sort_column = state.sort_column
@@ -274,9 +352,10 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
     if state.cursor_row or state.cursor_column:
         buf._pending_cursor_position = (state.cursor_row, state.cursor_column)
 
-    # Rebuild caches and re-render
+    # Rebuild caches — callers are responsible for triggering re-render
+    # via _deferred_update_table (add_logs does this via _needs_deferred_update;
+    # main-thread callers must call it explicitly).
     buf._rebuild_column_caches()
-    buf._deferred_update_table(reason="Session loaded")
 
 
 # ── Serialization ────────────────────────────────────────────────────
@@ -317,6 +396,10 @@ def _deserialize_session(data: dict) -> Session:
                         for c in b.get("columns", [])
                     ],
                     unique_column_names=b.get("unique_column_names", []),
+                    computed_columns=[
+                        SessionComputedColumn(**cc)
+                        for cc in b.get("computed_columns", [])
+                    ],
                     highlights=[
                         SessionHighlight(pattern=h["pattern"], color=h["color"])
                         for h in b.get("highlights", [])

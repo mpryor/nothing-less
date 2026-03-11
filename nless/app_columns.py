@@ -83,6 +83,8 @@ class ColumnOpsMixin:
                 )
             old_row = data_table.cursor_row
 
+        if curr_buffer.raw_mode:
+            curr_buffer.raw_mode = False
         curr_buffer._deferred_update_table(
             restore_position=False,
             callback=lambda: data_table.move_cursor(
@@ -344,6 +346,8 @@ class ColumnOpsMixin:
                         )
 
         if should_update:
+            if current_buffer.raw_mode:
+                current_buffer.raw_mode = False
             current_buffer._deferred_update_table(reason="Splitting column")
 
     def action_toggle_arrival(self: NlessApp) -> None:

@@ -460,6 +460,7 @@ class NlessBuffer(
 
             apply_buffer_state(self, self._pending_session_state)
             self._pending_session_state = None
+            self._deferred_update_table(reason="Session loaded")
         if self._loading_reason:
             self._start_spinner()
         if not self._initial_load_done:
