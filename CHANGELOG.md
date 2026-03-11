@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0 (2026-03-10)
+
+### Feat
+
+- prompt to save custom log format before applying delimiter
+
 ## 1.6.0 (2026-03-10)
 
 ### Feat
