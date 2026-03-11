@@ -3714,3 +3714,209 @@ class TestSessionIntegration:
         buf_state = restored.groups[0].buffers[0]
         assert buf_state.computed_columns == []
         assert buf_state.delimiter == ","
+
+
+class TestViews:
+    """Tests for saved views (save, load, apply, rename, delete)."""
+
+    def test_save_and_load_views(self, tmp_path, monkeypatch):
+        """Save a view, load all views, verify name and state."""
+        import nless.session as session_mod
+        from nless.session import (
+            View,
+            SessionBufferState,
+            SessionFilter,
+            save_view,
+            load_views,
+        )
+
+        views_dir = str(tmp_path / "views") + "/"
+        monkeypatch.setattr(session_mod, "VIEWS_DIR", views_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name="csv",
+            raw_mode=False,
+            sort_column="age",
+            sort_reverse=True,
+            filters=[SessionFilter(column="name", pattern="Alice", exclude=False)],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        view = View(name="my-view", state=state)
+        save_view(view)
+
+        views = load_views()
+        assert len(views) == 1
+        assert views[0].name == "my-view"
+        assert views[0].state.delimiter == ","
+        assert views[0].state.sort_column == "age"
+        assert views[0].state.sort_reverse is True
+        assert len(views[0].state.filters) == 1
+        assert views[0].state.filters[0].pattern == "Alice"
+
+    def test_rename_view(self, tmp_path, monkeypatch):
+        """Rename a view and verify old file removed, new file exists."""
+        import nless.session as session_mod
+        from nless.session import (
+            View,
+            SessionBufferState,
+            save_view,
+            load_views,
+            rename_view,
+        )
+
+        views_dir = str(tmp_path / "views") + "/"
+        monkeypatch.setattr(session_mod, "VIEWS_DIR", views_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name=None,
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        save_view(View(name="old-name", state=state))
+        rename_view("old-name", "new-name")
+
+        views = load_views()
+        assert len(views) == 1
+        assert views[0].name == "new-name"
+
+    def test_delete_view(self, tmp_path, monkeypatch):
+        """Delete a view and verify it's gone."""
+        import nless.session as session_mod
+        from nless.session import (
+            View,
+            SessionBufferState,
+            save_view,
+            load_views,
+            delete_view,
+        )
+
+        views_dir = str(tmp_path / "views") + "/"
+        monkeypatch.setattr(session_mod, "VIEWS_DIR", views_dir)
+
+        state = SessionBufferState(
+            delimiter=",",
+            delimiter_regex=None,
+            delimiter_name=None,
+            raw_mode=False,
+            sort_column=None,
+            sort_reverse=False,
+            filters=[],
+            columns=[],
+            unique_column_names=[],
+            highlights=[],
+            time_window=None,
+            rolling_time_window=False,
+            is_tailing=False,
+        )
+        save_view(View(name="doomed", state=state))
+        assert len(load_views()) == 1
+
+        delete_view("doomed")
+        assert len(load_views()) == 0
+
+    @pytest.mark.asyncio
+    async def test_view_roundtrip_apply(self, cli_args, tmp_path, monkeypatch):
+        """Capture view → save → load → apply to fresh buffer → verify state."""
+        import nless.session as session_mod
+        from nless.session import (
+            View,
+            apply_buffer_state,
+            capture_view_state,
+            save_view,
+            load_views,
+        )
+
+        views_dir = str(tmp_path / "views") + "/"
+        monkeypatch.setattr(session_mod, "VIEWS_DIR", views_dir)
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF", "Carol,35,LA"])
+            await _wait(pilot, app)
+
+            # Set up some state
+            buf.sort_column = "age"
+            buf.sort_reverse = True
+
+            # Capture and save
+            state = capture_view_state(buf)
+            assert state.cursor_row == 0  # ephemeral fields zeroed
+            assert state.cursor_column == 0
+            assert state.tab_name == ""
+            view = View(name="test-roundtrip", state=state)
+            save_view(view)
+
+        # Load and apply to a fresh buffer
+        views = load_views()
+        assert len(views) == 1
+        assert views[0].name == "test-roundtrip"
+
+        app2 = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app2.run_test(size=(120, 40)) as pilot2:
+            buf2 = app2.buffers[0]
+            _load(buf2, ["name,age,city", "Dave,40,CHI", "Eve,28,BOS", "Frank,33,SEA"])
+            await _wait(pilot2, app2)
+
+            apply_buffer_state(buf2, views[0].state)
+            buf2._deferred_update_table(reason="View loaded")
+            await _wait(pilot2, app2)
+
+            assert buf2.sort_column == "age"
+            assert buf2.sort_reverse is True
+
+    def test_backward_compat_old_view_files(self, tmp_path, monkeypatch):
+        """Old view files without created_at/updated_at still load."""
+        import json
+        import os
+
+        import nless.session as session_mod
+        from nless.session import load_views
+
+        views_dir = str(tmp_path / "views") + "/"
+        monkeypatch.setattr(session_mod, "VIEWS_DIR", views_dir)
+        os.makedirs(views_dir, exist_ok=True)
+
+        # Minimal view JSON without timestamps
+        data = {
+            "name": "legacy-view",
+            "state": {
+                "delimiter": ",",
+                "delimiter_regex": None,
+                "delimiter_name": None,
+                "raw_mode": False,
+                "sort_column": None,
+                "sort_reverse": False,
+                "filters": [],
+                "columns": [],
+                "unique_column_names": [],
+                "highlights": [],
+                "time_window": None,
+                "rolling_time_window": False,
+                "is_tailing": False,
+            },
+        }
+        with open(os.path.join(views_dir, "legacy-view.json"), "w") as f:
+            json.dump(data, f)
+
+        views = load_views()
+        assert len(views) == 1
+        assert views[0].name == "legacy-view"
+        assert views[0].state.delimiter == ","

@@ -137,11 +137,12 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `T` | Open the theme selector to switch color schemes |
 | `K` | Open the keymap selector to switch keybinding presets |
 
-## Sessions
+## Sessions & Views
 
 | Key | Action |
 |-----|--------|
-| `S` | Open the session menu — save, load, rename, or delete sessions. When opening a file that matches a saved session, nless prompts to restore it. |
+| `S` | Open the session menu — save, load, rename, or delete sessions. Sessions capture your entire workspace (all buffer groups and their state) tied to a specific data source. When opening a file that matches a saved session, nless prompts to restore it. |
+| `v` | Open the view menu — save, load, rename, or delete views. Views capture a single buffer's analysis settings (filters, sort, columns, highlights) and can be applied to any dataset. Undo restores the buffer to its previous state. |
 
 ## Help
 

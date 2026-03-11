@@ -9,6 +9,7 @@ nless stores configuration and history files in `~/.config/nless/`.
 ├── config.json          # User preferences
 ├── history.json         # Input history (managed automatically)
 ├── sessions/            # Saved sessions (managed via S menu)
+├── views/               # Saved views (managed via v menu)
 ├── log_formats.json     # Custom log format patterns for P auto-detection
 ├── themes/              # Custom theme files
 │   └── my-theme.json
@@ -362,7 +363,7 @@ nless ships with 19 built-in log format patterns that `P` can detect:
 
 **Location:** `~/.config/nless/sessions/`
 
-Sessions capture your full workspace state — all buffer groups, their filters, sort order, column visibility, highlights, delimiter, time windows, and more — so you can restore a view instantly. Each session is stored as an individual JSON file (e.g. `my-session.json`).
+Sessions capture your full workspace state — all buffer groups, their filters, sort order, column visibility, highlights, delimiter, time windows, and more — so you can pick up exactly where you left off. Each session is stored as an individual JSON file (e.g. `my-session.json`). Sessions are tied to a data source — when you reopen the same file, nless can auto-restore the matching session.
 
 **Managed via the `S` menu** — save, load, or delete sessions interactively. You don't need to edit these files manually.
 
@@ -388,6 +389,41 @@ You can load a session directly from the CLI:
 nless --session my-session file.csv
 nless -S my-session file.csv
 ```
+
+---
+
+## Views
+
+**Location:** `~/.config/nless/views/`
+
+Views capture a **single buffer's analysis settings** — filters, sort order, column visibility, highlights, computed columns, and more — as a reusable template. Unlike sessions, views are **not tied to a specific data source**. You can save a view while analyzing one file and apply it to a completely different dataset.
+
+This makes views ideal for reusable analysis patterns: "show me only errors sorted by timestamp", "hide all columns except name and status", etc.
+
+**Managed via the `v` menu** — save, load, rename, or delete views interactively.
+
+Each view stores:
+
+| Field | Description |
+|-------|-------------|
+| `name` | View name (user-provided) |
+| `state` | Single buffer state: delimiter, sort, filters, columns, highlights, computed columns, unique keys, time window |
+| `created_at` | ISO 8601 timestamp |
+| `updated_at` | ISO 8601 timestamp (auto-updated on save) |
+
+Views are sorted by most recently updated first.
+
+**Undo:** When you load a view, nless snapshots the buffer's current state. Select **Undo last view** from the `v` menu to restore it — including any data that was compacted by the view's filters.
+
+### Sessions vs. Views
+
+| | Sessions (`S`) | Views (`v`) |
+|---|---|---|
+| **Scope** | Entire workspace (all buffer groups) | Single buffer |
+| **Data source** | Tied to a specific file or command | Portable across any data |
+| **Auto-restore** | Prompted when reopening a matching file | Never — always manual |
+| **Use case** | "Pick up where I left off on this file" | "Apply this analysis pattern to any data" |
+| **Undo** | No | Yes — restores previous buffer state |
 
 ---
 

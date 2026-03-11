@@ -216,6 +216,11 @@ class NlessBuffer(
         # User-defined regex highlights: list of (compiled_pattern, color)
         self.regex_highlights: list[tuple[re.Pattern, str]] = []
 
+        # Snapshot of buffer state before a view was applied (for undo)
+        self._pre_view_state = None
+        self._pre_view_raw_rows: list[str] | None = None
+        self._pre_view_timestamps: list[float] | None = None
+
         # Deferred session state to apply once columns are parsed
         self._pending_session_state = None
         # Deferred cursor position from session restore

@@ -168,9 +168,10 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
-        "Sessions",
+        "Sessions & Views",
         [
             ("app.session_menu", "S", "Save, load, or delete sessions"),
+            ("app.view_menu", "v", "Save, load, or delete views"),
         ],
     ),
     (

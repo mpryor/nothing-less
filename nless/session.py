@@ -8,12 +8,13 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
 
 SESSIONS_DIR = "~/.config/nless/sessions/"
+VIEWS_DIR = "~/.config/nless/views/"
 
 
 # ── Data model ────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ class SessionFilter:
     column: str | None
     pattern: str  # regex pattern string
     exclude: bool
+    flags: int = 0  # re flags (e.g. re.IGNORECASE)
 
 
 @dataclass
@@ -100,6 +102,20 @@ class Session:
         return [g.data_source for g in self.groups if g.data_source]
 
 
+@dataclass
+class View:
+    name: str
+    state: SessionBufferState
+    created_at: str = ""
+    updated_at: str = ""
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+
 # ── Capture / Apply ──────────────────────────────────────────────────
 
 
@@ -121,6 +137,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                 column=f.column,
                 pattern=f.pattern.pattern,
                 exclude=f.exclude,
+                flags=f.pattern.flags,
             )
         )
 
@@ -213,9 +230,16 @@ def _delimiters_match(buf: NlessBuffer, state: SessionBufferState) -> bool:
     return buf.delimiter is None
 
 
-def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
-    """Apply saved session state to a buffer."""
+def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
+    """Apply saved session state to a buffer.
+
+    Returns a list of human-readable descriptions of settings that were
+    skipped (e.g. because the referenced column doesn't exist in the
+    current data).
+    """
     from .types import Filter
+
+    skipped: list[str] = []
 
     # Switch delimiter if it differs — this re-parses all rows
     if not _delimiters_match(buf, state):
@@ -245,6 +269,9 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
             if sc.name in existing_names:
                 continue
             if sc.col_ref and sc.col_ref not in existing_names:
+                skipped.append(
+                    f"computed column '{sc.name}' (source '{sc.col_ref}' not found)"
+                )
                 continue
             delim = (
                 re.compile(sc.delimiter_regex) if sc.delimiter_regex else sc.delimiter
@@ -275,22 +302,31 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
         if buf.raw_mode:
             buf.raw_mode = False
 
-    # Sort
-    buf.sort_column = state.sort_column
-    buf.sort_reverse = state.sort_reverse
-
     # Filters
-    buf.current_filters = [
-        Filter(
-            column=f.column,
-            pattern=re.compile(f.pattern),
-            exclude=f.exclude,
+    filters_to_apply = []
+    for f in state.filters:
+        if f.column:
+            col_names = {c.name for c in buf.current_columns}
+            if f.column not in col_names:
+                skipped.append(f"filter on '{f.column}'")
+        filters_to_apply.append(
+            Filter(
+                column=f.column,
+                pattern=re.compile(f.pattern, f.flags),
+                exclude=f.exclude,
+            )
         )
-        for f in state.filters
-    ]
+    buf.current_filters = filters_to_apply
 
     # Unique columns — must come before column settings so the count
     # column exists when we apply saved render_position values.
+    if state.unique_column_names:
+        col_names = {c.name for c in buf.current_columns}
+        missing_unique = [
+            name for name in state.unique_column_names if name not in col_names
+        ]
+        for name in missing_unique:
+            skipped.append(f"unique on '{name}'")
     buf.unique_column_names = set(state.unique_column_names)
     if buf.unique_column_names:
         from .dataprocessing import strip_markup
@@ -322,8 +358,26 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
                 ),
             )
 
+    # Sort — applied after unique columns so metadata columns (e.g. _count) exist
+    if state.sort_column:
+        col_names = {c.name for c in buf.current_columns}
+        if state.sort_column in col_names:
+            buf.sort_column = state.sort_column
+            buf.sort_reverse = state.sort_reverse
+        else:
+            skipped.append(f"sort (column '{state.sort_column}' not found)")
+    else:
+        buf.sort_column = state.sort_column
+        buf.sort_reverse = state.sort_reverse
+
     # Columns — apply visibility, pinned, and order by matching name
     col_settings = {c.name: c for c in state.columns}
+    current_col_names = {c.name for c in buf.current_columns}
+    unmatched_col_count = sum(
+        1 for name in col_settings if name not in current_col_names
+    )
+    if unmatched_col_count:
+        skipped.append(f"{unmatched_col_count} column setting(s)")
     for col in buf.current_columns:
         if col.name in col_settings:
             saved = col_settings[col.name]
@@ -357,8 +411,55 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> None:
     # main-thread callers must call it explicitly).
     buf._rebuild_column_caches()
 
+    return skipped
+
 
 # ── Serialization ────────────────────────────────────────────────────
+
+
+def _deserialize_buffer_state(b: dict) -> SessionBufferState:
+    """Deserialize a dict into a SessionBufferState."""
+    return SessionBufferState(
+        delimiter=b.get("delimiter"),
+        delimiter_regex=b.get("delimiter_regex"),
+        delimiter_name=b.get("delimiter_name"),
+        raw_mode=b.get("raw_mode", False),
+        sort_column=b.get("sort_column"),
+        sort_reverse=b.get("sort_reverse", False),
+        filters=[
+            SessionFilter(
+                column=f.get("column"),
+                pattern=f["pattern"],
+                exclude=f.get("exclude", False),
+                flags=f.get("flags", 0),
+            )
+            for f in b.get("filters", [])
+        ],
+        columns=[
+            SessionColumn(
+                name=c["name"],
+                render_position=c["render_position"],
+                hidden=c["hidden"],
+                pinned=c.get("pinned", False),
+            )
+            for c in b.get("columns", [])
+        ],
+        unique_column_names=b.get("unique_column_names", []),
+        computed_columns=[
+            SessionComputedColumn(**cc) for cc in b.get("computed_columns", [])
+        ],
+        highlights=[
+            SessionHighlight(pattern=h["pattern"], color=h["color"])
+            for h in b.get("highlights", [])
+        ],
+        time_window=b.get("time_window"),
+        rolling_time_window=b.get("rolling_time_window", False),
+        is_tailing=b.get("is_tailing", False),
+        tab_name=b.get("tab_name", ""),
+        search_term=b.get("search_term"),
+        cursor_row=b.get("cursor_row", 0),
+        cursor_column=b.get("cursor_column", 0),
+    )
 
 
 def _serialize_session(session: Session) -> dict:
@@ -368,51 +469,7 @@ def _serialize_session(session: Session) -> dict:
 def _deserialize_session(data: dict) -> Session:
     groups = []
     for g in data.get("groups", []):
-        buffers = []
-        for b in g.get("buffers", []):
-            buffers.append(
-                SessionBufferState(
-                    delimiter=b.get("delimiter"),
-                    delimiter_regex=b.get("delimiter_regex"),
-                    delimiter_name=b.get("delimiter_name"),
-                    raw_mode=b.get("raw_mode", False),
-                    sort_column=b.get("sort_column"),
-                    sort_reverse=b.get("sort_reverse", False),
-                    filters=[
-                        SessionFilter(
-                            column=f.get("column"),
-                            pattern=f["pattern"],
-                            exclude=f.get("exclude", False),
-                        )
-                        for f in b.get("filters", [])
-                    ],
-                    columns=[
-                        SessionColumn(
-                            name=c["name"],
-                            render_position=c["render_position"],
-                            hidden=c["hidden"],
-                            pinned=c.get("pinned", False),
-                        )
-                        for c in b.get("columns", [])
-                    ],
-                    unique_column_names=b.get("unique_column_names", []),
-                    computed_columns=[
-                        SessionComputedColumn(**cc)
-                        for cc in b.get("computed_columns", [])
-                    ],
-                    highlights=[
-                        SessionHighlight(pattern=h["pattern"], color=h["color"])
-                        for h in b.get("highlights", [])
-                    ],
-                    time_window=b.get("time_window"),
-                    rolling_time_window=b.get("rolling_time_window", False),
-                    is_tailing=b.get("is_tailing", False),
-                    tab_name=b.get("tab_name", ""),
-                    search_term=b.get("search_term"),
-                    cursor_row=b.get("cursor_row", 0),
-                    cursor_column=b.get("cursor_column", 0),
-                )
-            )
+        buffers = [_deserialize_buffer_state(b) for b in g.get("buffers", [])]
         groups.append(
             SessionGroup(
                 name=g["name"],
@@ -438,68 +495,121 @@ def _sanitize_filename(name: str) -> str:
     return name.replace("/", "_").replace("\\", "_").replace("\0", "_")
 
 
-def load_sessions() -> list[Session]:
-    """Load all sessions from individual files in SESSIONS_DIR."""
-    dir_path = os.path.expanduser(SESSIONS_DIR)
-    if not os.path.isdir(dir_path):
-        return []
-    sessions = []
-    import glob
+class JsonStore[T]:
+    """Atomic JSON file store for named, timestamped items."""
 
-    for filepath in sorted(glob.glob(os.path.join(dir_path, "*.json"))):
+    def __init__(
+        self,
+        get_directory: Callable[[], str],
+        serialize: Callable[[T], dict],
+        deserialize: Callable[[dict], T],
+    ):
+        self._get_directory = get_directory
+        self._serialize = serialize
+        self._deserialize = deserialize
+
+    def load_all(self) -> list[T]:
+        """Load all items from individual JSON files."""
+        dir_path = os.path.expanduser(self._get_directory())
+        if not os.path.isdir(dir_path):
+            return []
+        items = []
+        import glob
+
+        for filepath in sorted(glob.glob(os.path.join(dir_path, "*.json"))):
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                items.append(self._deserialize(data))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items
+
+    def save(self, item: T) -> None:
+        """Save an item to its own file (atomic write)."""
+        item.updated_at = datetime.now(timezone.utc).isoformat()
+        dir_path = os.path.expanduser(self._get_directory())
+        os.makedirs(dir_path, exist_ok=True)
+        filename = _sanitize_filename(item.name) + ".json"
+        target = os.path.join(dir_path, filename)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
         try:
-            with open(filepath) as f:
-                data = json.load(f)
-            sessions.append(_deserialize_session(data))
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            continue
-    # Sort by most recently updated first
-    sessions.sort(key=lambda s: s.updated_at, reverse=True)
-    return sessions
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._serialize(item), f, indent=2)
+            os.replace(tmp_path, target)
+        except BaseException:
+            os.unlink(tmp_path)
+            raise
+
+    def delete(self, name: str) -> None:
+        """Delete an item file by name."""
+        dir_path = os.path.expanduser(self._get_directory())
+        filename = _sanitize_filename(name) + ".json"
+        target = os.path.join(dir_path, filename)
+        if os.path.exists(target):
+            os.remove(target)
+
+    def rename(self, old_name: str, new_name: str) -> None:
+        """Rename an item (delete old file, save with new name)."""
+        for item in self.load_all():
+            if item.name == old_name:
+                self.delete(old_name)
+                item.name = new_name
+                self.save(item)
+                return
+
+    def load_by_name(self, name: str) -> T | None:
+        """Find an item by exact name."""
+        for item in self.load_all():
+            if item.name == name:
+                return item
+        return None
 
 
-def save_session(session: Session) -> None:
-    """Save a single session to its own file in SESSIONS_DIR."""
-    session.updated_at = datetime.now(timezone.utc).isoformat()
-    dir_path = os.path.expanduser(SESSIONS_DIR)
-    os.makedirs(dir_path, exist_ok=True)
-    filename = _sanitize_filename(session.name) + ".json"
-    target = os.path.join(dir_path, filename)
-    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(_serialize_session(session), f, indent=2)
-        os.replace(tmp_path, target)
-    except BaseException:
-        os.unlink(tmp_path)
-        raise
+# ── Views ─────────────────────────────────────────────────────────────
 
 
-def delete_session(name: str) -> None:
-    """Delete a session file by name."""
-    dir_path = os.path.expanduser(SESSIONS_DIR)
-    filename = _sanitize_filename(name) + ".json"
-    target = os.path.join(dir_path, filename)
-    if os.path.exists(target):
-        os.remove(target)
+def _serialize_view(view: View) -> dict:
+    return asdict(view)
 
 
-def rename_session(old_name: str, new_name: str) -> None:
-    """Rename a session (delete old file, save with new name)."""
-    for session in load_sessions():
-        if session.name == old_name:
-            delete_session(old_name)
-            session.name = new_name
-            save_session(session)
-            return
+def _deserialize_view(data: dict) -> View:
+    return View(
+        name=data["name"],
+        state=_deserialize_buffer_state(data["state"]),
+        created_at=data.get("created_at", ""),
+        updated_at=data.get("updated_at", data.get("created_at", "")),
+    )
 
 
-def load_session_by_name(name: str) -> Session | None:
-    """Find a session by exact name."""
-    for session in load_sessions():
-        if session.name == name:
-            return session
-    return None
+def capture_view_state(buf: "NlessBuffer") -> SessionBufferState:
+    """Capture buffer state for a view, zeroing out ephemeral fields."""
+    state = capture_buffer_state(buf)
+    return replace(state, cursor_row=0, cursor_column=0, tab_name="")
+
+
+# ── Store instances & public API ─────────────────────────────────────
+
+_session_store = JsonStore(
+    lambda: SESSIONS_DIR, _serialize_session, _deserialize_session
+)
+_view_store = JsonStore(lambda: VIEWS_DIR, _serialize_view, _deserialize_view)
+
+load_sessions = _session_store.load_all
+save_session = _session_store.save
+delete_session = _session_store.delete
+rename_session = _session_store.rename
+load_session_by_name = _session_store.load_by_name
+
+load_views = _view_store.load_all
+save_view = _view_store.save
+delete_view = _view_store.delete
+rename_view = _view_store.rename
+load_view_by_name = _view_store.load_by_name
+
+
+# ── Session-specific helpers ─────────────────────────────────────────
 
 
 def find_session_for_source(source: str) -> Session | None:

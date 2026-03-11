@@ -909,7 +909,7 @@ Press `+` when no search is active to clear all pinned highlights at once.
 
 ## 17. Sessions
 
-Sessions let you save and restore your complete workspace — filters, sort order, column visibility, highlights, delimiter, search terms, cursor position, and more — so you can pick up where you left off instantly.
+Sessions let you save and restore your **complete workspace** — all buffer groups, filters, sort order, column visibility, highlights, delimiter, search terms, cursor position, and more — tied to a specific data source. When you reopen the same file, nless can auto-restore the session so you pick up exactly where you left off.
 
 Using the `app.log` from the previous tutorials, or any data file:
 
@@ -955,7 +955,51 @@ This skips the prompt and loads the session directly.
 
 ---
 
-## 18. Putting It All Together
+## 18. Views
+
+While sessions save your entire workspace tied to a specific file, **views** save a single buffer's analysis settings as a reusable template. Views are portable — you can save a view while analyzing one dataset and apply it to a completely different file.
+
+Using the `app.log` from the previous tutorials, or any data file:
+
+```bash
+nless app.log
+```
+
+**Save a view:**
+
+1. Set up your analysis — filter to `ERROR` rows, sort by timestamp, hide some columns
+2. Press `v` — the view menu opens
+3. Select **💾 Save current view…** — a text prompt appears
+4. Type `errors-only` and press ++enter++ — the view is saved to `~/.config/nless/views/errors-only.json`
+
+**Load a view on different data:**
+
+1. Open a completely different file: `nless other-app.log`
+2. Press `v` — the view menu shows your saved views
+3. Select **📌 Load errors-only** — the filter, sort, and column settings are applied to the new data
+4. If some settings reference columns that don't exist in the new data, the notification tells you what was skipped (e.g. "2 skipped: sort (column 'response_time' not found), filter on 'status_code'")
+
+**Undo a view:**
+
+1. After loading a view, press `v` again
+2. Select **↩️ Undo last view** — the buffer is restored to exactly how it was before the view was applied, including any rows that were filtered out
+
+**Rename a view:**
+
+1. Press `v` — select the ✏️ option next to a view
+2. Type the new name and press ++enter++
+
+**Delete a view:**
+
+1. Press `v` — select the 🗑 option next to a view
+2. Confirm deletion — the view is removed
+
+!!! tip "Sessions vs. Views"
+    **Sessions** (`S`) save your entire workspace (all buffer groups, cursor position, tab layout) and are tied to the data source — great for resuming work on a specific file. **Views** (`v`) save a single buffer's analysis settings and work across any data — great for reusable analysis patterns like "show only errors" or "pivot by status code".
+
+---
+
+## 19. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, excluded lines, and export into a single investigation workflow. Create a file called `app.log`:
 
