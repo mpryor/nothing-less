@@ -47,11 +47,22 @@ class StreamingMixin:
         finally:
             self._lock.release()
 
-    def add_logs(self: NlessBuffer, log_lines: list[str]) -> None:
+    def add_logs(
+        self: NlessBuffer, log_lines: list[str], source: str | None = None
+    ) -> None:
         needs_deferred = False
         self._skipped_lines = []
         with self._lock:
             self.locked = True
+            self._current_source = source
+            # Merged streams: skip duplicate header from subsequent sources
+            if (
+                source is not None
+                and self.first_row_parsed
+                and log_lines
+                and log_lines[0].strip() == self.first_log_line.strip()
+            ):
+                log_lines = log_lines[1:]
             was_loading = self._loading_reason is not None
             try:
                 self._needs_deferred_update = False
@@ -170,7 +181,22 @@ class StreamingMixin:
             parts = self._parse_first_line_columns(self.first_log_line)
             self.current_columns = self._make_columns(parts)
             self._ensure_arrival_column(self.current_columns)
-            data_table.add_columns([str(p) for p in parts])
+            if self._current_source is not None:
+                self._ensure_source_column(self.current_columns)
+                # Show and pin _source column first for merge mode
+                for col in self.current_columns:
+                    if col.name != MetadataColumn.SOURCE.value and not col.hidden:
+                        col.render_position += 1
+                for col in self.current_columns:
+                    if col.name == MetadataColumn.SOURCE.value:
+                        col.hidden = False
+                        col.pinned = True
+                        col.render_position = 0
+                        break
+                self._rebuild_column_caches()
+                data_table.add_columns(self._get_visible_column_labels())
+            else:
+                data_table.add_columns([str(p) for p in parts])
 
             # For non-special delimiters, first line is the header
             header_consumed = (
@@ -207,19 +233,35 @@ class StreamingMixin:
                 # ensures the main thread triggers the rebuild.
                 now = time.time()
                 batch_timestamps = [now] * len(log_lines)
-                filtered, filtered_timestamps = self._filter_lines(
-                    log_lines, batch_timestamps
+                batch_src = (
+                    [self._current_source or ""] * len(log_lines)
+                    if self._has_source_column
+                    else None
+                )
+                filtered, filtered_timestamps, filtered_sources = self._filter_lines(
+                    log_lines, batch_timestamps, source_labels=batch_src
                 )
                 self.raw_rows.extend(filtered)
                 self._arrival_timestamps.extend(filtered_timestamps)
+                if filtered_sources is not None:
+                    self._source_labels.extend(filtered_sources)
                 self._needs_deferred_update = True
                 return
 
         now = time.time()
         batch_timestamps = [now] * len(log_lines)
-        filtered, filtered_timestamps = self._filter_lines(log_lines, batch_timestamps)
+        batch_source_labels = (
+            [self._current_source or ""] * len(log_lines)
+            if self._has_source_column
+            else None
+        )
+        filtered, filtered_timestamps, filtered_sources = self._filter_lines(
+            log_lines, batch_timestamps, source_labels=batch_source_labels
+        )
         self.raw_rows.extend(filtered)
         self._arrival_timestamps.extend(filtered_timestamps)
+        if filtered_sources is not None:
+            self._source_labels.extend(filtered_sources)
 
         # Reveal pivot-hidden columns when new streaming data arrives
         pivot_revealed = False
@@ -304,7 +346,7 @@ class StreamingMixin:
                 )
                 self._needs_deferred_update = True
 
-            if self.raw_mode:
+            if self.raw_mode and not self._has_source_column:
                 from .rawpager import RawPager
 
                 try:
@@ -408,6 +450,9 @@ class StreamingMixin:
                 continue
             # Append arrival timestamp (metadata column at end)
             cells.append(formatted_arrival)
+            # Append source label if source column exists
+            if self._has_source_column:
+                cells.append(self._current_source or "")
             # Strip for fast-path parsers to match split_line output
             if needs_cleanup:
                 cells = [_strip(c) for c in cells]
@@ -477,6 +522,8 @@ class StreamingMixin:
         data_table = self.query_one(".nless-view")
         cells = split_line(log_line, self.delimiter, self.current_columns)
         cells.append(self._format_arrival(ts))
+        if self._has_source_column:
+            cells.append(self._current_source or "")
         if self.unique_column_names:
             cells.insert(0, "1")
 

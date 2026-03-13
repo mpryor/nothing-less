@@ -100,7 +100,10 @@ class ColumnOpsMixin:
         coordinate = data_table.cursor_coordinate
         try:
             cell_value = data_table.get_cell_at(coordinate)
-            cell_value = strip_markup(cell_value)
+            # Unescape Rich bracket escapes (\[ → [) to restore valid JSON.
+            # strip_markup can't be used here — its regex treats JSON
+            # arrays/objects as markup tags and destroys them.
+            cell_value = cell_value.replace("\\[", "[")
             json_data = json.loads(cell_value)
             if not isinstance(json_data, (dict, list)):
                 curr_buffer.notify(
@@ -122,9 +125,11 @@ class ColumnOpsMixin:
 
             extract_keys(json_data)
 
+            from rich.markup import escape as rich_escape
+
             select = NlessSelect(
                 options=[
-                    (f"[bold]{col}[/bold] - {json.dumps(v)}", col)
+                    (f"[bold]{col}[/bold] - {rich_escape(json.dumps(v))}", col)
                     for (col, v) in new_columns
                 ],
                 classes="dock-bottom",

@@ -72,6 +72,7 @@ class SessionBufferState:
     search_term: str | None = None
     cursor_row: int = 0
     cursor_column: int = 0
+    source_labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -204,6 +205,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
         search_term=search_term,
         cursor_row=cursor_row,
         cursor_column=cursor_column,
+        source_labels=list(buf._source_labels),
     )
 
 
@@ -402,6 +404,10 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
         except re.error:
             pass
 
+    # Source labels (merged buffers)
+    if state.source_labels:
+        buf._source_labels = list(state.source_labels)
+
     # Cursor position — deferred until _deferred_update_table runs
     if state.cursor_row or state.cursor_column:
         buf._pending_cursor_position = (state.cursor_row, state.cursor_column)
@@ -459,6 +465,7 @@ def _deserialize_buffer_state(b: dict) -> SessionBufferState:
         search_term=b.get("search_term"),
         cursor_row=b.get("cursor_row", 0),
         cursor_column=b.get("cursor_column", 0),
+        source_labels=b.get("source_labels", []),
     )
 
 

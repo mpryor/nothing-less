@@ -999,7 +999,52 @@ nless app.log
 
 ---
 
-## 19. Putting It All Together
+## 19. Merging Multiple Streams
+
+When investigating an issue across multiple log files, you can merge them into a single view ordered by arrival time with a `_source` column to identify where each row came from.
+
+### CLI Merge
+
+Create two sample files:
+
+```
+# app.log
+timestamp,level,message
+2024-01-15T10:00:01,INFO,User login
+2024-01-15T10:00:03,ERROR,Database timeout
+2024-01-15T10:00:05,INFO,Request completed
+```
+
+```
+# worker.log
+timestamp,level,message
+2024-01-15T10:00:02,INFO,Job started
+2024-01-15T10:00:04,WARN,Retry attempt 1
+2024-01-15T10:00:06,INFO,Job completed
+```
+
+Merge them from the command line:
+
+```bash
+nless -m app.log worker.log
+```
+
+The merged view shows all rows interleaved by arrival time, with a `_source` column pinned on the left identifying which file each row came from. You can filter by `_source` to isolate one file's data (e.g. `f` on the `_source` column, then type `app.log`).
+
+### In-App Merge
+
+You can also merge buffers that are already open:
+
+1. Open two files as separate groups with `O`
+2. Press `M` to open the merge picker
+3. Select the buffer you want to merge with the current one
+4. A new "merged" tab appears with combined data and the `_source` column
+
+The `_source` column can be hidden/shown like any other column using `C` (column filter) or `h` (toggle hidden columns).
+
+---
+
+## 20. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, excluded lines, and export into a single investigation workflow. Create a file called `app.log`:
 
