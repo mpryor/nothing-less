@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.0 (2026-03-13)
+
+### Feat
+
+- multi-file buffer groups, merge delimiter conflict detection, and JSON extraction fixes
+- add views with undo, report skipped settings, and fix filter case sensitivity
+- persist computed columns in sessions and fix session loading bugs
+
 ## 1.8.0 (2026-03-11)
 
 ### Feat
