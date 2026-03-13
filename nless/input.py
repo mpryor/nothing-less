@@ -1,5 +1,6 @@
 import array
 import fcntl
+import io
 import json
 import logging
 import os
@@ -97,6 +98,42 @@ class ShellCommandLineStream(LineStream):
         self.done = True
 
 
+class MergedLineStream(LineStream):
+    """Wraps multiple LineStream children into a single logical stream."""
+
+    def __init__(self, children: list[LineStream]):
+        super().__init__()
+        self._children = children
+
+    @property
+    def lines(self) -> list[str]:  # type: ignore[override]
+        all_lines: list[str] = []
+        for child in self._children:
+            all_lines.extend(child.lines)
+        return all_lines
+
+    @lines.setter
+    def lines(self, value: list[str]) -> None:
+        pass  # controlled by children
+
+    @property
+    def done(self) -> bool:  # type: ignore[override]
+        return all(c.done for c in self._children)
+
+    @done.setter
+    def done(self, value: bool) -> None:
+        pass  # controlled by children
+
+    def is_streaming(self) -> bool:
+        return any(
+            hasattr(c, "is_streaming") and c.is_streaming() for c in self._children
+        )
+
+    def run(self) -> None:
+        # Each child stream runs on its own thread; nothing to do here.
+        pass
+
+
 class StdinLineStream(LineStream):
     """Handles stdin input and command processing."""
 
@@ -111,7 +148,11 @@ class StdinLineStream(LineStream):
         self._opened_file = None
         if file_name is not None:
             file_name = os.path.expanduser(file_name)
-            self._opened_file = open(file_name, "r+", errors="ignore")  # noqa: SIM115
+            try:
+                self._opened_file = open(file_name, "r+", errors="ignore")  # noqa: SIM115
+            except (io.UnsupportedOperation, OSError):
+                # Pipes/FIFOs (e.g. process substitution) aren't seekable
+                self._opened_file = open(file_name, "r", errors="ignore")  # noqa: SIM115
             self.new_fd = self._opened_file.fileno()
         elif new_fd is not None:
             self.new_fd = new_fd

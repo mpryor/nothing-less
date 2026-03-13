@@ -98,7 +98,7 @@ def split_line(
             if ref_cell is None:
                 continue
             try:
-                json_data = json.loads(ref_cell)
+                json_data = json.loads(ref_cell.replace("\\[", "["))
                 for key in json_path[1:]:
                     if isinstance(json_data, dict):
                         json_data = json_data.get(key, "")

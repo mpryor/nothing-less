@@ -18,8 +18,7 @@ if TYPE_CHECKING:
 
 
 def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> None:
-    if new_unique_column_name in [mc.value for mc in MetadataColumn]:
-        # can't toggle count column
+    if new_unique_column_name == MetadataColumn.COUNT.value:
         return
 
     col_idx = new_buffer._get_col_idx_by_name(new_unique_column_name)

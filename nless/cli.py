@@ -2,13 +2,14 @@ import argparse
 import os
 import re
 import sys
+from functools import partial
 from threading import Thread
 
 from nless.app import NlessApp
 from nless.batch import run_batch
 from nless.version import get_version
 
-from .input import StdinLineStream
+from .input import MergedLineStream, StdinLineStream
 from .types import CliArgs, Filter
 
 
@@ -26,7 +27,14 @@ def parse_args(argv=None) -> CliArgs:
     """
     parser = argparse.ArgumentParser(description="nless - A terminal log viewer")
     parser.add_argument(
-        "filename", nargs="?", help="File to read input from (defaults to stdin)"
+        "filename", nargs="*", help="File(s) to read input from (defaults to stdin)"
+    )
+    parser.add_argument(
+        "--merge",
+        "-m",
+        action="store_true",
+        help="Merge multiple files into a single view with a _source column",
+        default=False,
     )
     parser.add_argument("--version", action="version", version=f"{get_version()}")
     parser.add_argument(
@@ -173,7 +181,24 @@ def parse_args(argv=None) -> CliArgs:
         session=args.session,
         output_format=args.output_format,
     )
-    cli_args.filename = args.filename
+
+    filenames = args.filename or []
+    if args.merge and len(filenames) >= 2:
+        cli_args.merge = True
+        cli_args.filenames = filenames
+        cli_args.filename = None
+    elif len(filenames) == 1:
+        cli_args.filename = filenames[0]
+    elif len(filenames) > 1:
+        cli_args.filename = filenames[0]
+        cli_args.filenames = filenames[1:]
+    else:
+        cli_args.filename = None
+
+    if args.merge and len(filenames) < 2:
+        print("nless: --merge requires at least 2 files", file=sys.stderr)
+        sys.exit(1)
+
     return cli_args
 
 
@@ -209,14 +234,70 @@ def main():
 
     new_fd = sys.stdin.fileno()
 
-    if cli_args.filename:
+    if cli_args.merge:
+        # Pre-flight: detect delimiter conflicts across files.
+        # If files use different delimiters, force raw mode so all lines
+        # render cleanly with the _source column.
+        if not cli_args.delimiter:
+            from nless.delimiter import infer_delimiter
+
+            seen_delimiters = set()
+            for filepath in cli_args.filenames:
+                try:
+                    with open(os.path.expanduser(filepath), errors="ignore") as f:
+                        sample = [f.readline() for _ in range(15)]
+                    sample = [line for line in sample if line.strip()]
+                    d = infer_delimiter(sample)
+                    if d:
+                        seen_delimiters.add(d)
+                except (FileNotFoundError, IsADirectoryError, PermissionError):
+                    pass  # will be caught below when creating streams
+            if len(seen_delimiters) > 1:
+                cli_args.delimiter = "raw"
+
+        # Merge mode: create one stream per file, wrap in MergedLineStream
+        streams = []
+        for filepath in cli_args.filenames:
+            try:
+                stream = StdinLineStream(cli_args, filepath, None)
+                streams.append(stream)
+            except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+                print(f"nless: {e}", file=sys.stderr)
+                sys.exit(1)
+        merged_stream = MergedLineStream(streams)
+        # Create app without auto-subscribing — we subscribe each sub-stream manually
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        buf = app.groups[0].buffers[0]
+        buf.line_stream = merged_stream
+        n_files = len(cli_args.filenames)
+        app.groups[0].name = f"⏵ merged ({n_files} files)"
+        app.groups[0].starting_stream = merged_stream
+        for stream in streams:
+            source_name = (
+                os.path.basename(stream._opened_file.name)
+                if stream._opened_file
+                else "stdin"
+            )
+            if cli_args.delimiter == "raw":
+                # Expand tabs so len() matches visual width in raw mode
+                def _add_logs_expand(lines, _src=source_name):
+                    buf.add_logs([ln.expandtabs() for ln in lines], source=_src)
+
+                add_fn = _add_logs_expand
+            else:
+                add_fn = partial(buf.add_logs, source=source_name)
+            stream.subscribe(
+                buf,
+                add_fn,
+                lambda: buf.mounted,
+            )
+            t = Thread(target=stream.run, daemon=True)
+            t.start()
+        tty_file = open("/dev/tty")  # noqa: SIM115
+        sys.__stdin__ = tty_file
+    elif cli_args.filename:
         filename = cli_args.filename
         new_fd = None
-    else:
-        filename = None
-
-    stdin_contains_data = not sys.stdin.isatty()
-    if stdin_contains_data or filename:
         try:
             stdin_line_stream = StdinLineStream(
                 cli_args,
@@ -229,11 +310,40 @@ def main():
         app = NlessApp(cli_args=cli_args, starting_stream=stdin_line_stream)
         t = Thread(target=stdin_line_stream.run, daemon=True)
         t.start()
+        if cli_args.filenames:
+            pending = []
+            for filepath in cli_args.filenames:
+                try:
+                    stream = StdinLineStream(cli_args, filepath, None)
+                    ft = Thread(target=stream.run, daemon=True)
+                    ft.start()
+                    pending.append((filepath, stream))
+                except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+                    print(f"nless: {e}", file=sys.stderr)
+                    sys.exit(1)
+            app._pending_file_groups = pending
         tty_file = open("/dev/tty")  # noqa: SIM115
-        sys.__stdin__ = tty_file  # allow textual to read terminal input while piped stdin is read on a thread
+        sys.__stdin__ = tty_file
     else:
-        tty_file = None
-        app = NlessApp(cli_args=cli_args, show_help=True, starting_stream=None)
+        stdin_contains_data = not sys.stdin.isatty()
+        if stdin_contains_data:
+            try:
+                stdin_line_stream = StdinLineStream(
+                    cli_args,
+                    None,
+                    new_fd,
+                )
+            except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+                print(f"nless: {e}", file=sys.stderr)
+                sys.exit(1)
+            app = NlessApp(cli_args=cli_args, starting_stream=stdin_line_stream)
+            t = Thread(target=stdin_line_stream.run, daemon=True)
+            t.start()
+            tty_file = open("/dev/tty")  # noqa: SIM115
+            sys.__stdin__ = tty_file
+        else:
+            tty_file = None
+            app = NlessApp(cli_args=cli_args, show_help=True, starting_stream=None)
     try:
         app.run()
     finally:

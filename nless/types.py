@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -10,6 +10,7 @@ class RowLengthMismatchError(Exception):
 class MetadataColumn(Enum):
     COUNT = "count"
     ARRIVAL = "_arrival"
+    SOURCE = "_source"
 
 
 @dataclass
@@ -35,6 +36,8 @@ class CliArgs:
     no_tui: bool = False
     tui: bool = False
     session: str | None = None
+    merge: bool = False
+    filenames: list[str] = field(default_factory=list)
     pipe_output: bool = False  # computed at runtime: stdout is a pipe
     output_format: str = "csv"  # csv, tsv, json, raw
 

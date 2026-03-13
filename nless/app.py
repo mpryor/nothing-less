@@ -117,9 +117,13 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             )
         ]
         self.curr_group_idx = 0
+        self._pending_file_groups: list[tuple[str, StdinLineStream]] = []
 
     @staticmethod
     def _initial_group_name(cli_args: CliArgs) -> str:
+        if cli_args.merge:
+            n = len(cli_args.filenames)
+            return f"⏵ merged ({n} files)"
         if cli_args.filename:
             return f"📄 {os.path.basename(cli_args.filename)}"
         source = get_stdin_source()
@@ -258,6 +262,12 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         ),
         Binding("S", "session_menu", "Sessions", id="app.session_menu"),
         Binding("v", "view_menu", "Views", id="app.view_menu"),
+        Binding(
+            "M",
+            "merge_buffers",
+            "Merge with another buffer",
+            id="app.merge_buffers",
+        ),
     ]
 
     _pending_highlight_pattern: re.Pattern | None = None
@@ -426,6 +436,42 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 buf.regex_highlights.clear()
                 buf._deferred_update_table(reason="Highlighting")
                 buf.notify("Cleared all highlights")
+            return
+        if event.control.id == "merge_select":
+            value = str(event.value)
+            try:
+                group_id_str, pane_id_str = value.split(":")
+                group_id, pane_id = int(group_id_str), int(pane_id_str)
+            except (ValueError, TypeError):
+                return
+            # Find the target buffer
+            target_buf = None
+            target_group_name = ""
+            for group in self.groups:
+                if group.group_id == group_id:
+                    for b in group.buffers:
+                        if b.pane_id == pane_id:
+                            target_buf = b
+                            target_group_name = group.name
+                            break
+            if target_buf is None:
+                self.notify("Buffer not found", severity="error")
+                return
+            cur_buf = self._get_current_buffer()
+            cur_group_name = self._current_group.name
+            new_pane_id = self._get_new_pane_id()
+            merged = NlessBuffer.init_as_merged(
+                new_pane_id, cur_buf, target_buf, cur_group_name, target_group_name
+            )
+            # Show and pin the _source column
+            for col in merged.current_columns:
+                if col.name == MetadataColumn.SOURCE.value:
+                    col.hidden = False
+                    col.pinned = True
+                    col.render_position = 0
+                    break
+            merged._rebuild_column_caches()
+            self.add_buffer(merged, name="merged")
             return
         if event.control.id == "session_select":
             value = str(event.value)
@@ -1105,6 +1151,27 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         if name == "stdin":
             return None
         return name
+
+    def action_merge_buffers(self) -> None:
+        """Open a select menu to pick a buffer to merge with the current one."""
+        buf = self._get_current_buffer()
+        options = []
+        for group in self.groups:
+            for b in group.buffers:
+                if b is buf:
+                    continue
+                label = f"📄 {group.name} / buffer{b.pane_id}"
+                options.append((label, f"{group.group_id}:{b.pane_id}"))
+        if not options:
+            self.notify("No other buffers to merge with", severity="warning")
+            return
+        select = NlessSelect(
+            options=options,
+            prompt="Select buffer to merge with current",
+            classes="dock-bottom",
+            id="merge_select",
+        )
+        buf.mount(select)
 
     def action_session_menu(self) -> None:
         """Open the session menu to save, load, or delete sessions."""
@@ -1879,10 +1946,27 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                     self._pending_auto_session = session
                     self.set_timer(0.3, lambda: self._show_session_load_prompt(session))
 
+        if self._pending_file_groups:
+            self.set_timer(
+                0.1, lambda: self.run_worker(self._add_pending_file_groups())
+            )
+
         if self.show_help and self.config.show_getting_started:
             self.push_screen(GettingStartedScreen())
         else:
             self.query_one(".nless-view").focus()
+
+    async def _add_pending_file_groups(self) -> None:
+        for filepath, stream in self._pending_file_groups:
+            new_buffer = NlessBuffer(
+                pane_id=self._get_new_pane_id(),
+                cli_args=self.cli_args,
+                line_stream=stream,
+            )
+            name = f"📄 {os.path.basename(filepath)}"
+            await self.add_group(name, new_buffer, stream=stream)
+        self._pending_file_groups = []
+        self._switch_to_group(0)
 
     def action_help(self) -> None:
         """Show the help screen."""

@@ -48,6 +48,23 @@ class ColumnMixin:
             )
         )
 
+    @staticmethod
+    def _ensure_source_column(columns: list[Column]) -> None:
+        """Ensure the hidden _source metadata column is present at the end."""
+        if any(c.name == MetadataColumn.SOURCE.value for c in columns):
+            return
+        source_pos = len(columns)
+        columns.append(
+            Column(
+                name=MetadataColumn.SOURCE.value,
+                labels=set(),
+                render_position=source_pos,
+                data_position=source_pos,
+                hidden=True,
+                computed=True,
+            )
+        )
+
     def _parse_first_line_columns(self: NlessBuffer, first_log_line: str) -> list:
         """Determine column names from the first line based on the delimiter."""
         if self.delimiter == "raw":
@@ -81,6 +98,9 @@ class ColumnMixin:
         )
         self._has_nested_delimiters = any(
             c.delimiter or c.json_ref or c.col_ref for c in self.current_columns
+        )
+        self._has_source_column = any(
+            c.name == MetadataColumn.SOURCE.value for c in self.current_columns
         )
 
     def _get_col_idx_by_name(

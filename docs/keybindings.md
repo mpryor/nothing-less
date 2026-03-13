@@ -13,6 +13,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `Q` | Quit immediately — exit without closing tabs one-by-one. In pipe mode, pipes the current buffer to stdout. |
 | `N` | Create a new buffer from the original data |
 | `r` | Rename the current buffer |
+| `M` | Merge the current buffer with another buffer — creates a new tab with interleaved rows and a `_source` column |
 
 ## Groups
 

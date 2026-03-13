@@ -168,6 +168,12 @@ class NlessBuffer(
 
         # Arrival timestamps parallel to raw_rows (epoch floats)
         self._arrival_timestamps: list[float] = []
+        # Source labels parallel to raw_rows (for merged streams)
+        self._source_labels: list[str] = []
+        # Current source label set by add_logs(source=...)
+        self._current_source: str | None = None
+        # Whether the _source metadata column exists
+        self._has_source_column: bool = False
         # Time window filter: only show rows within this many seconds of now
         self.time_window: float | None = None
         # When True, the time window re-evaluates periodically
@@ -255,17 +261,19 @@ class NlessBuffer(
         self,
         lines: list[str],
         timestamps: list[float] | None = None,
-    ) -> tuple[list[str], list[float]]:
-        """Return only lines (and their timestamps) that match all current filters."""
+        source_labels: list[str] | None = None,
+    ) -> tuple[list[str], list[float], list[str] | None]:
+        """Return only lines (and their timestamps/source labels) that match all current filters."""
         now = time.time()
         if timestamps is None:
             timestamps = [now] * len(lines)
         if not self.current_filters:
-            return lines, timestamps
+            return lines, timestamps, source_labels
         metadata = [mc.value for mc in MetadataColumn]
         expected = len([c for c in self.current_columns if c.name not in metadata])
         matching = []
         kept_timestamps = []
+        kept_sources = [] if source_labels is not None else None
         for i, line in enumerate(lines):
             try:
                 cells = split_line(line, self.delimiter, self.current_columns)
@@ -274,10 +282,14 @@ class NlessBuffer(
             if len(cells) != expected:
                 continue
             cells.append(self._format_arrival(timestamps[i]))
+            if self._has_source_column:
+                cells.append(source_labels[i] if source_labels else "")
             if self._matches_all_filters(cells, adjust_for_count=True):
                 matching.append(line)
                 kept_timestamps.append(timestamps[i])
-        return matching, kept_timestamps
+                if kept_sources is not None:
+                    kept_sources.append(source_labels[i])
+        return matching, kept_timestamps, kept_sources
 
     def copy(self, pane_id) -> "NlessBuffer":
         """Create a duplicate buffer with shared line_stream subscription.
@@ -314,6 +326,7 @@ class NlessBuffer(
             new_buffer._time_window_ceiling = self._time_window_ceiling
             new_buffer.line_stream = self.line_stream
             timestamps_snapshot = list(self._arrival_timestamps)
+            source_labels_snapshot = list(self._source_labels)
             if self.line_stream:
                 self.line_stream.subscribe_future_only(
                     new_buffer,
@@ -324,9 +337,15 @@ class NlessBuffer(
             new_buffer._initial_load_done = True
 
         # Expensive filtering runs outside the lock on the snapshot.
-        new_buffer.raw_rows, new_buffer._arrival_timestamps = new_buffer._filter_lines(
-            raw_rows_snapshot, timestamps_snapshot
+        new_buffer.raw_rows, new_buffer._arrival_timestamps, filtered_sources = (
+            new_buffer._filter_lines(
+                raw_rows_snapshot,
+                timestamps_snapshot,
+                source_labels=source_labels_snapshot or None,
+            )
         )
+        if filtered_sources is not None:
+            new_buffer._source_labels = filtered_sources
         # Copy parsed-row cache so the new buffer's first rebuild doesn't
         # re-parse everything via split_line.  When _filter_lines removed
         # rows, len(_parsed_rows) > len(raw_rows) and _partition_rows will
@@ -338,6 +357,49 @@ class NlessBuffer(
         # Keep unfiltered history so ~ can find excluded lines even without
         # a line_stream.  The snapshot is shared (not copied) to save memory.
         new_buffer._all_source_lines = raw_rows_snapshot
+        return new_buffer
+
+    @staticmethod
+    def init_as_merged(
+        pane_id: int,
+        buf1: "NlessBuffer",
+        buf2: "NlessBuffer",
+        source1: str,
+        source2: str,
+    ) -> "NlessBuffer":
+        """Create a new buffer by merging two buffers' raw_rows, interleaved by arrival time.
+
+        The merged buffer gets a _source column to identify the origin of each row.
+        """
+        new_buffer = NlessBuffer(pane_id=pane_id, cli_args=None)
+        # Use first buffer's structure
+        new_buffer.first_row_parsed = buf1.first_row_parsed
+        new_buffer.first_log_line = buf1.first_log_line
+        new_buffer.delimiter = buf1.delimiter
+        new_buffer.delimiter_inferred = buf1.delimiter_inferred
+        new_buffer.delimiter_name = buf1.delimiter_name
+        new_buffer.current_columns = deepcopy(buf1.current_columns)
+
+        # Ensure source column exists
+        from .buffer_columns import ColumnMixin
+
+        ColumnMixin._ensure_source_column(new_buffer.current_columns)
+
+        # Interleave rows sorted by arrival time
+        pairs1 = list(
+            zip(buf1._arrival_timestamps, buf1.raw_rows, [source1] * len(buf1.raw_rows))
+        )
+        pairs2 = list(
+            zip(buf2._arrival_timestamps, buf2.raw_rows, [source2] * len(buf2.raw_rows))
+        )
+        merged = sorted(pairs1 + pairs2, key=lambda x: x[0])
+
+        new_buffer.raw_rows = [row for _, row, _ in merged]
+        new_buffer._arrival_timestamps = [ts for ts, _, _ in merged]
+        new_buffer._source_labels = [src for _, _, src in merged]
+
+        new_buffer._rebuild_column_caches()
+        new_buffer._initial_load_done = True
         return new_buffer
 
     def _get_theme(self):
@@ -418,7 +480,7 @@ class NlessBuffer(
         except Exception:
             return
 
-        want_raw = self.raw_mode
+        want_raw = self.raw_mode and not self._has_source_column
         is_raw = isinstance(current, RawPager)
         if want_raw == is_raw:
             return
@@ -855,6 +917,8 @@ class NlessBuffer(
                     mismatched.append(row_str)
                     continue
                 cells.append(self._format_arrival(ts))
+                if self._has_source_column and i < len(self._source_labels):
+                    cells.append(self._source_labels[i])
                 new_parsed.append(cells)
             return list(parsed) + new_parsed, mismatched, None
 
@@ -891,6 +955,9 @@ class NlessBuffer(
                     continue
                 # Append arrival timestamp to parsed cells
                 cells.append(self._format_arrival(ts))
+                # Append source label if source column exists
+                if self._has_source_column and i < len(self._source_labels):
+                    cells.append(self._source_labels[i])
             if self._matches_all_filters(cells, adjust_for_count=True):
                 filtered_rows.append(cells)
                 kept_raw.append(row_str)
@@ -916,9 +983,14 @@ class NlessBuffer(
         if compacted is None:
             return
         kept_raw, kept_parsed, kept_ts, unparseable_raw, unparseable_ts = compacted
+        old_len = len(self.raw_rows)
         self.raw_rows = kept_raw + unparseable_raw
         self._parsed_rows = kept_parsed
         self._arrival_timestamps = kept_ts + unparseable_ts
+        # Keep _source_labels in sync if present
+        if self._source_labels and len(self._source_labels) == old_len:
+            # Compaction keeps the same indices as raw_rows — truncate to match
+            self._source_labels = self._source_labels[: len(self.raw_rows)]
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
         """Deduplicate rows by composite unique column key, prepending count."""
