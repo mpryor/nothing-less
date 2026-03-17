@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .delimiter import infer_delimiter, split_line
+from .types import UpdateReason
 
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
@@ -59,18 +60,15 @@ class DelimiterMixin:
 
     def _format_delimiter(self: NlessBuffer) -> str | None:
         """Return a human-readable label for the current delimiter."""
-        if self.delimiter is None:
+        if self.delim.value is None:
             return None
-        if self.delimiter_name:
-            return self.delimiter_name
-        return self._format_delimiter_label(self.delimiter)
+        if self.delim.name:
+            return self.delim.name
+        return self._format_delimiter_label(self.delim.value)
 
     def _reset_delimiter_state(self: NlessBuffer) -> None:
         """Reset all delimiter-related flags and counters."""
-        self.delimiter_inferred = False
-        self._delimiter_suggestion_shown = False
-        self._mismatch_warning_shown = False
-        self._total_skipped = 0
+        self.delim.reset()
 
     # -- Parsing -----------------------------------------------------------
 
@@ -106,25 +104,37 @@ class DelimiterMixin:
         table rebuild.
 
         Returns True if the switch succeeded and a rebuild was triggered.
+
+        Decision tree
+        ~~~~~~~~~~~~~
+        1. **Preamble restoration** — if preamble lines were skipped during
+           initial load (``find_header_index``), they are re-inserted at the
+           front of ``raw_rows`` so the new delimiter can re-evaluate which
+           line is the header.  For headerless formats (raw/json/regex), the
+           first preamble line also becomes data.
+        2. **Regex delimiter** — columns come from the regex's named capture
+           groups.  If the previous delimiter used a header row (standard),
+           that row is re-inserted as data (it's no longer the header).
+        3. **Standard delimiter** — ``_resolve_new_header`` determines the
+           new column names.  ``_should_reinsert_header_as_data`` decides
+           whether the old header line needs to re-enter ``raw_rows`` (e.g.
+           switching from csv→raw makes the old header a data row).
         """
         if not delimiter_input:
             return False
         should_update = False
-        had_filters = bool(self.current_filters)
+        had_filters = bool(self.query.filters)
         with self._try_lock(
             "delimiter",
             deferred=lambda: self.switch_delimiter(delimiter_input),
         ) as acquired:
             if not acquired:
                 return False
-            self.current_filters = []
-            self.search_term = None
-            self.sort_column = None
-            self.unique_column_names = set()
-            prev_delimiter = self.delimiter
+            self.query.clear_all()
+            prev_delimiter = self.delim.value
 
             self._reset_delimiter_state()
-            self.delimiter_name = None
+            self.delim.name = None
             delimiter = self._parse_delimiter_input(delimiter_input)
 
             # Restore original file order when preamble lines were skipped
@@ -132,9 +142,9 @@ class DelimiterMixin:
             # original first line is available as a header candidate for the
             # new delimiter, and the old "header" (which was really a data
             # line) goes back into raw_rows.
-            if self._preamble_lines:
+            if self.delim.preamble_lines:
                 old_first = self.first_log_line
-                self.first_log_line = self._preamble_lines[0]
+                self.first_log_line = self.delim.preamble_lines[0]
                 # In JSON/raw/regex modes, first_log_line is already in
                 # raw_rows (every line is data).  Don't re-add it.
                 already_in_raw = self.raw_rows and self.raw_rows[0] == old_first
@@ -146,9 +156,9 @@ class DelimiterMixin:
                     or isinstance(delimiter, re.Pattern)
                 )
                 restore = (
-                    list(self._preamble_lines)
+                    list(self.delim.preamble_lines)
                     if new_is_headerless
-                    else self._preamble_lines[1:]
+                    else self.delim.preamble_lines[1:]
                 )
                 if not already_in_raw:
                     restore.append(old_first)
@@ -158,12 +168,11 @@ class DelimiterMixin:
                     else time.time()
                 )
                 for i, line in enumerate(restore):
-                    self.raw_rows.insert(i, line)
-                    self._arrival_timestamps.insert(i, ts)
-                self._preamble_lines = []
+                    self.stream.insert(i, line, ts)
+                self.delim.preamble_lines = []
 
             if isinstance(delimiter, re.Pattern):
-                self.delimiter = delimiter
+                self.delim.value = delimiter
                 self.current_columns = self._make_columns(
                     list(delimiter.groupindex.keys())
                 )
@@ -171,16 +180,15 @@ class DelimiterMixin:
                 if prev_delimiter != "raw" and not isinstance(
                     prev_delimiter, re.Pattern
                 ):
-                    self.raw_rows.insert(0, self.first_log_line)
                     ts = (
                         self._arrival_timestamps[0]
                         if self._arrival_timestamps
                         else time.time()
                     )
-                    self._arrival_timestamps.insert(0, ts)
+                    self.stream.insert(0, self.first_log_line, ts)
                 should_update = True
             else:
-                self.delimiter = delimiter
+                self.delim.value = delimiter
                 result = self._resolve_new_header(delimiter, prev_delimiter)
                 if result is not None:
                     new_header, parsed_full_json_file = result
@@ -188,21 +196,20 @@ class DelimiterMixin:
                     if self._should_reinsert_header_as_data(
                         prev_delimiter, delimiter, parsed_full_json_file
                     ):
-                        self.raw_rows.insert(0, self.first_log_line)
                         ts = (
                             self._arrival_timestamps[0]
                             if self._arrival_timestamps
                             else time.time()
                         )
-                        self._arrival_timestamps.insert(0, ts)
+                        self.stream.insert(0, self.first_log_line, ts)
 
                     self.current_columns = self._make_columns(list(new_header))
                     self._ensure_arrival_column(self.current_columns)
                     should_update = True
 
         if should_update:
-            self.raw_mode = self.delimiter == "raw"
-            n_preamble = len(self._preamble_lines)
+            self.raw_mode = self.delim.value == "raw"
+            n_preamble = len(self.delim.preamble_lines)
 
             def callback():
                 if had_filters:
@@ -214,7 +221,9 @@ class DelimiterMixin:
                         severity="warning",
                     )
 
-            self._deferred_update_table(reason="Changing delimiter", callback=callback)
+            self._deferred_update_table(
+                reason=UpdateReason.DELIMITER, callback=callback
+            )
         return should_update
 
     def _resolve_new_header(self: NlessBuffer, delimiter, prev_delimiter):
@@ -233,15 +242,15 @@ class DelimiterMixin:
         if prev_delimiter == "raw" or isinstance(prev_delimiter, re.Pattern):
             header = split_line(
                 self.raw_rows[0],
-                self.delimiter,
+                self.delim.value,
                 self.current_columns,
             )
-            self.raw_rows.pop(0)
+            self.stream.pop(0)
             return header, False
 
         return split_line(
             self.first_log_line,
-            self.delimiter,
+            self.delim.value,
             self.current_columns,
         ), False
 
@@ -268,15 +277,18 @@ class DelimiterMixin:
                 header = list(json.loads(line).keys())
                 # Save non-matching lines before this one as preamble
                 if i > 0:
-                    self._preamble_lines.extend(candidates[:i])
+                    self.delim.preamble_lines.extend(candidates[:i])
                 self.first_log_line = line
                 # Trim raw_rows and timestamps to start after the match.
                 # When first_in_raw, candidates[i] == raw_rows[i].
                 # Otherwise candidates[0] is first_log_line, so
                 # raw_rows starts at candidates[1] → raw index = i - 1.
                 raw_start = i + 1 if first_in_raw else max(0, i)
-                self.raw_rows = self.raw_rows[raw_start:]
-                self._arrival_timestamps = self._arrival_timestamps[raw_start:]
+                self.stream.replace_raw_rows(
+                    self.raw_rows[raw_start:],
+                    self._arrival_timestamps[raw_start:],
+                    self._source_labels[raw_start:] if self._source_labels else None,
+                )
                 return header, False
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
@@ -294,10 +306,12 @@ class DelimiterMixin:
                 and isinstance(buffer_json[0], dict)
             ):
                 header = list(buffer_json[0].keys())
-                self.raw_rows = [json.dumps(item) for item in buffer_json]
+                new_rows = [json.dumps(item) for item in buffer_json]
+                self.stream.replace_raw_rows(new_rows, [time.time()] * len(new_rows))
             elif isinstance(buffer_json, dict):
                 header = list(buffer_json.keys())
-                self.raw_rows = [json.dumps(buffer_json)]
+                new_rows = [json.dumps(buffer_json)]
+                self.stream.replace_raw_rows(new_rows, [time.time()])
             else:
                 self.notify(
                     "Failed to parse JSON logs: no valid JSON found",
@@ -337,9 +351,9 @@ class DelimiterMixin:
 
     def _warn_mismatch_once(self: NlessBuffer, count: int) -> None:
         """Show the mismatch warning at most once per delimiter."""
-        if self._mismatch_warning_shown:
+        if self.delim.mismatch_warned:
             return
-        self._mismatch_warning_shown = True
+        self.delim.mismatch_warned = True
         msg = f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
         if self.app._thread_id == threading.get_ident():
             self.notify(msg, severity="warning")
@@ -364,7 +378,7 @@ class DelimiterMixin:
             return None
         majority = _majority_sample(bad_lines)
         candidate = infer_delimiter(majority)
-        if not candidate or candidate == self.delimiter or candidate == "raw":
+        if not candidate or candidate == self.delim.value or candidate == "raw":
             self._warn_mismatch_once(n_bad)
             return None
         return self._apply_auto_switch_delimiter(
@@ -380,8 +394,8 @@ class DelimiterMixin:
     ) -> bool:
         """Check whether auto-switch conditions are met."""
         return (
-            self.delimiter_inferred
-            and not self._delimiter_suggestion_shown
+            self.delim.inferred
+            and not self.delim.suggestion_shown
             and not self._initial_load_done
             and n_bad >= 3
             and n_total > 0
@@ -406,28 +420,25 @@ class DelimiterMixin:
             lines_already_in_raw: If True, bad_lines are already preserved in
                 raw_rows (e.g. by _filter_rows) and should not be re-added.
         """
-        old_label = self._format_delimiter_label(self.delimiter)
-        self.delimiter = candidate
-        self.delimiter_inferred = True
-        self._delimiter_suggestion_shown = True
-        self._mismatch_warning_shown = False
-        self._total_skipped = 0
-        self._parsed_rows = None
-        self._cached_col_widths = None
+        old_label = self._format_delimiter_label(self.delim.value)
+        self.delim.value = candidate
+        self.delim.inferred = True
+        self.delim.suggestion_shown = True
+        self.delim.mismatch_warned = False
+        self.delim.total_skipped = 0
+        self.cache.parsed_rows = None
+        self.cache.col_widths = None
         now = time.time()
         if not lines_already_in_raw:
-            self.raw_rows.extend(bad_lines)
-            self._arrival_timestamps.extend([now] * len(bad_lines))
+            self.stream.extend(bad_lines, [now] * len(bad_lines))
         # Old header may not parse with new delimiter — add as data
-        self.raw_rows.append(self.first_log_line)
-        self._arrival_timestamps.append(now)
+        self.stream.append(self.first_log_line, now)
         # New header is drawn from majority lines — remove from raw_rows
         # to avoid it appearing as both header and data row.
         new_header = majority[0]
         try:
             idx = self.raw_rows.index(new_header)
-            self.raw_rows.pop(idx)
-            self._arrival_timestamps.pop(idx)
+            self.stream.pop(idx)
         except (ValueError, IndexError):
             pass
         self.first_log_line = new_header

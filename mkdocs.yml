@@ -36,6 +36,18 @@ nav:
   - Tutorials: tutorials.md
   - Keybindings: keybindings.md
   - Configuration: configuration.md
+  - Internals:
+      - Overview: internals/index.md
+      - State Architecture: internals/state-architecture.md
+      - Threading Model: internals/threading.md
+      - Streaming Pipeline: internals/streaming-pipeline.md
+      - Delimiter Inference: internals/delimiter-inference.md
+      - Copy & History: internals/copy-and-history.md
+      - Column Operations: internals/column-operations.md
+      - Log Format Detection: internals/log-format-detection.md
+      - Time Windows: internals/time-windows.md
+      - Session Persistence: internals/sessions.md
+      - Custom Rendering: internals/custom-rendering.md
   - Contributing: contributing.md
 
 markdown_extensions:

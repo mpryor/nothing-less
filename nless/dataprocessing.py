@@ -258,3 +258,45 @@ def matches_all_filters(
         if matched == f.exclude:
             return False
     return True
+
+
+def choose_parse_strategy(delimiter, has_nested, columns):
+    """Return (parse_fn, needs_cleanup) for a given delimiter.
+
+    Selecting the strategy once outside a hot loop avoids repeated
+    isinstance / equality checks per row. This is a pure function —
+    it depends only on the delimiter type, not on buffer state.
+    """
+    import csv
+
+    from .delimiter import split_line
+
+    if not has_nested and delimiter == ",":
+
+        def parse_csv(line):
+            s = line.strip()
+            return next(csv.reader([s])) if '"' in s else s.split(",")
+
+        return parse_csv, True
+
+    if not has_nested and delimiter == "\t":
+        return lambda line: line.split("\t"), True
+
+    if (
+        not has_nested
+        and isinstance(delimiter, str)
+        and delimiter not in ("raw", "json", " ", "  ")
+    ):
+        return lambda line: line.split(delimiter), True
+
+    if delimiter == "raw":
+        from rich.markup import escape as _rich_escape
+
+        def parse_raw(line):
+            s = line.rstrip("\n\r")
+            return [_rich_escape(s) if "[" in s else s]
+
+        return parse_raw, False
+
+    # split_line already cleans cells
+    return lambda line: split_line(line, delimiter, columns), False

@@ -10,6 +10,11 @@ from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .types import Column, MetadataColumn
 
+# Render position assigned to hidden columns. Must be larger than any real
+# column count. Used as a sort key to push hidden columns to the end during
+# position calculations.
+HIDDEN_COLUMN_SENTINEL_POSITION = 99_999
+
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
 
@@ -67,11 +72,11 @@ class ColumnMixin:
 
     def _parse_first_line_columns(self: NlessBuffer, first_log_line: str) -> list:
         """Determine column names from the first line based on the delimiter."""
-        if self.delimiter == "raw":
+        if self.delim.value == "raw":
             return ["log"]
-        elif isinstance(self.delimiter, re.Pattern):
-            return list(self.delimiter.groupindex.keys())
-        elif self.delimiter == "json":
+        elif isinstance(self.delim.value, re.Pattern):
+            return list(self.delim.value.groupindex.keys())
+        elif self.delim.value == "json":
             try:
                 json_data = json.loads(first_log_line)
                 if isinstance(json_data, dict):
@@ -82,17 +87,17 @@ class ColumnMixin:
                 pass
             return ["value"]
         else:
-            return split_line(first_log_line, self.delimiter, self.current_columns)
+            return split_line(first_log_line, self.delim.value, self.current_columns)
 
     def _rebuild_column_caches(self: NlessBuffer) -> None:
         """Rebuild all column-derived caches. Call when columns change."""
-        self._col_data_idx = {}
-        self._col_render_idx = {}
+        self.cache.col_data_idx = {}
+        self.cache.col_render_idx = {}
         for col in self.current_columns:
             plain = strip_markup(col.name)
-            self._col_data_idx[plain] = col.data_position
-            self._col_render_idx[plain] = col.render_position
-        self._sorted_visible_columns = sorted(
+            self.cache.col_data_idx[plain] = col.data_position
+            self.cache.col_render_idx[plain] = col.render_position
+        self.cache.sorted_visible_columns = sorted(
             [c for c in self.current_columns if not c.hidden],
             key=lambda c: c.render_position,
         )
@@ -106,7 +111,9 @@ class ColumnMixin:
     def _get_col_idx_by_name(
         self: NlessBuffer, col_name: str, render_position: bool = False
     ) -> int | None:
-        cache = self._col_render_idx if render_position else self._col_data_idx
+        cache = (
+            self.cache.col_render_idx if render_position else self.cache.col_data_idx
+        )
         return cache.get(col_name)
 
     def _get_column_at_position(self: NlessBuffer, position: int) -> Column | None:
@@ -130,7 +137,7 @@ class ColumnMixin:
     def _align_cells_to_visible_columns(
         self: NlessBuffer, rows: list[list[str]]
     ) -> list[list[str]]:
-        visible_cols = self._sorted_visible_columns
+        visible_cols = self.cache.sorted_visible_columns
         new_rows = []
         for row in rows:
             new_rows.append([row[col.data_position] for col in visible_cols])
@@ -154,5 +161,5 @@ class ColumnMixin:
                     break
             if not matched:
                 col.hidden = True
-                col.render_position = 99999
+                col.render_position = HIDDEN_COLUMN_SENTINEL_POSITION
         self._rebuild_column_caches()

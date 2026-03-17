@@ -97,7 +97,7 @@ async def _wait_perf(pilot, app, timeout: float = 30.0):
     settled = 0
     while time.monotonic() < deadline:
         await pilot.pause(delay=0.05)
-        if all(not b._loading_reason for b in app.buffers):
+        if all(not b.loading_state.reason for b in app.buffers):
             settled += 1
             if settled >= 5:
                 return
@@ -296,7 +296,7 @@ async def test_stream_sort_100k():
         settled = 0
         while time.monotonic() < deadline:
             await pilot.pause(delay=0.05)
-            loading = getattr(buf, "_loading_reason", None)
+            loading = buf.loading_state.reason
             feeder_done = not feeder.is_alive()
             if (
                 feeder_done

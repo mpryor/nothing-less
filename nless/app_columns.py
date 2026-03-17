@@ -7,11 +7,12 @@ import json
 import re
 from typing import TYPE_CHECKING
 
+from .buffer_columns import HIDDEN_COLUMN_SENTINEL_POSITION
 from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .nlessselect import NlessSelect
 from .suggestions import PipeSeparatedSuggestionProvider, StaticSuggestionProvider
-from .types import Column, MetadataColumn
+from .types import Column, MetadataColumn, UpdateReason
 
 if TYPE_CHECKING:
     from .app import NlessApp
@@ -90,7 +91,7 @@ class ColumnOpsMixin:
             callback=lambda: data_table.move_cursor(
                 column=new_render_position, row=old_row
             ),
-            reason="Adding column",
+            reason=UpdateReason.ADDING_COLUMN,
         )
 
     def action_json_header(self: NlessApp) -> None:
@@ -353,7 +354,7 @@ class ColumnOpsMixin:
         if should_update:
             if current_buffer.raw_mode:
                 current_buffer.raw_mode = False
-            current_buffer._deferred_update_table(reason="Splitting column")
+            current_buffer._deferred_update_table(reason=UpdateReason.SPLITTING_COLUMN)
 
     def action_toggle_arrival(self: NlessApp) -> None:
         """Toggle visibility of the arrival timestamp column, pinned to the left."""
@@ -389,7 +390,7 @@ class ColumnOpsMixin:
             old_pos = arrival_col.render_position
             arrival_col.hidden = True
             arrival_col.pinned = False
-            arrival_col.render_position = 99999
+            arrival_col.render_position = HIDDEN_COLUMN_SENTINEL_POSITION
             # Close the gap
             for c in buf.current_columns:
                 if (
@@ -399,7 +400,7 @@ class ColumnOpsMixin:
                     c.render_position -= 1
 
         buf.invalidate_caches()
-        buf._deferred_update_table(reason="Toggling arrival column")
+        buf._deferred_update_table(reason=UpdateReason.TOGGLING_ARRIVAL)
 
     def handle_column_filter_submitted(
         self: NlessApp, event: AutocompleteInput.Submitted
@@ -470,4 +471,4 @@ class ColumnOpsMixin:
             for i, col in enumerate(sorted_columns):
                 col.render_position = i
 
-        curr_buffer._deferred_update_table(reason="Filtering columns")
+        curr_buffer._deferred_update_table(reason=UpdateReason.FILTERING_COLUMNS)

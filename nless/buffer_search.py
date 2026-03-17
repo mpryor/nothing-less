@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from textual.coordinate import Coordinate
 
 from .dataprocessing import highlight_search_matches, strip_markup
+from .types import UpdateReason
 
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
@@ -37,19 +38,19 @@ class SearchMixin:
                 return
             try:
                 if search_term:
-                    self.search_term = re.compile(search_term, re.IGNORECASE)
+                    self.query.search_term = re.compile(search_term, re.IGNORECASE)
                 else:
-                    self.search_term = None
+                    self.query.search_term = None
             except re.error:
                 self.notify("Invalid regex pattern", severity="error")
                 return
 
         def _after_search():
-            if self.search_matches:
+            if self.query.search_matches:
                 self._navigate_search(1)  # Jump to first match
 
         self._deferred_update_table(
-            restore_position=False, callback=_after_search, reason="Searching"
+            restore_position=False, callback=_after_search, reason=UpdateReason.SEARCH
         )
 
     def _search_match_style(self: NlessBuffer) -> str:
@@ -66,25 +67,25 @@ class SearchMixin:
         """Apply search highlighting to rows and populate search_matches."""
         result, new_matches = highlight_search_matches(
             rows,
-            self.search_term,
+            self.query.search_term,
             fixed_columns,
             row_offset,
             search_match_style=self._search_match_style(),
         )
-        self.search_matches.extend(Coordinate(r, c) for r, c in new_matches)
+        self.query.search_matches.extend(Coordinate(r, c) for r, c in new_matches)
         return result
 
     def _navigate_search(self: NlessBuffer, direction: int) -> None:
         """Navigate through search matches."""
-        if not self.search_matches:
+        if not self.query.search_matches:
             self.notify("No search results.", severity="warning")
             return
 
-        num_matches = len(self.search_matches)
-        self.current_match_index = (
-            self.current_match_index + direction + num_matches
+        num_matches = len(self.query.search_matches)
+        self.query.current_match_index = (
+            self.query.current_match_index + direction + num_matches
         ) % num_matches  # Wrap around
-        target_coord = self.search_matches[self.current_match_index]
+        target_coord = self.query.search_matches[self.query.current_match_index]
         data_table = self.query_one(".nless-view")
         data_table.move_cursor(row=target_coord.row, column=target_coord.column)
         self._update_status_bar()

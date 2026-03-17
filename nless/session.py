@@ -36,6 +36,7 @@ class SessionComputedColumn:
     json_ref: str  # JSON path (empty string if not JSON)
     delimiter: str | None = None  # string delimiter
     delimiter_regex: str | None = None  # regex pattern string
+    delimiter_regex_flags: int = 0  # re flags for regex delimiter
 
 
 @dataclass
@@ -125,14 +126,14 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
     # Delimiter
     delimiter_str = None
     delimiter_regex = None
-    if isinstance(buf.delimiter, re.Pattern):
-        delimiter_regex = buf.delimiter.pattern
-    elif isinstance(buf.delimiter, str):
-        delimiter_str = buf.delimiter
+    if isinstance(buf.delim.value, re.Pattern):
+        delimiter_regex = buf.delim.value.pattern
+    elif isinstance(buf.delim.value, str):
+        delimiter_str = buf.delim.value
 
     # Filters
     filters = []
-    for f in buf.current_filters:
+    for f in buf.query.filters:
         filters.append(
             SessionFilter(
                 column=f.column,
@@ -161,6 +162,9 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                 cc_delim_regex = col.delimiter.pattern
             elif isinstance(col.delimiter, str):
                 cc_delim = col.delimiter
+            cc_delim_regex_flags = (
+                col.delimiter.flags if isinstance(col.delimiter, re.Pattern) else 0
+            )
             computed_columns.append(
                 SessionComputedColumn(
                     name=col.name,
@@ -169,6 +173,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                     json_ref=col.json_ref,
                     delimiter=cc_delim,
                     delimiter_regex=cc_delim_regex,
+                    delimiter_regex_flags=cc_delim_regex_flags,
                 )
             )
 
@@ -178,7 +183,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
         highlights.append(SessionHighlight(pattern=pattern.pattern, color=color))
 
     # Search term
-    search_term = buf.search_term.pattern if buf.search_term else None
+    search_term = buf.query.search_term.pattern if buf.query.search_term else None
 
     # Cursor position from DataTable widget
     try:
@@ -190,13 +195,13 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
     return SessionBufferState(
         delimiter=delimiter_str,
         delimiter_regex=delimiter_regex,
-        delimiter_name=buf.delimiter_name,
+        delimiter_name=buf.delim.name,
         raw_mode=buf.raw_mode,
-        sort_column=buf.sort_column,
-        sort_reverse=buf.sort_reverse,
+        sort_column=buf.query.sort_column,
+        sort_reverse=buf.query.sort_reverse,
         filters=filters,
         columns=columns,
-        unique_column_names=sorted(buf.unique_column_names),
+        unique_column_names=sorted(buf.query.unique_column_names),
         computed_columns=computed_columns,
         highlights=highlights,
         time_window=buf.time_window,
@@ -205,7 +210,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
         search_term=search_term,
         cursor_row=cursor_row,
         cursor_column=cursor_column,
-        source_labels=list(buf._source_labels),
+        source_labels=list(buf.stream.source_labels),
     )
 
 
@@ -224,87 +229,75 @@ def _delimiters_match(buf: NlessBuffer, state: SessionBufferState) -> bool:
         return True
     if state.delimiter_regex:
         return (
-            isinstance(buf.delimiter, re.Pattern)
-            and buf.delimiter.pattern == state.delimiter_regex
+            isinstance(buf.delim.value, re.Pattern)
+            and buf.delim.value.pattern == state.delimiter_regex
         )
     if state.delimiter:
-        return buf.delimiter == state.delimiter
-    return buf.delimiter is None
+        return buf.delim.value == state.delimiter
+    return buf.delim.value is None
 
 
-def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
-    """Apply saved session state to a buffer.
+def _apply_session_computed_columns(
+    buf: NlessBuffer, state: SessionBufferState, skipped: list[str]
+) -> None:
+    """Replay computed columns (column splits & JSON extractions)."""
+    if not state.computed_columns:
+        return
+    from .types import Column, MetadataColumn
 
-    Returns a list of human-readable descriptions of settings that were
-    skipped (e.g. because the referenced column doesn't exist in the
-    current data).
-    """
+    existing_names = {c.name for c in buf.current_columns}
+    arrival_col = next(
+        (c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value),
+        None,
+    )
+    base_position = (
+        arrival_col.data_position if arrival_col else len(buf.current_columns)
+    )
+    added = 0
+    for sc in state.computed_columns:
+        if sc.name in existing_names:
+            continue
+        if sc.col_ref and sc.col_ref not in existing_names:
+            skipped.append(
+                f"computed column '{sc.name}' (source '{sc.col_ref}' not found)"
+            )
+            continue
+        delim = (
+            re.compile(sc.delimiter_regex, sc.delimiter_regex_flags)
+            if sc.delimiter_regex
+            else sc.delimiter
+        )
+        buf.current_columns.append(
+            Column(
+                name=sc.name,
+                labels=set(),
+                render_position=base_position + added,
+                data_position=base_position + added,
+                hidden=False,
+                computed=True,
+                delimiter=delim,
+                col_ref=sc.col_ref,
+                col_ref_index=sc.col_ref_index,
+                json_ref=sc.json_ref,
+            )
+        )
+        existing_names.add(sc.name)
+        added += 1
+    if arrival_col and added > 0:
+        arrival_col.data_position = base_position + added
+        arrival_col.render_position = (
+            max(c.render_position for c in buf.current_columns) + 1
+        )
+    if buf.raw_mode:
+        buf.raw_mode = False
+
+
+def _apply_session_filters(
+    buf: NlessBuffer, state: SessionBufferState, skipped: list[str]
+) -> None:
+    """Apply saved filter state."""
     from .types import Filter
 
-    skipped: list[str] = []
-
-    # Switch delimiter if it differs — this re-parses all rows
-    if not _delimiters_match(buf, state):
-        delimiter_input = _get_delimiter_input(state)
-        if not delimiter_input and state.raw_mode:
-            delimiter_input = "raw"
-        if delimiter_input:
-            buf.switch_delimiter(delimiter_input)
-        if state.delimiter_name:
-            buf.delimiter_name = state.delimiter_name
-
-    # Replay computed columns (column splits & JSON extractions)
-    if state.computed_columns:
-        from .types import Column, MetadataColumn
-
-        existing_names = {c.name for c in buf.current_columns}
-        # Insert before ARRIVAL metadata so it stays last (mirrors _add_computed_columns)
-        arrival_col = next(
-            (c for c in buf.current_columns if c.name == MetadataColumn.ARRIVAL.value),
-            None,
-        )
-        base_position = (
-            arrival_col.data_position if arrival_col else len(buf.current_columns)
-        )
-        added = 0
-        for sc in state.computed_columns:
-            if sc.name in existing_names:
-                continue
-            if sc.col_ref and sc.col_ref not in existing_names:
-                skipped.append(
-                    f"computed column '{sc.name}' (source '{sc.col_ref}' not found)"
-                )
-                continue
-            delim = (
-                re.compile(sc.delimiter_regex) if sc.delimiter_regex else sc.delimiter
-            )
-            buf.current_columns.append(
-                Column(
-                    name=sc.name,
-                    labels=set(),
-                    render_position=base_position + added,
-                    data_position=base_position + added,
-                    hidden=False,
-                    computed=True,
-                    delimiter=delim,
-                    col_ref=sc.col_ref,
-                    col_ref_index=sc.col_ref_index,
-                    json_ref=sc.json_ref,
-                )
-            )
-            existing_names.add(sc.name)
-            added += 1
-        # Push ARRIVAL to the end
-        if arrival_col and added > 0:
-            arrival_col.data_position = base_position + added
-            arrival_col.render_position = (
-                max(c.render_position for c in buf.current_columns) + 1
-            )
-        # Switch out of raw mode so DataTable renders the computed columns
-        if buf.raw_mode:
-            buf.raw_mode = False
-
-    # Filters
     filters_to_apply = []
     for f in state.filters:
         if f.column:
@@ -318,10 +311,13 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
                 exclude=f.exclude,
             )
         )
-    buf.current_filters = filters_to_apply
+    buf.query.filters = filters_to_apply
 
-    # Unique columns — must come before column settings so the count
-    # column exists when we apply saved render_position values.
+
+def _apply_session_unique_columns(
+    buf: NlessBuffer, state: SessionBufferState, skipped: list[str]
+) -> None:
+    """Apply unique column settings and add count column if needed."""
     if state.unique_column_names:
         col_names = {c.name for c in buf.current_columns}
         missing_unique = [
@@ -329,16 +325,14 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
         ]
         for name in missing_unique:
             skipped.append(f"unique on '{name}'")
-    buf.unique_column_names = set(state.unique_column_names)
-    if buf.unique_column_names:
+    buf.query.unique_column_names = set(state.unique_column_names)
+    if buf.query.unique_column_names:
         from .dataprocessing import strip_markup
         from .types import Column, MetadataColumn
 
-        # Add "U" labels to the unique columns
         for col in buf.current_columns:
-            if strip_markup(col.name) in buf.unique_column_names:
+            if strip_markup(col.name) in buf.query.unique_column_names:
                 col.labels.add("U")
-        # Add count column if not already present (mirrors handle_mark_unique)
         if MetadataColumn.COUNT.value not in [c.name for c in buf.current_columns]:
             buf.current_columns = [
                 replace(
@@ -360,19 +354,27 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
                 ),
             )
 
-    # Sort — applied after unique columns so metadata columns (e.g. _count) exist
+
+def _apply_session_sort(
+    buf: NlessBuffer, state: SessionBufferState, skipped: list[str]
+) -> None:
+    """Apply sort state after unique columns exist."""
     if state.sort_column:
         col_names = {c.name for c in buf.current_columns}
         if state.sort_column in col_names:
-            buf.sort_column = state.sort_column
-            buf.sort_reverse = state.sort_reverse
+            buf.query.sort_column = state.sort_column
+            buf.query.sort_reverse = state.sort_reverse
         else:
             skipped.append(f"sort (column '{state.sort_column}' not found)")
     else:
-        buf.sort_column = state.sort_column
-        buf.sort_reverse = state.sort_reverse
+        buf.query.sort_column = state.sort_column
+        buf.query.sort_reverse = state.sort_reverse
 
-    # Columns — apply visibility, pinned, and order by matching name
+
+def _apply_session_columns(
+    buf: NlessBuffer, state: SessionBufferState, skipped: list[str]
+) -> None:
+    """Apply column visibility, pinning, and order."""
     col_settings = {c.name: c for c in state.columns}
     current_col_names = {c.name for c in buf.current_columns}
     unmatched_col_count = sum(
@@ -387,6 +389,32 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
             col.pinned = saved.pinned
             col.render_position = saved.render_position
 
+
+def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
+    """Apply saved session state to a buffer.
+
+    Returns a list of human-readable descriptions of settings that were
+    skipped (e.g. because the referenced column doesn't exist in the
+    current data).
+    """
+    skipped: list[str] = []
+
+    # Switch delimiter if it differs — this re-parses all rows
+    if not _delimiters_match(buf, state):
+        delimiter_input = _get_delimiter_input(state)
+        if not delimiter_input and state.raw_mode:
+            delimiter_input = "raw"
+        if delimiter_input:
+            buf.switch_delimiter(delimiter_input)
+        if state.delimiter_name:
+            buf.delim.name = state.delimiter_name
+
+    _apply_session_computed_columns(buf, state, skipped)
+    _apply_session_filters(buf, state, skipped)
+    _apply_session_unique_columns(buf, state, skipped)
+    _apply_session_sort(buf, state, skipped)
+    _apply_session_columns(buf, state, skipped)
+
     # Highlights
     buf.regex_highlights = [(re.compile(h.pattern), h.color) for h in state.highlights]
 
@@ -400,21 +428,19 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
     # Search term
     if state.search_term:
         try:
-            buf.search_term = re.compile(state.search_term, re.IGNORECASE)
+            buf.query.search_term = re.compile(state.search_term, re.IGNORECASE)
         except re.error:
             pass
 
     # Source labels (merged buffers)
     if state.source_labels:
-        buf._source_labels = list(state.source_labels)
+        buf.stream.set_source_labels(list(state.source_labels))
 
     # Cursor position — deferred until _deferred_update_table runs
     if state.cursor_row or state.cursor_column:
         buf._pending_cursor_position = (state.cursor_row, state.cursor_column)
 
     # Rebuild caches — callers are responsible for triggering re-render
-    # via _deferred_update_table (add_logs does this via _needs_deferred_update;
-    # main-thread callers must call it explicitly).
     buf._rebuild_column_caches()
 
     return skipped

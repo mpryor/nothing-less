@@ -15,7 +15,7 @@ async def _wait(pilot, app):
     settled = 0
     for _ in range(300):  # 3s max
         await pilot.pause(delay=0.01)
-        if all(not b._loading_reason for b in app.buffers):
+        if all(not b.loading_state.reason for b in app.buffers):
             settled += 1
             if settled >= 5:
                 return
@@ -49,8 +49,8 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert buf.sort_column == "name"
-            assert buf.sort_reverse is False
+            assert buf.query.sort_column == "name"
+            assert buf.query.sort_reverse is False
             assert [r[0] for r in buf.displayed_rows] == ["Alice", "Bob", "Charlie"]
 
     @pytest.mark.asyncio
@@ -65,7 +65,7 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert buf.sort_reverse is True
+            assert buf.query.sort_reverse is True
             assert [r[0] for r in buf.displayed_rows] == ["Charlie", "Bob", "Alice"]
 
     @pytest.mark.asyncio
@@ -83,7 +83,7 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert buf.sort_column is None
+            assert buf.query.sort_column is None
             assert [r[0] for r in buf.displayed_rows] == original
 
     @pytest.mark.asyncio
@@ -102,7 +102,7 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert buf.sort_column == "age"
+            assert buf.query.sort_column == "age"
             assert [r[1] for r in buf.displayed_rows] == ["5", "30", "100"]
 
     @pytest.mark.asyncio
@@ -115,7 +115,7 @@ class TestSort:
             buf.action_sort()
             await _wait(pilot, app)
 
-            assert not buf._loading_reason
+            assert not buf.loading_state.reason
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ class TestFilter:
 
             assert len(app.buffers) == 3
             # Cleared buffer should have all rows that survived the first copy
-            assert len(app.buffers[2].current_filters) == 0
+            assert len(app.buffers[2].query.filters) == 0
 
     @pytest.mark.asyncio
     async def test_filter_preserves_original(self, cli_args):
@@ -224,7 +224,7 @@ class TestFilter:
 
             # Original buffer should be untouched
             assert len(buf.displayed_rows) == 3
-            assert len(buf.current_filters) == 0
+            assert len(buf.query.filters) == 0
 
     @pytest.mark.asyncio
     async def test_filter_loading_cleared(self, cli_args):
@@ -236,7 +236,7 @@ class TestFilter:
             app._perform_filter("Alice", "name")
             await _wait(pilot, app)
 
-            assert not buf._loading_reason
+            assert not buf.loading_state.reason
             # Verify the filter actually created a new buffer with correct rows
             assert len(app.buffers) == 2
             filtered_buf = app.buffers[1]
@@ -262,9 +262,9 @@ class TestSearch:
             buf._perform_search("NYC")
             await _wait(pilot, app)
 
-            assert buf.search_term is not None
+            assert buf.query.search_term is not None
             assert (
-                len(buf.search_matches) == 2
+                len(buf.query.search_matches) == 2
             )  # NYC appears in city column of rows 0 and 2
 
     @pytest.mark.asyncio
@@ -277,7 +277,7 @@ class TestSearch:
             buf._perform_search("Alice")
             await _wait(pilot, app)
 
-            assert buf.current_match_index >= 0
+            assert buf.query.current_match_index >= 0
 
     @pytest.mark.asyncio
     async def test_clear_search(self, cli_args):
@@ -288,12 +288,12 @@ class TestSearch:
 
             buf._perform_search("Alice")
             await _wait(pilot, app)
-            assert buf.search_term is not None
+            assert buf.query.search_term is not None
 
             buf._perform_search(None)
             await _wait(pilot, app)
-            assert buf.search_term is None
-            assert len(buf.search_matches) == 0
+            assert buf.query.search_term is None
+            assert len(buf.query.search_matches) == 0
 
     @pytest.mark.asyncio
     async def test_search_to_filter(self, cli_args):
@@ -310,8 +310,8 @@ class TestSearch:
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
-            assert len(new_buf.current_filters) == 1
-            assert new_buf.current_filters[0].column is None  # "any" filter
+            assert len(new_buf.query.filters) == 1
+            assert new_buf.query.filters[0].column is None  # "any" filter
 
     @pytest.mark.asyncio
     async def test_search_to_filter_no_search(self, cli_args):
@@ -354,7 +354,7 @@ class TestMarkUnique:
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
-            assert "name" in new_buf.unique_column_names
+            assert "name" in new_buf.query.unique_column_names
 
     @pytest.mark.asyncio
     async def test_mark_unique_adds_count_column(self, cli_args):
@@ -404,8 +404,8 @@ class TestMarkUnique:
             await _wait(pilot, app)
 
             new_buf = app.buffers[1]
-            assert new_buf.sort_column == MetadataColumn.COUNT.value
-            assert new_buf.sort_reverse is True
+            assert new_buf.query.sort_column == MetadataColumn.COUNT.value
+            assert new_buf.query.sort_reverse is True
 
     @pytest.mark.asyncio
     async def test_mark_unique_loading_cleared(self, cli_args):
@@ -417,7 +417,7 @@ class TestMarkUnique:
             app.action_mark_unique()
             await _wait(pilot, app)
 
-            assert not buf._loading_reason
+            assert not buf.loading_state.reason
 
     @pytest.mark.asyncio
     async def test_mark_unique_streaming_updates_counts(self, cli_args):
@@ -441,7 +441,7 @@ class TestMarkUnique:
             await _wait(pilot, app)
 
             new_buf = app.buffers[1]
-            assert "city" in new_buf.unique_column_names
+            assert "city" in new_buf.query.unique_column_names
 
             # Wait for initial deferred update to complete
             await _wait(pilot, app)
@@ -687,8 +687,8 @@ class TestDeferredGeneration:
             await _wait(pilot, app)
 
             # Three presses: asc → desc → clear
-            assert buf.sort_column is None
-            assert not buf._loading_reason
+            assert buf.query.sort_column is None
+            assert not buf.loading_state.reason
             # Rows should be in original insertion order (unsorted)
             names = [strip_markup(r[0]) for r in buf.displayed_rows]
             assert names == ["Charlie", "Alice", "Bob"]
@@ -719,7 +719,7 @@ class TestDelimiterChange:
             await _wait(pilot, app)
 
             # Inferred as tab — change to comma
-            assert buf.delimiter == "\t"
+            assert buf.delim.value == "\t"
             initial_col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert len(initial_col_names) == 3
 
@@ -727,7 +727,7 @@ class TestDelimiterChange:
             await _wait(pilot, app)
 
             # Now delimiter is comma, header re-parsed as single column "a\tb\tc"
-            assert buf.delimiter == ","
+            assert buf.delim.value == ","
             col_names = [c.name for c in buf.current_columns]
             assert col_names != initial_col_names
 
@@ -746,17 +746,17 @@ class TestDelimiterChange:
             await _wait(pilot, app)
             buf._perform_search("Alice")
             await _wait(pilot, app)
-            assert buf.sort_column is not None
-            assert buf.search_term is not None
+            assert buf.query.sort_column is not None
+            assert buf.query.search_term is not None
 
             # Change delimiter — should clear state
             await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
             await _wait(pilot, app)
 
-            assert buf.sort_column is None
-            assert buf.search_term is None
-            assert buf.current_filters == []
-            assert buf.unique_column_names == set()
+            assert buf.query.sort_column is None
+            assert buf.query.search_term is None
+            assert buf.query.filters == []
+            assert buf.query.unique_column_names == set()
 
     @pytest.mark.asyncio
     async def test_change_delimiter_to_raw(self, cli_args):
@@ -773,7 +773,7 @@ class TestDelimiterChange:
             )
             await _wait(pilot, app)
 
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert col_names == ["log"]
 
@@ -791,14 +791,14 @@ class TestDelimiterChange:
                 ],
             )
             await _wait(pilot, app)
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "json"
             )
             await _wait(pilot, app)
 
-            assert buf.delimiter == "json"
+            assert buf.delim.value == "json"
             col_names = [c.name for c in buf.current_columns]
             assert "name" in col_names
             assert "age" in col_names
@@ -820,19 +820,19 @@ class TestDelimiterChange:
                 ],
             )
             await _wait(pilot, app)
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "json"
             )
             await _wait(pilot, app)
 
-            assert buf.delimiter == "json"
+            assert buf.delim.value == "json"
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert "name" in col_names
             assert "age" in col_names
             # 2 preamble lines saved (comment + other preamble)
-            assert len(buf._preamble_lines) == 2
+            assert len(buf.delim.preamble_lines) == 2
             assert buf.displayed_rows, "Should have at least 1 data row"
 
     @pytest.mark.asyncio
@@ -851,7 +851,7 @@ class TestDelimiterChange:
                 ],
             )
             await _wait(pilot, app)
-            assert buf.delimiter == ","
+            assert buf.delim.value == ","
             assert buf.first_log_line == "name,age"
 
             await _submit_prompt(
@@ -859,12 +859,12 @@ class TestDelimiterChange:
             )
             await _wait(pilot, app)
 
-            assert buf.delimiter == "json"
+            assert buf.delim.value == "json"
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert "name" in col_names
             assert "age" in col_names
             # CSV header saved as preamble
-            assert "name,age" in buf._preamble_lines
+            assert "name,age" in buf.delim.preamble_lines
             # Both JSON lines displayed (in JSON mode, header line is also data)
             assert len(buf.displayed_rows) == 2
 
@@ -890,15 +890,15 @@ class TestDelimiterChange:
                 app, pilot, "action_delimiter", "delimiter_input", "json"
             )
             await _wait(pilot, app)
-            assert buf.delimiter == "json"
-            assert "not json preamble" in buf._preamble_lines
+            assert buf.delim.value == "json"
+            assert "not json preamble" in buf.delim.preamble_lines
 
             # Switch back to raw — all 3 original lines visible, no dupes
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "raw"
             )
             await _wait(pilot, app)
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
             displayed = [strip_markup(r[0]) for r in buf.displayed_rows]
             assert len(displayed) == 3, f"Expected 3, got {len(displayed)}: {displayed}"
             assert len(set(displayed)) == 3, f"Duplicates found: {displayed}"
@@ -926,7 +926,7 @@ class TestDelimiterChange:
             await pilot.press("escape")
             await _wait(pilot, app)
 
-            assert isinstance(buf.delimiter, re.Pattern)
+            assert isinstance(buf.delim.value, re.Pattern)
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert col_names == ["host", "level"]
 
@@ -1045,7 +1045,7 @@ class TestDelimiterChange:
 
             # Header was skipped by find_header_index (space != consensus)
             assert buf.first_log_line != header
-            assert buf._preamble_lines == [header]
+            assert buf.delim.preamble_lines == [header]
 
             await _submit_prompt(
                 app, pilot, "action_delimiter", "delimiter_input", "raw"
@@ -1080,7 +1080,7 @@ class TestDelimiterChange:
             _load(buf, lines)
             await _wait(pilot, app)
 
-            assert buf._preamble_lines == [header]
+            assert buf.delim.preamble_lines == [header]
 
             await _submit_prompt(app, pilot, "action_delimiter", "delimiter_input", ",")
             await _wait(pilot, app)
@@ -1109,7 +1109,7 @@ class TestDelimiterChange:
             )
             await _wait(pilot, app)
 
-            assert buf.delimiter == "\t"
+            assert buf.delim.value == "\t"
 
 
 # ---------------------------------------------------------------------------
@@ -1398,9 +1398,9 @@ class TestFilterCursorWord:
 
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
-            assert len(new_buf.current_filters) == 1
-            assert new_buf.current_filters[0].pattern.pattern == "^Alice$"
-            assert new_buf.current_filters[0].column == "name"
+            assert len(new_buf.query.filters) == 1
+            assert new_buf.query.filters[0].pattern.pattern == "^Alice$"
+            assert new_buf.query.filters[0].column == "name"
 
     @pytest.mark.asyncio
     async def test_filter_cursor_word_escapes_regex(self, cli_args):
@@ -1420,7 +1420,7 @@ class TestFilterCursorWord:
             assert len(app.buffers) == 2
             new_buf = app.buffers[1]
             escaped = re.escape("foo.bar")
-            assert new_buf.current_filters[0].pattern.pattern == f"^{escaped}$"
+            assert new_buf.query.filters[0].pattern.pattern == f"^{escaped}$"
 
 
 # ---------------------------------------------------------------------------
@@ -1466,9 +1466,9 @@ class TestFilterCompositeKey:
 
             assert len(app.buffers) == 3
             filtered_buf = app.buffers[2]
-            assert len(filtered_buf.current_filters) >= 1
+            assert len(filtered_buf.query.filters) >= 1
             # The filter should match the city from the cursor row
-            filter_columns = [f.column for f in filtered_buf.current_filters]
+            filter_columns = [f.column for f in filtered_buf.query.filters]
             assert "city" in filter_columns
 
 
@@ -1540,14 +1540,14 @@ class TestSearchNavigation:
             buf._perform_search("NYC")
             await _wait(pilot, app)
 
-            assert len(buf.search_matches) == 2
-            first_index = buf.current_match_index
+            assert len(buf.query.search_matches) == 2
+            first_index = buf.query.current_match_index
 
             buf.action_next_search()
             await _wait(pilot, app)
 
-            assert buf.current_match_index == (first_index + 1) % len(
-                buf.search_matches
+            assert buf.query.current_match_index == (first_index + 1) % len(
+                buf.query.search_matches
             )
 
     @pytest.mark.asyncio
@@ -1563,15 +1563,15 @@ class TestSearchNavigation:
             buf._perform_search("NYC")
             await _wait(pilot, app)
 
-            assert len(buf.search_matches) == 2
+            assert len(buf.query.search_matches) == 2
 
             # Navigate to first match (index 0)
-            buf.current_match_index = 0
+            buf.query.current_match_index = 0
 
             # Previous should wrap to last match
             buf.action_previous_search()
 
-            assert buf.current_match_index == len(buf.search_matches) - 1
+            assert buf.query.current_match_index == len(buf.query.search_matches) - 1
 
     @pytest.mark.asyncio
     async def test_search_cursor_word(self, cli_args):
@@ -1588,9 +1588,9 @@ class TestSearchNavigation:
             buf.action_search_cursor_word()
             await _wait(pilot, app)
 
-            assert buf.search_term is not None
-            assert buf.search_term.pattern == re.escape("Alice")
-            assert len(buf.search_matches) == 1
+            assert buf.query.search_term is not None
+            assert buf.query.search_term.pattern == re.escape("Alice")
+            assert len(buf.query.search_matches) == 1
 
 
 class TestExcludeFilter:
@@ -1884,11 +1884,11 @@ class TestTimeWindow:
             await _wait(pilot, app)
 
             # Backdate the first row's timestamp so it falls outside the window
-            buf._arrival_timestamps[0] = time.time() - 7200  # 2 hours ago
+            buf.stream._arrival_timestamps[0] = time.time() - 7200  # 2 hours ago
 
             buf.time_window = 3600.0  # 1 hour
-            buf._parsed_rows = None
-            buf._cached_col_widths = None
+            buf.cache.parsed_rows = None
+            buf.cache.col_widths = None
             buf._deferred_update_table(reason="test")
             await _wait(pilot, app)
 
@@ -1906,18 +1906,18 @@ class TestTimeWindow:
             _load(buf, ["a,b", "1,2", "3,4", "5,6"])
             await _wait(pilot, app)
 
-            buf._arrival_timestamps[0] = time.time() - 7200
+            buf.stream._arrival_timestamps[0] = time.time() - 7200
             buf.time_window = 3600.0
-            buf._parsed_rows = None
-            buf._cached_col_widths = None
+            buf.cache.parsed_rows = None
+            buf.cache.col_widths = None
             buf._deferred_update_table(reason="test")
             await _wait(pilot, app)
             assert len(buf.displayed_rows) == 2
 
             # Clear the window
             buf.time_window = None
-            buf._parsed_rows = None
-            buf._cached_col_widths = None
+            buf.cache.parsed_rows = None
+            buf.cache.col_widths = None
             buf._deferred_update_table(reason="test")
             await _wait(pilot, app)
 
@@ -1935,7 +1935,7 @@ class TestTimeWindow:
             await _wait(pilot, app)
 
             # Backdate the first row
-            buf._arrival_timestamps[0] = time.time() - 7200
+            buf.stream._arrival_timestamps[0] = time.time() - 7200
 
             await _submit_prompt(
                 app, pilot, "action_time_window", "time_window_input", "1h"
@@ -1978,7 +1978,7 @@ class TestTimeWindow:
             _load(buf, ["a,b", "1,2", "3,4", "5,6"])
             await _wait(pilot, app)
 
-            buf._arrival_timestamps[0] = time.time() - 7200
+            buf.stream._arrival_timestamps[0] = time.time() - 7200
 
             await _submit_prompt(
                 app, pilot, "action_time_window", "time_window_input", "1h"
@@ -2070,7 +2070,7 @@ class TestRawPagerMode:
         async with app.run_test(size=(120, 40)):
             buf = app.buffers[0]
             assert buf.raw_mode is True
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
 
     @pytest.mark.asyncio
     async def test_raw_mode_uses_raw_pager_widget(self):
@@ -2122,7 +2122,7 @@ class TestRawPagerMode:
             await _wait(pilot, app)
 
             assert buf.raw_mode is True
-            assert buf.delimiter == "raw"
+            assert buf.delim.value == "raw"
             widget = buf.query_one(".nless-view")
             assert isinstance(widget, RawPager)
 
@@ -2147,7 +2147,7 @@ class TestRawPagerMode:
             await _wait(pilot, app)
 
             assert buf.raw_mode is False
-            assert buf.delimiter == ","
+            assert buf.delim.value == ","
             widget = buf.query_one(".nless-view")
             assert not isinstance(widget, RawPager)
 
@@ -2187,8 +2187,8 @@ class TestRawPagerMode:
             buf._perform_search("Hello")
             await _wait(pilot, app)
 
-            assert buf.search_term is not None
-            assert len(buf.search_matches) == 2
+            assert buf.query.search_term is not None
+            assert len(buf.query.search_matches) == 2
 
     @pytest.mark.asyncio
     async def test_raw_mode_navigation(self):
@@ -2577,7 +2577,7 @@ class TestViewExcludedLines:
 
             # ~ on filtered unparsed buffer
             for i, b in enumerate(app.buffers):
-                if b.current_filters:
+                if b.query.filters:
                     app._switch_to_buffer(i)
                     break
             app._get_current_buffer().action_view_unparsed_logs()
@@ -2585,7 +2585,7 @@ class TestViewExcludedLines:
 
             # Close the filtered buffer
             for i, b in enumerate(app.buffers):
-                if b.current_filters:
+                if b.query.filters:
                     app._switch_to_buffer(i)
                     app.action_close_active_buffer()
                     break
@@ -2593,7 +2593,7 @@ class TestViewExcludedLines:
 
             # ~ on the remaining raw unparsed buffer — should NOT say "all shown"
             for i, b in enumerate(app.buffers):
-                if b.delimiter == "raw" and not b.current_filters:
+                if b.delim.value == "raw" and not b.query.filters:
                     app._switch_to_buffer(i)
                     break
             before = len(app.buffers)
@@ -2617,7 +2617,7 @@ class TestPinSearchAsHighlight:
             # Search for Alice
             buf._perform_search("Alice")
             await _wait(pilot, app)
-            assert buf.search_term is not None
+            assert buf.query.search_term is not None
 
             # Pin the search as a highlight — opens color picker
             app.action_add_highlight()
@@ -2628,7 +2628,7 @@ class TestPinSearchAsHighlight:
             await _wait(pilot, app)
 
             # Search should be cleared, highlight should be added
-            assert buf.search_term is None
+            assert buf.query.search_term is None
             assert len(buf.regex_highlights) == 1
             pattern, color = buf.regex_highlights[0]
             assert pattern.pattern == "Alice"
@@ -2663,7 +2663,7 @@ class TestPinSearchAsHighlight:
             assert len(buf.regex_highlights) == 2
             assert buf.regex_highlights[0][1] == "#ff5555"  # red
             assert buf.regex_highlights[1][1] == "#ffb86c"  # orange
-            assert buf.search_term is None
+            assert buf.query.search_term is None
 
     @pytest.mark.asyncio
     async def test_plus_with_no_search_clears_highlights(self, cli_args):
@@ -2732,7 +2732,7 @@ class TestPinSearchAsHighlight:
             await _wait(pilot, app)
             await pilot.press("enter")
             await _wait(pilot, app)
-            assert buf.search_term is None
+            assert buf.query.search_term is None
 
             # Navigate to Alice highlight
             app.action_navigate_highlight()
@@ -2741,8 +2741,8 @@ class TestPinSearchAsHighlight:
             await _wait(pilot, app)
 
             # Alice should now be the active search
-            assert buf.search_term is not None
-            assert buf.search_term.pattern == "Alice"
+            assert buf.query.search_term is not None
+            assert buf.query.search_term.pattern == "Alice"
 
     @pytest.mark.asyncio
     async def test_navigate_no_highlights_shows_message(self, cli_args):
@@ -3098,7 +3098,7 @@ class TestSessionIntegration:
             await _wait(pilot, app)
 
             # Add a filter
-            buf.current_filters.append(
+            buf.query.filters.append(
                 __import__("nless.types", fromlist=["Filter"]).Filter(
                     column="name", pattern=re.compile("Alice"), exclude=False
                 )
@@ -3486,7 +3486,7 @@ class TestSessionIntegration:
             # Verify count column was added
             col_names = [c.name for c in buf2.current_columns]
             assert "count" in col_names, f"Count column missing: {col_names}"
-            assert buf2.unique_column_names == {"name"}
+            assert buf2.query.unique_column_names == {"name"}
 
             # Verify dedup worked — should have 2 unique rows
             assert len(buf2.displayed_rows) == 2
@@ -3853,8 +3853,8 @@ class TestViews:
             await _wait(pilot, app)
 
             # Set up some state
-            buf.sort_column = "age"
-            buf.sort_reverse = True
+            buf.query.sort_column = "age"
+            buf.query.sort_reverse = True
 
             # Capture and save
             state = capture_view_state(buf)
@@ -3879,8 +3879,8 @@ class TestViews:
             buf2._deferred_update_table(reason="View loaded")
             await _wait(pilot2, app2)
 
-            assert buf2.sort_column == "age"
-            assert buf2.sort_reverse is True
+            assert buf2.query.sort_column == "age"
+            assert buf2.query.sort_reverse is True
 
     def test_backward_compat_old_view_files(self, tmp_path, monkeypatch):
         """Old view files without created_at/updated_at still load."""

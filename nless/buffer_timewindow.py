@@ -6,6 +6,8 @@ import re
 import time
 from typing import TYPE_CHECKING
 
+from .types import UpdateReason
+
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
 
@@ -46,7 +48,7 @@ class TimeWindowMixin:
             self._time_window_ceiling = None
             self._stop_rolling_timer()
             self.invalidate_caches()
-            self._deferred_update_table(reason="Clearing time window")
+            self._deferred_update_table(reason=UpdateReason.CLEARING_WINDOW)
             return
 
         rolling = value.endswith("+")
@@ -66,14 +68,14 @@ class TimeWindowMixin:
         self.invalidate_caches()
         if rolling:
             self._time_window_ceiling = None
-            self._deferred_update_table(reason="Applying time window")
+            self._deferred_update_table(reason=UpdateReason.APPLYING_WINDOW)
             self._start_rolling_timer()
         else:
             self._stop_rolling_timer()
             # Fixed window: capture the current moment as the upper bound so
             # newly streamed rows that arrive after this point are excluded.
             self._time_window_ceiling = time.time()
-            self._deferred_update_table(reason="Applying time window")
+            self._deferred_update_table(reason=UpdateReason.APPLYING_WINDOW)
 
     def _apply_initial_time_window(self: NlessBuffer, window_str: str) -> None:
         """Apply a time window from CLI args."""
@@ -116,10 +118,7 @@ class TimeWindowMixin:
     def _stop_rolling_timer(self: NlessBuffer) -> None:
         """Stop the rolling time window timer."""
         if self._rolling_timer is not None:
-            try:
-                self._rolling_timer.stop()
-            except (RuntimeError, Exception):
-                pass
+            self._safe_widget_call(self._rolling_timer.stop)
             self._rolling_timer = None
 
     def _tick_rolling(self: NlessBuffer) -> None:
@@ -128,4 +127,4 @@ class TimeWindowMixin:
             self._stop_rolling_timer()
             return
         self.invalidate_caches()
-        self._deferred_update_table(reason="")
+        self._deferred_update_table(reason=UpdateReason.ROLLING_TICK)

@@ -229,7 +229,7 @@ class RegexWizardMixin:
             if existing:
                 buf = self._get_current_buffer()
                 buf.switch_delimiter(named_regex)
-                buf.delimiter_name = existing[0].name
+                buf.delim.name = existing[0].name
             else:
                 self._pending_log_format_pattern = named_regex
                 self._create_prompt(

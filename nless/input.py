@@ -16,6 +16,18 @@ from nless.types import CliArgs
 
 logger = logging.getLogger(__name__)
 
+# Minimum milliseconds between buffer flushes during streaming.
+# Controls UI update frequency vs CPU overhead tradeoff.
+FLUSH_INTERVAL_MS = 20
+
+# Maximum milliseconds a partial line is held before forced flush.
+# Prevents stale data display on slow streams.
+MAX_BUFFER_HOLD_MS = 200
+
+# Maximum bytes buffered before forced flush regardless of line boundaries.
+# Prevents unbounded memory growth on line-free binary streams.
+MAX_BUFFER_SIZE = 1_000_000
+
 AddLinesCallback = Callable[[list[str]], None]
 IsReadyCallback = Callable[[], bool]
 
@@ -181,9 +193,6 @@ class StdinLineStream(LineStream):
         fcntl.fcntl(self.new_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
         buffer = ""
         TIMEOUT = 0.5
-        FLUSH_INTERVAL_MS = 20
-        MAX_BUFFER_HOLD_MS = 200
-        MAX_BUFFER_SIZE = 1_000_000  # 1 MB
         last_read_time = time.time_ns() / 1_000_000  # - FLUSH_INTERVAL_MS
         buffer_start_time = 0.0
 

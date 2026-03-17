@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from .dataprocessing import strip_markup
 from .operations import handle_mark_unique
 from .suggestions import ColumnValueSuggestionProvider
-from .types import Filter
+from .types import Filter, UpdateReason
 
 if TYPE_CHECKING:
     from .app import NlessApp
@@ -81,8 +81,8 @@ class FilterMixin:
         filter_prefix = "!f" if exclude else "+f"
         if not filter_value:
             new_buf_name = (
-                curr_buffer.current_filters
-                and f"-f:{','.join([f'{"!" if f.exclude else ""}{f.column if f.column else "any"}={f.pattern.pattern}' for f in curr_buffer.current_filters])}"
+                curr_buffer.query.filters
+                and f"-f:{','.join([f'{"!" if f.exclude else ""}{f.column if f.column else "any"}={f.pattern.pattern}' for f in curr_buffer.query.filters])}"
                 or "-f"
             )
         elif column_name is None:
@@ -93,16 +93,16 @@ class FilterMixin:
         notify_removed_unique = (
             filter_value
             and column_name
-            and column_name in curr_buffer.unique_column_names
+            and column_name in curr_buffer.query.unique_column_names
         )
 
         def setup(new_buffer):
             if not filter_value:
-                new_buffer.current_filters = []
+                new_buffer.query.filters = []
             else:
-                if column_name and column_name in new_buffer.unique_column_names:
+                if column_name and column_name in new_buffer.query.unique_column_names:
                     handle_mark_unique(new_buffer, column_name)
-                new_buffer.current_filters.append(
+                new_buffer.query.filters.append(
                     Filter(
                         column=column_name,
                         pattern=compiled_pattern,
@@ -121,7 +121,7 @@ class FilterMixin:
             setup,
             new_buf_name,
             after_add_fn=after_add,
-            reason="Filtering",
+            reason=UpdateReason.FILTER,
             done_reason="Filtered",
         )
 

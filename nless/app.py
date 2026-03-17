@@ -1,4 +1,3 @@
-import asyncio
 import csv
 import json
 import logging
@@ -40,21 +39,8 @@ from nless.suggestions import (
 
 from .config import NlessConfig, load_config, load_input_history, save_config
 from .session import (
-    Session,
-    View,
-    capture_buffer_state,
-    capture_view_state,
-    apply_buffer_state,
     find_session_for_source,
-    delete_session,
-    delete_view,
-    load_sessions,
     load_session_by_name,
-    load_views,
-    rename_session,
-    rename_view,
-    save_session,
-    save_view,
 )
 from .procutil import get_stdin_source
 from .dataprocessing import strip_markup
@@ -65,10 +51,12 @@ from .datatable import Coordinate as NlessCoordinate, Datatable
 from .rawpager import RawPager
 from .keymap import get_all_keymaps, resolve_keymap
 from .theme import get_all_themes, resolve_theme
-from .types import CliArgs, Filter, MetadataColumn
+from .types import CliArgs, Filter, MetadataColumn, StatusContext, UpdateReason
 from .app_columns import ColumnOpsMixin
 from .app_filters import FilterMixin
 from .app_groups import GroupMixin
+from .app_highlights import HighlightMixin
+from .app_sessions import SessionViewMixin
 from .buffer_delimiter import _sample_lines
 from .logformats import (
     LogFormat,
@@ -86,7 +74,15 @@ logger = logging.getLogger(__name__)
 _TAB_SWITCH_KEYS = frozenset(str(i) for i in range(1, 10))
 
 
-class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
+class NlessApp(
+    SessionViewMixin,
+    HighlightMixin,
+    RegexWizardMixin,
+    ColumnOpsMixin,
+    FilterMixin,
+    GroupMixin,
+    App,
+):
     inherit_bindings = False
     ENABLE_COMMAND_PALETTE = False
     _TAB_LABEL_RE = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
@@ -126,6 +122,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         ]
         self.curr_group_idx = 0
         self._pending_file_groups: list[tuple[str, StdinLineStream]] = []
+        self._exit_event = __import__("threading").Event()
 
     @staticmethod
     def _initial_group_name(cli_args: CliArgs) -> str:
@@ -150,6 +147,9 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             if buf.line_stream:
                 buf.line_stream.unsubscribe(buf)
         super().exit(*args, **kwargs)
+
+    def on_unmount(self) -> None:
+        self._exit_event.set()
 
     CSS_PATH = "nless.tcss"
 
@@ -278,10 +278,6 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         ),
     ]
 
-    _pending_highlight_pattern: re.Pattern | None = None
-    _pending_recolor_index: int | None = None
-    _pending_delete_index: int | None = None
-
     def action_open_file(self) -> None:
         """Open a file in a new group."""
         self._create_prompt("Enter file path", "open_file_input")
@@ -340,283 +336,68 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         except (OSError, FileNotFoundError) as e:
             self.notify(f"Error opening file: {e}", severity="error")
 
+    # ── Select event dispatch ──────────────────────────────────────────
+
     def on_select_changed(self, event: Select.Changed) -> None:
         try:
             event.control.remove()
         except (NoMatches, DOMError):
             pass  # NlessSelect already removes itself in on_input_submitted
-        if event.control.id == "theme_select":
-            self.apply_theme(str(event.value))
-            return
-        if event.control.id == "keymap_select":
-            self.apply_keymap(str(event.value))
-            return
-        if event.control.id == "json_header_select":
-            self._apply_json_header(str(event.value))
-            return
-        if event.control.id == "log_format_select":
-            candidates = getattr(self, "_pending_log_format_candidates", None)
-            self._pending_log_format_candidates = None
-            if candidates:
-                fmt = candidates.get(str(event.value))
-                if fmt:
-                    self._apply_log_format(fmt)
-            return
-        if event.control.id == "highlight_color_select":
-            color = str(event.value)
-            pattern = self._pending_highlight_pattern
-            self._pending_highlight_pattern = None
-            if pattern is None:
-                return
-            buf = self._get_current_buffer()
-            # Check for duplicate
-            for existing_pattern, existing_color in buf.regex_highlights:
-                if existing_pattern.pattern == pattern.pattern:
-                    buf.notify(
-                        f"[{existing_color}]{pattern.pattern}[/{existing_color}] is already highlighted — use - to recolor"
-                    )
-                    return
-            buf.regex_highlights.append((pattern, color))
-            pattern_str = pattern.pattern
-            buf._perform_search("")  # clear the search
-            buf.notify(
-                f"Pinned [{color}]{pattern_str}[/{color}] as highlight {len(buf.regex_highlights)}"
-            )
-            return
-        if event.control.id == "highlight_navigate_select":
-            value = str(event.value)
-            buf = self._get_current_buffer()
-            if value.startswith("delete:"):
-                idx = int(value.removeprefix("delete:"))
-                if idx < len(buf.regex_highlights):
-                    self._pending_delete_index = idx
-                    pattern, color = buf.regex_highlights[idx]
-                    select = NlessSelect(
-                        options=[("Yes", "yes"), ("No", "no")],
-                        prompt=f"Remove [{color}]{pattern.pattern}[/{color}] highlight?",
-                        classes="dock-bottom",
-                        id="highlight_delete_confirm",
-                    )
-                    buf.mount(select)
-            elif value.startswith("recolor:"):
-                idx = int(value.removeprefix("recolor:"))
-                if idx < len(buf.regex_highlights):
-                    self._pending_recolor_index = idx
-                    options = [
-                        (f"[{color}]{name} ███[/{color}]", color)
-                        for name, color in zip(self.COLOR_NAMES, self.HIGHLIGHT_COLORS)
-                    ]
-                    select = NlessSelect(
-                        options=options,
-                        prompt="Pick a new color",
-                        classes="dock-bottom",
-                        id="highlight_recolor_select",
-                    )
-                    buf.mount(select)
-            else:
-                idx = int(value)
-                if idx < len(buf.regex_highlights):
-                    pattern, color = buf.regex_highlights[idx]
-                    buf._perform_search(pattern.pattern)
-                    buf.notify(
-                        f"Navigating [{color}]{pattern.pattern}[/{color}] — n/p to jump"
-                    )
-            return
-        if event.control.id == "highlight_recolor_select":
-            color = str(event.value)
-            idx = self._pending_recolor_index
-            self._pending_recolor_index = None
-            buf = self._get_current_buffer()
-            if idx is not None and idx < len(buf.regex_highlights):
-                pattern, _old_color = buf.regex_highlights[idx]
-                buf.regex_highlights[idx] = (pattern, color)
-                buf._deferred_update_table(reason="Highlighting")
-                buf.notify(f"Recolored [{color}]{pattern.pattern}[/{color}]")
-            return
-        if event.control.id == "highlight_delete_confirm":
-            buf = self._get_current_buffer()
-            idx = self._pending_delete_index
-            self._pending_delete_index = None
-            if (
-                str(event.value) == "yes"
-                and idx is not None
-                and idx < len(buf.regex_highlights)
-            ):
-                pattern, color = buf.regex_highlights.pop(idx)
-                buf._deferred_update_table(reason="Highlighting")
-                buf.notify(f"Removed [{color}]{pattern.pattern}[/{color}] highlight")
-            return
-        if event.control.id == "highlight_clear_confirm":
-            if str(event.value) == "yes":
-                buf = self._get_current_buffer()
-                buf.regex_highlights.clear()
-                buf._deferred_update_table(reason="Highlighting")
-                buf.notify("Cleared all highlights")
-            return
-        if event.control.id == "merge_select":
-            value = str(event.value)
-            try:
-                group_id_str, pane_id_str = value.split(":")
-                group_id, pane_id = int(group_id_str), int(pane_id_str)
-            except (ValueError, TypeError):
-                return
-            # Find the target buffer
-            target_buf = None
-            target_group_name = ""
-            for group in self.groups:
-                if group.group_id == group_id:
-                    for b in group.buffers:
-                        if b.pane_id == pane_id:
-                            target_buf = b
-                            target_group_name = group.name
-                            break
-            if target_buf is None:
-                self.notify("Buffer not found", severity="error")
-                return
-            cur_buf = self._get_current_buffer()
-            cur_group_name = self._current_group.name
-            new_pane_id = self._get_new_pane_id()
-            merged = NlessBuffer.init_as_merged(
-                new_pane_id, cur_buf, target_buf, cur_group_name, target_group_name
-            )
-            # Show and pin the _source column
-            for col in merged.current_columns:
-                if col.name == MetadataColumn.SOURCE.value:
-                    col.hidden = False
-                    col.pinned = True
-                    col.render_position = 0
-                    break
-            merged._rebuild_column_caches()
-            self.add_buffer(merged, name="merged")
-            return
-        if event.control.id == "session_select":
-            value = str(event.value)
-            if value == "quick_save" and self._active_session_name:
-                session = self._capture_session(self._active_session_name)
-                save_session(session)
-                self.notify(f"Saved session: {self._active_session_name}")
-            elif value == "save":
-                self._create_prompt("Session name", "session_name_input")
-            elif value.startswith("load:"):
-                idx = int(value.removeprefix("load:"))
-                sessions = load_sessions()
-                if idx < len(sessions):
-                    self.run_worker(self._load_session(sessions[idx]))
-                    self.notify(f"Loaded session: {sessions[idx].name}")
-            elif value.startswith("rename:"):
-                idx = int(value.removeprefix("rename:"))
-                sessions = load_sessions()
-                if idx < len(sessions):
-                    self._pending_session_rename_idx = idx
-                    self._create_prompt("New session name", "session_rename_input")
-            elif value.startswith("delete:"):
-                idx = int(value.removeprefix("delete:"))
-                sessions = load_sessions()
-                if idx < len(sessions):
-                    self._pending_session_delete_idx = idx
-                    session = sessions[idx]
-                    buf = self._get_current_buffer()
-                    select = NlessSelect(
-                        options=[("Yes", "yes"), ("No", "no")],
-                        prompt=f"Delete session '{session.name}'?",
-                        classes="dock-bottom",
-                        id="session_delete_confirm",
-                    )
-                    buf.mount(select)
-            return
-        if event.control.id == "session_delete_confirm":
-            idx = self._pending_session_delete_idx
-            self._pending_session_delete_idx = None
-            if str(event.value) == "yes" and idx is not None:
-                sessions = load_sessions()
-                if idx < len(sessions):
-                    name = sessions[idx].name
-                    delete_session(name)
-                    if self._active_session_name == name:
-                        self._active_session_name = None
-                    self.notify(f"Deleted session: {name}")
-            return
-        if event.control.id == "session_load_prompt":
-            if str(event.value) == "yes":
-                session = self._pending_auto_session
-                self._pending_auto_session = None
-                if session:
-                    self.run_worker(self._load_session(session))
-                    self.notify(f"Loaded session: {session.name}")
-            else:
-                self._pending_auto_session = None
-            return
-        if event.control.id == "view_select":
-            value = str(event.value)
-            if value == "save":
-                self._create_prompt("View name", "view_name_input")
-            elif value == "undo":
-                buf = self._get_current_buffer()
-                if buf._pre_view_state is not None:
-                    # Restore raw data that was compacted by the view's filters
-                    if buf._pre_view_raw_rows is not None:
-                        buf.raw_rows = buf._pre_view_raw_rows
-                        buf._pre_view_raw_rows = None
-                    if buf._pre_view_timestamps is not None:
-                        buf._arrival_timestamps = buf._pre_view_timestamps
-                        buf._pre_view_timestamps = None
-                    buf._parsed_rows = None
-                    apply_buffer_state(buf, buf._pre_view_state)
-                    buf._pre_view_state = None
-                    buf._deferred_update_table(reason="View undone")
-                    self.notify("Restored previous state")
-            elif value.startswith("load:"):
-                idx = int(value.removeprefix("load:"))
-                views = load_views()
-                if idx < len(views):
-                    buf = self._get_current_buffer()
-                    buf._pre_view_state = capture_buffer_state(buf)
-                    buf._pre_view_raw_rows = list(buf.raw_rows)
-                    buf._pre_view_timestamps = list(buf._arrival_timestamps)
-                    skipped = apply_buffer_state(buf, views[idx].state)
-                    buf._deferred_update_table(reason="View loaded")
-                    msg = f"Loaded view: {views[idx].name}"
-                    if skipped:
-                        msg += f" ({len(skipped)} skipped: {', '.join(skipped)})"
-                    self.notify(msg)
-            elif value.startswith("rename:"):
-                idx = int(value.removeprefix("rename:"))
-                views = load_views()
-                if idx < len(views):
-                    self._pending_view_rename_idx = idx
-                    self._create_prompt("New view name", "view_rename_input")
-            elif value.startswith("delete:"):
-                idx = int(value.removeprefix("delete:"))
-                views = load_views()
-                if idx < len(views):
-                    self._pending_view_delete_idx = idx
-                    view = views[idx]
-                    buf = self._get_current_buffer()
-                    select = NlessSelect(
-                        options=[("Yes", "yes"), ("No", "no")],
-                        prompt=f"Delete view '{view.name}'?",
-                        classes="dock-bottom",
-                        id="view_delete_confirm",
-                    )
-                    buf.mount(select)
-            return
-        if event.control.id == "view_delete_confirm":
-            idx = self._pending_view_delete_idx
-            self._pending_view_delete_idx = None
-            if str(event.value) == "yes" and idx is not None:
-                views = load_views()
-                if idx < len(views):
-                    name = views[idx].name
-                    delete_view(name)
-                    self.notify(f"Deleted view: {name}")
-            return
+        if event.control.id:
+            handler = getattr(self, f"_on_{event.control.id}", None)
+            if handler:
+                handler(event)
 
-    _pending_session_delete_idx: int | None = None
-    _pending_session_rename_idx: int | None = None
-    _pending_auto_session: Session | None = None
-    _active_session_name: str | None = None
-    _pending_view_rename_idx: int | None = None
-    _pending_view_delete_idx: int | None = None
+    def _on_theme_select(self, event: Select.Changed) -> None:
+        self.apply_theme(str(event.value))
+
+    def _on_keymap_select(self, event: Select.Changed) -> None:
+        self.apply_keymap(str(event.value))
+
+    def _on_json_header_select(self, event: Select.Changed) -> None:
+        self._apply_json_header(str(event.value))
+
+    def _on_log_format_select(self, event: Select.Changed) -> None:
+        candidates = getattr(self, "_pending_log_format_candidates", None)
+        self._pending_log_format_candidates = None
+        if candidates:
+            fmt = candidates.get(str(event.value))
+            if fmt:
+                self._apply_log_format(fmt)
+
+    def _on_merge_select(self, event: Select.Changed) -> None:
+        value = str(event.value)
+        try:
+            group_id_str, pane_id_str = value.split(":")
+            group_id, pane_id = int(group_id_str), int(pane_id_str)
+        except (ValueError, TypeError):
+            return
+        target_buf = None
+        target_group_name = ""
+        for group in self.groups:
+            if group.group_id == group_id:
+                for b in group.buffers:
+                    if b.pane_id == pane_id:
+                        target_buf = b
+                        target_group_name = group.name
+                        break
+        if target_buf is None:
+            self.notify("Buffer not found", severity="error")
+            return
+        cur_buf = self._get_current_buffer()
+        cur_group_name = self._current_group.name
+        new_pane_id = self._get_new_pane_id()
+        merged = NlessBuffer.init_as_merged(
+            new_pane_id, cur_buf, target_buf, cur_group_name, target_group_name
+        )
+        for col in merged.current_columns:
+            if col.name == MetadataColumn.SOURCE.value:
+                col.hidden = False
+                col.pinned = True
+                col.render_position = 0
+                break
+        merged._rebuild_column_caches()
+        self.add_buffer(merged, name="merged")
 
     def action_write_to_file(self) -> None:
         """Write the current view to a file."""
@@ -659,7 +440,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         buffer_name,
         after_add_fn=None,
         add_prev_index=True,
-        reason="Loading",
+        reason: UpdateReason = UpdateReason.LOADING,
         done_reason="Loaded",
     ):
         """Run copy() + setup on a background thread, then add_buffer on main thread."""
@@ -667,8 +448,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         source_group_idx = self.curr_group_idx
         new_pane_id = self._get_new_pane_id()
         source_row_count = len(curr_buffer.displayed_rows)
-        reason = f"{reason} {source_row_count:,} rows"
-        curr_buffer.start_loading(reason)
+        display_reason = f"{reason} {source_row_count:,} rows"
+        curr_buffer.start_loading(display_reason)
 
         def _run():
             try:
@@ -737,9 +518,9 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         def setup(new_buffer):
             handle_mark_unique(new_buffer, unique_column_name)
             # When adding a unique key, sort by count descending by default
-            if unique_column_name in new_buffer.unique_column_names:
-                new_buffer.sort_column = MetadataColumn.COUNT.value
-                new_buffer.sort_reverse = True
+            if unique_column_name in new_buffer.query.unique_column_names:
+                new_buffer.query.sort_column = MetadataColumn.COUNT.value
+                new_buffer.query.sort_reverse = True
                 for col in new_buffer.current_columns:
                     if col.name == MetadataColumn.COUNT.value:
                         col.labels.add("▼")
@@ -747,7 +528,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
         # Determine buffer name after setup runs — use a mutable container
         # to capture the name from setup context
-        will_be_unique = unique_column_name not in curr_buffer.unique_column_names
+        will_be_unique = unique_column_name not in curr_buffer.query.unique_column_names
         buffer_name = (
             f"+u:{unique_column_name}" if will_be_unique else f"-u:{unique_column_name}"
         )
@@ -770,7 +551,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             setup,
             buffer_name,
             after_add_fn=after_add,
-            reason="Pivoting",
+            reason=UpdateReason.PIVOT,
             done_reason="Pivoted",
         )
 
@@ -787,8 +568,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         """Sample data and auto-detect a known log format."""
         buffer = self._get_current_buffer()
         all_lines: list[str] = []
-        if buffer.delimiter not in ("raw",) and not isinstance(
-            buffer.delimiter, re.Pattern
+        if buffer.delim.value not in ("raw",) and not isinstance(
+            buffer.delim.value, re.Pattern
         ):
             all_lines.append(buffer.first_log_line)
         all_lines.extend(buffer.raw_rows)
@@ -850,28 +631,26 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 save_history=False,
             )
         else:
-            buffer.delimiter_name = result.name
+            buffer.delim.name = result.name
             self.notify(f"Detected: {result.name}")
 
     def action_search_to_filter(self) -> None:
         """Convert current search into a filter across all columns."""
         current_buffer = self._get_current_buffer()
-        if not current_buffer.search_term:
+        if not current_buffer.query.search_term:
             current_buffer.notify(
                 "No active search to convert to filter", severity="warning"
             )
             return
 
-        search_pattern = current_buffer.search_term
+        search_pattern = current_buffer.query.search_term
         buffer_name = f"+f:any={search_pattern.pattern}"
 
         def setup(new_buffer):
-            new_buffer.current_filters.append(
-                Filter(column=None, pattern=search_pattern)
-            )
+            new_buffer.query.filters.append(Filter(column=None, pattern=search_pattern))
 
         self._copy_buffer_async(
-            setup, buffer_name, reason="Filtering", done_reason="Filtered"
+            setup, buffer_name, reason=UpdateReason.FILTER, done_reason="Filtered"
         )
 
     def action_search(self) -> None:
@@ -920,10 +699,10 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         selected_column = current_buffer._get_column_at_position(cursor_column)
         if selected_column:
             selected_column_name = strip_markup(selected_column.name)
-            if selected_column_name in current_buffer.unique_column_names:
+            if selected_column_name in current_buffer.query.unique_column_names:
                 # Pre-read cell values on main thread (widget access)
                 filters = []
-                unique_columns = list(current_buffer.unique_column_names)
+                unique_columns = list(current_buffer.query.unique_column_names)
                 for column in unique_columns:
                     col_idx = current_buffer._get_col_idx_by_name(
                         column, render_position=True
@@ -943,10 +722,13 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 def setup(new_buffer):
                     for column in unique_columns:
                         handle_mark_unique(new_buffer, column)
-                    new_buffer.current_filters.extend(filters)
+                    new_buffer.query.filters.extend(filters)
 
                 self._copy_buffer_async(
-                    setup, buffer_name, reason="Filtering", done_reason="Filtered"
+                    setup,
+                    buffer_name,
+                    reason=UpdateReason.FILTER,
+                    done_reason="Filtered",
                 )
 
     def on_key(self, event: Key) -> None:
@@ -1054,169 +836,6 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         elif event.input.id == "view_rename_input":
             self._handle_view_rename_submitted(event)
 
-    def _handle_session_save_submitted(
-        self, event: AutocompleteInput.Submitted
-    ) -> None:
-        event.control.remove()
-        name = event.value.strip()
-        if not name:
-            return
-        session = self._capture_session(name)
-        save_session(session)
-        self._active_session_name = name
-        self.notify(f"Saved session: {name}")
-
-    def _handle_session_rename_submitted(
-        self, event: AutocompleteInput.Submitted
-    ) -> None:
-        event.control.remove()
-        new_name = event.value.strip()
-        idx = self._pending_session_rename_idx
-        self._pending_session_rename_idx = None
-        if not new_name or idx is None:
-            return
-        sessions = load_sessions()
-        if idx < len(sessions):
-            old_name = sessions[idx].name
-            rename_session(old_name, new_name)
-            if self._active_session_name == old_name:
-                self._active_session_name = new_name
-            self.notify(f"Renamed session: {old_name} → {new_name}")
-
-    def _handle_view_save_submitted(self, event: AutocompleteInput.Submitted) -> None:
-        event.control.remove()
-        name = event.value.strip()
-        if not name:
-            return
-        buf = self._get_current_buffer()
-        state = capture_view_state(buf)
-        view = View(name=name, state=state)
-        save_view(view)
-        self.notify(f"Saved view: {name}")
-
-    def _handle_view_rename_submitted(self, event: AutocompleteInput.Submitted) -> None:
-        event.control.remove()
-        new_name = event.value.strip()
-        idx = self._pending_view_rename_idx
-        self._pending_view_rename_idx = None
-        if not new_name or idx is None:
-            return
-        views = load_views()
-        if idx < len(views):
-            old_name = views[idx].name
-            rename_view(old_name, new_name)
-            self.notify(f"Renamed view: {old_name} → {new_name}")
-
-    # ── Regex highlights ────────────────────────────────────────────────
-
-    HIGHLIGHT_COLORS = [
-        "#ff5555",  # red
-        "#ffb86c",  # orange
-        "#f1fa8c",  # yellow
-        "#50fa7b",  # green
-        "#8be9fd",  # cyan
-        "#bd93f9",  # purple
-        "#ff79c6",  # pink
-        "#6272a4",  # blue-grey
-    ]
-
-    COLOR_NAMES = [
-        "red",
-        "orange",
-        "yellow",
-        "green",
-        "cyan",
-        "purple",
-        "pink",
-        "blue-grey",
-    ]
-
-    def action_add_highlight(self) -> None:
-        """Pin the current search term as a persistent colored highlight.
-
-        If no search is active, clear all existing highlights.
-        Shows a color picker to let the user choose the highlight color.
-        """
-        buf = self._get_current_buffer()
-        if buf.search_term is None:
-            # No active search — prompt to clear all highlights
-            if buf.regex_highlights:
-                n = len(buf.regex_highlights)
-                select = NlessSelect(
-                    options=[("Yes", "yes"), ("No", "no")],
-                    prompt=f"Clear all {n} highlight{'s' if n != 1 else ''}?",
-                    classes="dock-bottom",
-                    id="highlight_clear_confirm",
-                )
-                buf.mount(select)
-            else:
-                buf.notify("Search first with /, then press + to pin as highlight")
-            return
-
-        self._pending_highlight_pattern = buf.search_term
-        options = [
-            (f"[{color}]{name} ███[/{color}]", color)
-            for name, color in zip(self.COLOR_NAMES, self.HIGHLIGHT_COLORS)
-        ]
-        select = NlessSelect(
-            options=options,
-            prompt="Pick a highlight color",
-            classes="dock-bottom",
-            id="highlight_color_select",
-        )
-        buf.mount(select)
-
-    def _count_highlight_matches(self, buf: "NlessBuffer", pattern: re.Pattern) -> int:
-        count = 0
-        for row in buf.displayed_rows:
-            for cell in row:
-                if pattern.search(strip_markup(cell)):
-                    count += 1
-                    break  # count rows, not individual cell matches
-        return count
-
-    def action_navigate_highlight(self) -> None:
-        """Select a pinned highlight to navigate between its matches."""
-        buf = self._get_current_buffer()
-        if not buf.regex_highlights:
-            buf.notify("No highlights pinned. Search with / then pin with +")
-            return
-
-        options = []
-        for i, (pattern, color) in enumerate(buf.regex_highlights):
-            if i > 0:
-                options.append(("────", "separator"))
-            count = self._count_highlight_matches(buf, pattern)
-            label = f"[{color}]🔍 Navigate {pattern.pattern} ({count})[/{color}]"
-            options.append((label, str(i)))
-            options.append(
-                (f"[{color}]🎨 Recolor {pattern.pattern}[/{color}]", f"recolor:{i}")
-            )
-            options.append(
-                (f"[{color}]🗑  Delete {pattern.pattern}[/{color}]", f"delete:{i}")
-            )
-        select = NlessSelect(
-            options=options,
-            prompt="Select a highlight to navigate (n/p), recolor, or remove",
-            classes="dock-bottom",
-            id="highlight_navigate_select",
-        )
-        buf.mount(select)
-
-    # ── Sessions ───────────────────────────────────────────────────────
-
-    def _get_data_source(self) -> str | None:
-        """Return the data source identifier for the current group."""
-        group = self._current_group
-        name = group.name
-        # Strip icon prefixes
-        for prefix in ("📄 ", "⏵ ", "✓ "):
-            if name.startswith(prefix):
-                return name[len(prefix) :]
-        if name == "stdin":
-            return None
-        return name
-
     def action_merge_buffers(self) -> None:
         """Open a select menu to pick a buffer to merge with the current one."""
         buf = self._get_current_buffer()
@@ -1235,424 +854,6 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             prompt="Select buffer to merge with current",
             classes="dock-bottom",
             id="merge_select",
-        )
-        buf.mount(select)
-
-    def action_session_menu(self) -> None:
-        """Open the session menu to save, load, or delete sessions."""
-        buf = self._get_current_buffer()
-        sessions = load_sessions()
-        if self._active_session_name:
-            options = [
-                (f"💾 Save '{self._active_session_name}'", "quick_save"),
-                ("💾 Save as new session…", "save"),
-            ]
-        else:
-            options = [("💾 Save current session…", "save")]
-        if sessions:
-            options.append(("────", "separator"))
-            for i, session in enumerate(sessions):
-                if i > 0:
-                    options.append(("────", "separator"))
-                sources = ", ".join(session.data_sources) or "global"
-                n_groups = len(session.groups)
-                groups_label = f"{n_groups} group{'s' if n_groups != 1 else ''}"
-                label = f"📂 Load {session.name}  [{self.nless_theme.muted}]({sources} · {groups_label})[/{self.nless_theme.muted}]"
-                options.append((label, f"load:{i}"))
-                options.append((f"✏️  Rename {session.name}", f"rename:{i}"))
-                options.append((f"🗑  Delete {session.name}", f"delete:{i}"))
-        select = NlessSelect(
-            options=options,
-            prompt="Sessions — save or load a session",
-            classes="dock-bottom",
-            id="session_select",
-        )
-        buf.mount(select)
-
-    def action_view_menu(self) -> None:
-        """Open the view menu to save, load, rename, or delete views."""
-        buf = self._get_current_buffer()
-        views = load_views()
-        options: list[tuple[str, str]] = [("💾 Save current view…", "save")]
-        if buf._pre_view_state is not None:
-            options.append(("↩️  Undo last view", "undo"))
-        if views:
-            options.append(("────", "separator"))
-            for i, view in enumerate(views):
-                if i > 0:
-                    options.append(("────", "separator"))
-                options.append((f"📌 Load {view.name}", f"load:{i}"))
-                options.append((f"✏️  Rename {view.name}", f"rename:{i}"))
-                options.append((f"🗑  Delete {view.name}", f"delete:{i}"))
-        select = NlessSelect(
-            options=options,
-            prompt="Views — save or load a view",
-            classes="dock-bottom",
-            id="view_select",
-        )
-        buf.mount(select)
-
-    def _get_tab_names(self, group) -> list[str]:
-        """Read tab label text for each buffer in a group."""
-        try:
-            container = self.query_one(f"#group_{group.group_id}")
-            tabbed_content = container.query_one(TabbedContent)
-            names = []
-            for tab in tabbed_content.query(Tab).results():
-                content = str(tab.content)
-                # Strip Rich markup and index number prefix
-                plain = re.sub(r"\[/?[^\]]*\]", "", content)
-                plain = re.sub(r"^\d+\s*", "", plain).strip()
-                names.append(plain)
-            return names
-        except NoMatches:
-            return []
-
-    def _capture_session(self, name: str) -> Session:
-        """Capture the full workspace state as a session."""
-        from .session import SessionGroup
-
-        groups = []
-        for group in self.groups:
-            tab_names = self._get_tab_names(group)
-            buf_states = []
-            for i, buf in enumerate(group.buffers):
-                state = capture_buffer_state(buf)
-                state.tab_name = tab_names[i] if i < len(tab_names) else ""
-                buf_states.append(state)
-            # Derive data source — prefer full resolved path from stream
-            data_source = None
-            if group.starting_stream and hasattr(group.starting_stream, "_cli_args"):
-                fn = (
-                    group.starting_stream._cli_args.filename
-                    if group.starting_stream._cli_args
-                    else None
-                )
-                if fn:
-                    data_source = os.path.abspath(fn)
-            if data_source is None and hasattr(group.starting_stream, "_command"):
-                data_source = f"⏵ {group.starting_stream._command}"
-            if data_source is None:
-                for prefix in ("📄 ", "⏵ ", "✓ "):
-                    if group.name.startswith(prefix):
-                        data_source = group.name[len(prefix) :]
-                        break
-            groups.append(
-                SessionGroup(
-                    name=group.name,
-                    data_source=data_source,
-                    buffers=buf_states,
-                    active_buffer_idx=group.curr_buffer_idx,
-                )
-            )
-        return Session(
-            name=name,
-            groups=groups,
-            active_group_idx=self.curr_group_idx,
-        )
-
-    async def _load_session(self, session: Session) -> None:
-        """Restore a full session — apply buffer states to the current group,
-        creating additional buffers as needed."""
-        if not session.groups:
-            return
-
-        # Close all groups beyond the first — session will recreate them.
-        while len(self.groups) > 1:
-            self.curr_group_idx = len(self.groups) - 1
-            self._close_current_group()
-
-        # Close extra buffers (tabs) in the first group, keeping only the first.
-        self.curr_group_idx = 0
-        first_group = self.groups[0]
-        while len(first_group.buffers) > 1:
-            extra_buf = first_group.buffers[-1]
-            if extra_buf.line_stream:
-                extra_buf.line_stream.unsubscribe(extra_buf)
-            try:
-                tc = self._get_active_tabbed_content()
-                tc.remove_pane(f"buffer{extra_buf.pane_id}")
-            except Exception:
-                pass
-            first_group.buffers.pop()
-        first_group.curr_buffer_idx = 0
-
-        first_group_state = session.groups[0]
-        base_buf = first_group.get_current_buffer()
-
-        # Check if the first group needs a different data source than
-        # what the base buffer currently has.
-        first_ds = first_group_state.data_source
-        current_source = None
-        if (
-            self.groups[0].starting_stream
-            and hasattr(self.groups[0].starting_stream, "_cli_args")
-            and self.groups[0].starting_stream._cli_args
-        ):
-            current_source = self.groups[0].starting_stream._cli_args.filename
-            if current_source:
-                current_source = os.path.abspath(current_source)
-
-        needs_file_load = (
-            first_ds
-            and not first_ds.startswith("⏵")
-            and os.path.exists(first_ds)
-            and current_source != first_ds
-        )
-
-        if needs_file_load:
-            # Load file data into the base buffer via a new stream
-            from .types import CliArgs as CliArgsType
-
-            new_cli = CliArgsType(
-                delimiter=None,
-                filters=[],
-                unique_keys=set(),
-                sort_by=None,
-                filename=first_ds,
-            )
-            try:
-                stream = StdinLineStream(new_cli, first_ds, None)
-                # Unsubscribe from old stream and reset buffer state so the
-                # first-parse path in add_logs re-runs for the new file.
-                if base_buf.line_stream:
-                    base_buf.line_stream.unsubscribe(base_buf)
-                base_buf.line_stream = stream
-                base_buf.first_row_parsed = False
-                base_buf.raw_rows.clear()
-                base_buf._arrival_timestamps.clear()
-                base_buf.displayed_rows.clear()
-                base_buf.delimiter = None
-                base_buf.delimiter_inferred = False
-                base_buf.raw_mode = False
-                base_buf.current_columns = []
-                base_buf.current_filters = []
-                base_buf.search_term = None
-                base_buf.sort_column = None
-                base_buf.sort_reverse = False
-                base_buf.unique_column_names = set()
-                base_buf.regex_highlights = []
-                base_buf._preamble_lines = []
-                try:
-                    base_buf.query_one(".nless-view").clear(columns=True)
-                except Exception:
-                    pass
-                if first_group_state.buffers:
-                    base_buf._pending_session_state = first_group_state.buffers[0]
-                stream.subscribe(base_buf, base_buf.add_logs, lambda: base_buf.mounted)
-                self.groups[0].starting_stream = stream
-                import threading
-
-                t = threading.Thread(target=stream.run, daemon=True)
-                t.start()
-                # Rename group
-                group_name = (
-                    first_group_state.name or f"📄 {os.path.basename(first_ds)}"
-                )
-                self.groups[0].name = group_name
-                if first_group_state.buffers and first_group_state.buffers[0].tab_name:
-                    self._rename_first_buffer(
-                        self.groups[0], first_group_state.buffers[0].tab_name
-                    )
-            except (FileNotFoundError, IsADirectoryError, PermissionError):
-                pass  # Fall through to normal state application
-        else:
-            # Apply first buffer state to the existing buffer
-            if first_group_state.buffers:
-                first_state = first_group_state.buffers[0]
-                apply_buffer_state(base_buf, first_state)
-                base_buf._deferred_update_table(reason="Session loaded")
-                # Restore tab name for the first buffer
-                if first_state.tab_name:
-                    self._rename_first_buffer(self.groups[0], first_state.tab_name)
-
-        # Create additional buffers within the group.
-        # Defer state application — buffer isn't mounted yet, so
-        # _deferred_update_table would crash. on_mount will apply it.
-        active_idx = first_group_state.active_buffer_idx
-        remaining_first = list(enumerate(first_group_state.buffers[1:], start=1))
-        if remaining_first and needs_file_load:
-            # Wait for base buffer to receive file data before copying
-            for _ in range(200):
-                if base_buf.first_row_parsed:
-                    break
-                await asyncio.sleep(0.05)
-        for i, buf_state in remaining_first:
-            tab_name = buf_state.tab_name or f"buffer {i + 1}"
-            if "unparsed" in (buf_state.tab_name or ""):
-                stream_for_unparsed = self.groups[0].starting_stream
-                new_buffer = self._recreate_unparsed_buffer(
-                    base_buf,
-                    stream_for_unparsed,
-                    buf_state,
-                )
-                if new_buffer is None:
-                    continue
-            else:
-                new_buffer = base_buf.copy(pane_id=self._get_new_pane_id())
-                new_buffer._pending_session_state = buf_state
-            self.add_buffer(
-                new_buffer,
-                name=tab_name,
-                add_prev_index=False,
-                reason="Session loaded",
-                activate=False,
-            )
-
-        # Restore additional groups
-        if len(session.groups) > 1:
-            skipped = []
-            for group_state in session.groups[1:]:
-                ds = group_state.data_source
-                # Re-execute shell command groups
-                if ds and ds.startswith("⏵"):
-                    command = ds[len("⏵ ") :]
-                    try:
-                        line_stream = ShellCommandLineStream(command)
-                        new_buf = NlessBuffer(
-                            pane_id=self._get_new_pane_id(),
-                            cli_args=self.cli_args,
-                            line_stream=line_stream,
-                        )
-                        if group_state.buffers:
-                            new_buf._pending_session_state = group_state.buffers[0]
-                        group_name = group_state.name or f"⏵ {command}"
-                        await self.add_group(group_name, new_buf, stream=line_stream)
-                        line_stream.start()
-                        # Create additional buffers within this group
-                        grp_active_idx = group_state.active_buffer_idx
-                        remaining = list(enumerate(group_state.buffers[1:], start=1))
-                        if remaining:
-                            for _ in range(200):
-                                if new_buf.first_row_parsed:
-                                    break
-                                await asyncio.sleep(0.05)
-                        for i, buf_state in remaining:
-                            tab_name = buf_state.tab_name or f"buffer {i + 1}"
-                            if "unparsed" in (buf_state.tab_name or ""):
-                                extra_buf = self._recreate_unparsed_buffer(
-                                    new_buf,
-                                    line_stream,
-                                    buf_state,
-                                )
-                                if extra_buf is None:
-                                    continue
-                            else:
-                                extra_buf = new_buf.copy(
-                                    pane_id=self._get_new_pane_id()
-                                )
-                                extra_buf._pending_session_state = buf_state
-                            self.add_buffer(
-                                extra_buf,
-                                name=tab_name,
-                                add_prev_index=False,
-                                reason="Session loaded",
-                                activate=False,
-                            )
-                        group = self.groups[-1]
-                        group.curr_buffer_idx = min(
-                            grp_active_idx, len(group.buffers) - 1
-                        )
-                    except (
-                        OSError,
-                        ValueError,
-                        subprocess.SubprocessError,
-                    ) as e:
-                        skipped.append(f"{ds} (error: {e})")
-                    continue
-                if not ds:
-                    skipped.append(f"{group_state.name} (no source)")
-                    continue
-                if not os.path.exists(ds):
-                    skipped.append(f"{ds} (missing)")
-                    continue
-                # Open file as new group
-                from .types import CliArgs as CliArgsType
-
-                new_cli = CliArgsType(
-                    delimiter=None,
-                    filters=[],
-                    unique_keys=set(),
-                    sort_by=None,
-                    filename=ds,
-                )
-                try:
-                    stream = StdinLineStream(new_cli, ds, None)
-                except (FileNotFoundError, IsADirectoryError, PermissionError):
-                    skipped.append(f"{ds} (error)")
-                    continue
-                new_buf = NlessBuffer(
-                    pane_id=self._get_new_pane_id(),
-                    cli_args=new_cli,
-                    line_stream=stream,
-                )
-                if group_state.buffers:
-                    new_buf._pending_session_state = group_state.buffers[0]
-                import threading
-
-                t = threading.Thread(target=stream.run, daemon=True)
-                t.start()
-                group_name = group_state.name or f"📄 {os.path.basename(ds)}"
-                await self.add_group(group_name, new_buf, stream)
-                # Create additional buffers within this group
-                grp_active_idx = group_state.active_buffer_idx
-                remaining = list(enumerate(group_state.buffers[1:], start=1))
-                if remaining:
-                    # Wait for parent buffer to receive initial data so
-                    # copy() gets populated raw_rows.
-                    for _ in range(200):
-                        if new_buf.first_row_parsed:
-                            break
-                        await asyncio.sleep(0.05)
-                for i, buf_state in remaining:
-                    tab_name = buf_state.tab_name or f"buffer {i + 1}"
-                    if "unparsed" in (buf_state.tab_name or ""):
-                        extra_buf = self._recreate_unparsed_buffer(
-                            new_buf,
-                            stream,
-                            buf_state,
-                        )
-                        if extra_buf is None:
-                            continue
-                    else:
-                        extra_buf = new_buf.copy(pane_id=self._get_new_pane_id())
-                        extra_buf._pending_session_state = buf_state
-                    self.add_buffer(
-                        extra_buf,
-                        name=tab_name,
-                        add_prev_index=False,
-                        reason="Session loaded",
-                        activate=False,
-                    )
-                # Set curr_buffer_idx for this group (takes effect on group switch)
-                group = self.groups[-1]
-                group.curr_buffer_idx = min(grp_active_idx, len(group.buffers) - 1)
-            # Switch to the saved active group
-            target_idx = min(session.active_group_idx, len(self.groups) - 1)
-            if target_idx != self.curr_group_idx:
-                self._switch_to_group(target_idx)
-            if skipped:
-                self.notify(
-                    f"Skipped {len(skipped)} group(s): {', '.join(skipped)}",
-                    timeout=5,
-                )
-
-        # Set curr_buffer_idx for first group
-        if first_group_state.buffers:
-            self.groups[0].curr_buffer_idx = min(
-                active_idx, len(self.groups[0].buffers) - 1
-            )
-
-        self._active_session_name = session.name
-
-    def _show_session_load_prompt(self, session: Session) -> None:
-        """Show the auto-apply session prompt (called after DOM is ready)."""
-        buf = self._get_current_buffer()
-        select = NlessSelect(
-            options=[("Yes", "yes"), ("No", "no")],
-            prompt=f"Session '{session.name}' found for this file. Load it?",
-            classes="dock-bottom",
-            id="session_load_prompt",
         )
         buf.mount(select)
 
@@ -1744,7 +945,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                     if existing:
                         buf = self._get_current_buffer()
                         buf.switch_delimiter(value)
-                        buf.delimiter_name = existing[0].name
+                        buf.delim.name = existing[0].name
                         return
                     self._pending_log_format_pattern = value
                     self._create_prompt(
@@ -1771,7 +972,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         if name:
             try:
                 save_custom_format(name, pattern)
-                self._get_current_buffer().delimiter_name = name
+                self._get_current_buffer().delim.name = name
                 self.notify(f"Saved log format: {name}")
             except OSError as e:
                 self.notify(f"Failed to save: {e}", severity="error")
@@ -1782,7 +983,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         cursor_coordinate: Coordinate,
         offset: Offset,
         on_ready=None,
-        reason="Loading",
+        reason: UpdateReason = UpdateReason.LOADING,
         activate: bool = True,
     ) -> None:
         if activate:
@@ -1848,7 +1049,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         new_pane_id = self._get_new_pane_id()
         new_buffer = NlessBuffer(pane_id=new_pane_id, cli_args=None)
         new_buffer.init_as_unparsed(unparsed_rows, source_parse_filter, line_stream)
-        self.add_buffer(new_buffer, "~unparsed", reason="Unparsed logs")
+        self.add_buffer(new_buffer, "~unparsed", reason=UpdateReason.LOADING)
 
     def add_buffer(
         self,
@@ -1856,7 +1057,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         name: str,
         add_prev_index: bool = True,
         on_ready=None,
-        reason="Loading",
+        reason: UpdateReason = UpdateReason.LOADING,
         activate: bool = True,
     ) -> None:
         curr_data_table = self._get_current_buffer().query_one(".nless-view")
@@ -1966,6 +1167,20 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
     def show_tab_by_index(self, index: int) -> None:
         self._switch_to_buffer(index)
 
+    def _sync_status_context(self) -> None:
+        """Push app-level state to all buffers' StatusContext."""
+        ctx = StatusContext(
+            status_format=self.config.status_format,
+            keymap_name=self.nless_keymap.name,
+            theme_name=self.nless_theme.name,
+            pipe_output=getattr(self, "pipe_output", False),
+            session_name=getattr(self, "_active_session_name", None),
+            format_window=self._format_window,
+            theme=self.nless_theme,
+        )
+        for buf in self.all_buffers:
+            buf._status_ctx = ctx
+
     def on_mount(self) -> None:
         self.mounted = True
 
@@ -1987,6 +1202,8 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.apply_keymap(new_keymap.name, notify=False)
         elif new_keymap.bindings:
             self.set_keymap(new_keymap.bindings)
+
+        self._sync_status_context()
 
         # Check for session to restore (deferred so DOM is fully ready)
         if self.cli_args.session:
@@ -2128,6 +1345,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
         # Update title bar (help key may have changed) and status bar
         self._update_title_bar()
+        self._sync_status_context()
         self._get_current_buffer()._update_status_bar()
 
         # Save to config
@@ -2167,7 +1385,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                 data_table = buf.query_one(".nless-view")
                 data_table.apply_theme(new_theme)
                 buf._deferred_update_table(
-                    restore_position=True, reason="Applying theme"
+                    restore_position=True, reason=UpdateReason.THEME
                 )
             except NoMatches:
                 pass  # Buffer not mounted yet
@@ -2183,6 +1401,7 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
 
         # Update title bar (theme colors changed) and status bar
         self._update_title_bar()
+        self._sync_status_context()
         self._get_current_buffer()._update_status_bar()
 
         # Save to config
