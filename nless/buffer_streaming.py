@@ -1,4 +1,15 @@
-"""Streaming log ingestion and incremental row updates for NlessBuffer."""
+"""Streaming log ingestion and incremental row updates for NlessBuffer.
+
+Threading: three threads touch this module —
+  - Input thread (daemon): StdinLineStream calls add_logs()
+  - Worker thread (@work): _process_deferred_data() runs under lock
+  - Main thread: all widget mutation via call_from_thread()
+
+self._lock serialises StreamState + column/filter mutations.
+_last_flushed_idx tracks render progress; a gap means new data arrived
+during a rebuild. _update_generation prevents stale results from
+superseded rebuilds.
+"""
 
 from __future__ import annotations
 
@@ -12,15 +23,36 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from .dataprocessing import highlight_regex_patterns, strip_markup
+from .dataprocessing import (
+    choose_parse_strategy,
+    highlight_regex_patterns,
+    strip_markup,
+)
 from .delimiter import split_line
 from .operations import handle_mark_unique
-from .types import MetadataColumn, RowLengthMismatchError
+from .types import MetadataColumn, RowLengthMismatchError, UpdateReason
+
 
 if TYPE_CHECKING:
     from .buffer import NlessBuffer
 
 logger = logging.getLogger(__name__)
+
+# Rows processed per incremental add_rows call. Large enough to amortize
+# per-call overhead, small enough for progressive display on large initial loads.
+STREAMING_CHUNK_SIZE = 50_000
+
+# Column widths stabilize after the first N rows. Tracking beyond this
+# threshold costs O(N*cols) len() calls with diminishing returns.
+COLUMN_WIDTH_SAMPLE_SIZE = 10_000
+
+# Maximum number of unparseable lines retained for the ~ (excluded lines) view.
+# Caps memory usage on pathological inputs.
+MAX_SKIPPED_LINES_SAMPLE = 200
+
+# Batch size above which streaming with expensive ops (sort/dedup/time window)
+# triggers a deferred rebuild instead of per-row incremental inserts.
+DEFERRED_REBUILD_THRESHOLD = 1000
 
 
 class StreamingMixin:
@@ -63,7 +95,7 @@ class StreamingMixin:
                 and log_lines[0].strip() == self.first_log_line.strip()
             ):
                 log_lines = log_lines[1:]
-            was_loading = self._loading_reason is not None
+            was_loading = self.loading_state.reason is not None
             try:
                 self._needs_deferred_update = False
                 self._add_logs_inner(log_lines)
@@ -78,8 +110,8 @@ class StreamingMixin:
                 # (needs_deferred).  The in-flight rebuild's _apply_to_widgets
                 # will handle cleanup when it finishes.
                 if not needs_deferred and not was_loading:
-                    had_loading = self._loading_reason is not None
-                    self._loading_reason = None
+                    had_loading = self.loading_state.reason is not None
+                    self.loading_state.reason = None
                     self._request_spinner_stop()
                     try:
                         self._update_status_bar()
@@ -91,7 +123,7 @@ class StreamingMixin:
                                     f"Loaded {row_count:,} rows",
                                 )
                     except (RuntimeError, Exception):
-                        pass  # Widget not mounted or app shutting down
+                        logger.debug("Post-load status update failed", exc_info=True)
                 self.locked = False
 
         try:
@@ -116,7 +148,9 @@ class StreamingMixin:
 
                     def rebuild():
                         self._flash_status(flash_msg)
-                        self._deferred_update_table(reason="Switching delimiter")
+                        self._deferred_update_table(
+                            reason=UpdateReason.SWITCHING_DELIMITER
+                        )
 
                     if self.app._thread_id == threading.get_ident():
                         rebuild()
@@ -130,97 +164,198 @@ class StreamingMixin:
                 _, fn = pending
                 self.app.call_from_thread(fn)
         except Exception:
-            pass  # App shutting down
+            logger.debug("Post-add_logs dispatch failed", exc_info=True)
 
-    def _add_logs_inner(self: NlessBuffer, log_lines: list[str]) -> None:
+    def _infer_and_set_delimiter(self: NlessBuffer, log_lines: list[str]) -> list[str]:
+        """Infer delimiter from first few lines and set it on the buffer.
+
+        May flatten pretty-printed JSON into JSONL, returning a modified
+        log_lines list.
+        """
+        from .buffer_delimiter import _sample_lines
+        from .delimiter import flatten_json_lines, infer_delimiter
+
+        sample = _sample_lines(log_lines, max_total=15)
+        self.delim.value = infer_delimiter(sample)
+        self.delim.inferred = True
+
+        flattened = flatten_json_lines(log_lines)
+        if flattened is not log_lines:
+            self.delim.value = "json"
+            log_lines = flattened
+
+        if self.delim.value == "raw" and not self.raw_mode:
+            self.raw_mode = True
+
+        return log_lines
+
+    def _try_auto_detect_log_format(self: NlessBuffer, log_lines: list[str]) -> None:
+        """Attempt to auto-detect a structured log format during initial load.
+
+        Called before first parse when delimiter is inferred as raw/space+/comma.
+        If exactly one format matches strongly, overrides the delimiter so
+        _parse_first_row creates the correct named columns.  If multiple
+        match, shows a hint to press P.
+        """
+        if self._log_format_checked:
+            return
+        self._log_format_checked = True
+
+        from .logformats import detect_log_formats, infer_log_pattern
         from .buffer_delimiter import _sample_lines
 
+        sample = _sample_lines(log_lines, max_total=15)
+        candidates = detect_log_formats(sample)
+
+        # Also try inference if no known format matches
+        inferred = infer_log_pattern(sample)
+        if inferred is not None:
+            non_empty = [line for line in sample if line.strip()]
+            if non_empty:
+                matches = sum(1 for line in non_empty if inferred.pattern.match(line))
+                ratio = matches / len(non_empty)
+                score = ratio * 100 + len(inferred.pattern.groupindex) * 2
+                if ratio >= 0.8:
+                    candidates.append((inferred, score))
+                    candidates.sort(key=lambda x: x[1], reverse=True)
+
+        if not candidates:
+            return
+
+        # Auto-apply the top-scoring named format.  Only show a selection
+        # menu when multiple "Auto-detected" (inferred) patterns compete
+        # without a clear named winner.
+        best_fmt, best_score = candidates[0]
+        auto_apply = best_fmt.name != "Auto-detected" or len(candidates) == 1
+
+        if auto_apply:
+            fmt = best_fmt
+            # Override delimiter before first parse — _parse_first_row will
+            # see the regex and create named columns directly.
+            self.delim.value = fmt.pattern
+            self.delim.inferred = True
+            if fmt.name != "Auto-detected":
+                self.delim.name = fmt.name
+            self.raw_mode = False
+
+            label = fmt.name or "Auto-detected"
+
+            def _notify():
+                self.notify(f"Detected log format: {label}")
+
+            if self.app._thread_id == threading.get_ident():
+                _notify()
+            else:
+                self.app.call_from_thread(_notify)
+        else:
+
+            def _hint():
+                self.notify(
+                    f"{len(candidates)} log formats detected — press P to choose",
+                    severity="information",
+                )
+
+            if self.app._thread_id == threading.get_ident():
+                _hint()
+            else:
+                self.app.call_from_thread(_hint)
+
+    def _skip_preamble(self: NlessBuffer, log_lines: list[str]) -> list[str]:
+        """Skip leading non-data lines for standard delimiters.
+
+        Preserves skipped preamble lines so they're available when
+        switching to raw mode.
+        """
+        from .delimiter import find_header_index
+
+        header_idx = find_header_index(log_lines, self.delim.value)
+        if header_idx > 0:
+            self.delim.preamble_lines = log_lines[:header_idx]
+            log_lines = log_lines[header_idx:]
+        return log_lines
+
+    def _parse_first_row(
+        self: NlessBuffer, log_lines: list[str], data_table
+    ) -> list[str]:
+        """Parse the first row to establish columns, then consume the header.
+
+        Sets first_row_parsed, current_columns, and applies initial column
+        filter/time window from CLI args. Returns log_lines with header consumed.
+        """
+        self.first_log_line = log_lines[0]
+        parts = self._parse_first_line_columns(self.first_log_line)
+        self.current_columns = self._make_columns(parts)
+        self._ensure_arrival_column(self.current_columns)
+        if self._current_source is not None:
+            self._ensure_source_column(self.current_columns)
+            # Show and pin _source column first for merge mode
+            for col in self.current_columns:
+                if col.name != MetadataColumn.SOURCE.value and not col.hidden:
+                    col.render_position += 1
+            for col in self.current_columns:
+                if col.name == MetadataColumn.SOURCE.value:
+                    col.hidden = False
+                    col.pinned = True
+                    col.render_position = 0
+                    break
+            self._rebuild_column_caches()
+            data_table.add_columns(self._get_visible_column_labels())
+        else:
+            data_table.add_columns([str(p) for p in parts])
+
+        # For non-special delimiters, first line is the header
+        header_consumed = (
+            self.delim.value != "raw"
+            and not isinstance(self.delim.value, re.Pattern)
+            and self.delim.value != "json"
+        )
+        if header_consumed:
+            log_lines = log_lines[1:]
+
+        if self.query.unique_column_names:
+            for unique_col_name in self.query.unique_column_names:
+                handle_mark_unique(self, unique_col_name)
+            data_table.clear(columns=True)
+            data_table.add_columns(self._get_visible_column_labels())
+
+        self._rebuild_column_caches()
+        self.first_row_parsed = True
+
+        if self._cli_args and self._cli_args.columns:
+            self._apply_initial_column_filter(self._cli_args.columns)
+
+        if self._cli_args and self._cli_args.time_window:
+            self._apply_initial_time_window(self._cli_args.time_window)
+
+        return log_lines
+
+    def _add_logs_inner(self: NlessBuffer, log_lines: list[str]) -> None:
         data_table = self.query_one(".nless-view")
 
-        # Infer delimiter from first few lines if not already set
-        if not self.delimiter and len(log_lines) > 0:
-            from .delimiter import infer_delimiter
+        if not self.delim.value and log_lines:
+            log_lines = self._infer_and_set_delimiter(log_lines)
 
-            sample = _sample_lines(log_lines, max_total=15)
-            self.delimiter = infer_delimiter(sample)
-            self.delimiter_inferred = True
+            # Auto-detect log format before first parse.  Overrides the
+            # inferred delimiter so _parse_first_row sees the regex and
+            # creates correct named columns from the start.
+            if (
+                self.delim.inferred
+                and self.delim.value in ("raw", "  ", ",")
+                and self._pending_session_state is None
+            ):
+                self._try_auto_detect_log_format(log_lines)
 
-            # Flatten pretty-printed JSON into JSONL.  Also catches
-            # pretty-printed files that infer_delimiter couldn't detect
-            # from the sampled subset (e.g. files larger than 15 lines).
-            from .delimiter import flatten_json_lines
-
-            flattened = flatten_json_lines(log_lines)
-            if flattened is not log_lines:
-                self.delimiter = "json"
-                log_lines = flattened
-
-            if self.delimiter == "raw" and not self.raw_mode:
-                self.raw_mode = True
-
-        # Skip leading non-data lines for standard delimiters (e.g. a JSON
-        # preamble before actual CSV data).
         if (
-            self.delimiter_inferred
+            self.delim.inferred
             and not self.first_row_parsed
-            and self.delimiter
-            and self.delimiter not in ("raw", "json")
-            and not isinstance(self.delimiter, re.Pattern)
+            and self.delim.value
+            and self.delim.value not in ("raw", "json")
+            and not isinstance(self.delim.value, re.Pattern)
         ):
-            from .delimiter import find_header_index
-
-            header_idx = find_header_index(log_lines, self.delimiter)
-            if header_idx > 0:
-                # Preserve skipped preamble lines so they're available when
-                # switching to raw mode (otherwise they'd be permanently lost).
-                self._preamble_lines = log_lines[:header_idx]
-                log_lines = log_lines[header_idx:]
+            log_lines = self._skip_preamble(log_lines)
 
         if not self.first_row_parsed:
-            self.first_log_line = log_lines[0]
-            parts = self._parse_first_line_columns(self.first_log_line)
-            self.current_columns = self._make_columns(parts)
-            self._ensure_arrival_column(self.current_columns)
-            if self._current_source is not None:
-                self._ensure_source_column(self.current_columns)
-                # Show and pin _source column first for merge mode
-                for col in self.current_columns:
-                    if col.name != MetadataColumn.SOURCE.value and not col.hidden:
-                        col.render_position += 1
-                for col in self.current_columns:
-                    if col.name == MetadataColumn.SOURCE.value:
-                        col.hidden = False
-                        col.pinned = True
-                        col.render_position = 0
-                        break
-                self._rebuild_column_caches()
-                data_table.add_columns(self._get_visible_column_labels())
-            else:
-                data_table.add_columns([str(p) for p in parts])
-
-            # For non-special delimiters, first line is the header
-            header_consumed = (
-                self.delimiter != "raw"
-                and not isinstance(self.delimiter, re.Pattern)
-                and self.delimiter != "json"
-            )
-            if header_consumed:
-                log_lines = log_lines[1:]
-
-            if self.unique_column_names:
-                for unique_col_name in self.unique_column_names:
-                    handle_mark_unique(self, unique_col_name)
-                data_table.clear(columns=True)
-                data_table.add_columns(self._get_visible_column_labels())
-
-            self._rebuild_column_caches()
-            self.first_row_parsed = True
-
-            if self._cli_args and self._cli_args.columns:
-                self._apply_initial_column_filter(self._cli_args.columns)
-
-            if self._cli_args and self._cli_args.time_window:
-                self._apply_initial_time_window(self._cli_args.time_window)
+            log_lines = self._parse_first_row(log_lines, data_table)
 
             if self._pending_session_state is not None:
                 from .session import apply_buffer_state
@@ -241,10 +376,7 @@ class StreamingMixin:
                 filtered, filtered_timestamps, filtered_sources = self._filter_lines(
                     log_lines, batch_timestamps, source_labels=batch_src
                 )
-                self.raw_rows.extend(filtered)
-                self._arrival_timestamps.extend(filtered_timestamps)
-                if filtered_sources is not None:
-                    self._source_labels.extend(filtered_sources)
+                self.stream.extend(filtered, filtered_timestamps, filtered_sources)
                 self._needs_deferred_update = True
                 return
 
@@ -258,10 +390,7 @@ class StreamingMixin:
         filtered, filtered_timestamps, filtered_sources = self._filter_lines(
             log_lines, batch_timestamps, source_labels=batch_source_labels
         )
-        self.raw_rows.extend(filtered)
-        self._arrival_timestamps.extend(filtered_timestamps)
-        if filtered_sources is not None:
-            self._source_labels.extend(filtered_sources)
+        self.stream.extend(filtered, filtered_timestamps, filtered_sources)
 
         # Reveal pivot-hidden columns when new streaming data arrives
         pivot_revealed = False
@@ -274,18 +403,18 @@ class StreamingMixin:
             self._rebuild_column_caches()
             pivot_revealed = True
 
-        is_large_batch = len(filtered) > 50000
+        is_large_batch = len(filtered) > STREAMING_CHUNK_SIZE
 
-        if self.sort_column is not None or self.unique_column_names or self.time_window:
-            if self._loading_reason:
+        if self._needs_full_rebuild():
+            if self.loading_state.reason:
                 # A deferred update is in flight — just extend raw_rows (done above).
                 # The in-flight update will chain another when it finishes.
                 pass
-            elif self._chain_timer is not None:
+            elif self.chain.timer is not None:
                 # A coalesced rebuild is already scheduled — let data accumulate.
                 pass
-            elif len(filtered) > 1000:
-                self._loading_reason = self._loading_reason or "Loading"
+            elif len(filtered) > DEFERRED_REBUILD_THRESHOLD:
+                self.loading_state.reason = self.loading_state.reason or "Loading"
                 self._request_spinner_start()
                 self._update_status_bar()
                 self._needs_deferred_update = True
@@ -300,11 +429,11 @@ class StreamingMixin:
             elif (
                 self.line_stream
                 and not self.line_stream.done
-                and len(self.displayed_rows) > 1000
+                and len(self.displayed_rows) > DEFERRED_REBUILD_THRESHOLD
             ):
                 # Small batch during streaming with expensive ops — schedule
                 # a coalesced rebuild instead of O(N) per-line inserts.
-                self._loading_reason = "Loading"
+                self.loading_state.reason = "Loading"
                 self._request_spinner_start()
                 self._update_status_bar()
                 self._needs_deferred_update = True
@@ -320,16 +449,16 @@ class StreamingMixin:
                         IndexError,
                         TypeError,
                     ):
-                        self._total_skipped += 1
-                        if len(self._skipped_lines) < 200:
+                        self.delim.total_skipped += 1
+                        if len(self._skipped_lines) < MAX_SKIPPED_LINES_SAMPLE:
                             self._skipped_lines.append(line)
                         continue
         else:
             # Process in chunks for progressive display on large inputs
-            CHUNK = 50000
+            CHUNK = STREAMING_CHUNK_SIZE
             had_rows = self._initial_load_done and bool(self.displayed_rows)
             if is_large_batch:
-                self._loading_reason = self._loading_reason or "Loading"
+                self.loading_state.reason = self.loading_state.reason or "Loading"
                 self._request_spinner_start()
             try:
                 for i in range(0, len(filtered), CHUNK):
@@ -356,7 +485,41 @@ class StreamingMixin:
                         else:
                             self.app.call_from_thread(self._deferred_raw_swap)
                 except Exception:
-                    pass
+                    logger.debug("Raw pager swap check failed", exc_info=True)
+
+    def _apply_row_highlighting(
+        self: NlessBuffer,
+        new_rows: list[list[str]],
+        data_table,
+        highlight: bool,
+    ) -> list[list[str]]:
+        """Apply search, regex, and green highlights, then flush to display."""
+        if self.query.search_term:
+            styled = self._highlight_search_matches(
+                new_rows,
+                data_table.fixed_columns,
+                row_offset=len(self.displayed_rows),
+            )
+        else:
+            styled = new_rows
+
+        if self.regex_highlights:
+            styled = highlight_regex_patterns(
+                styled, self.regex_highlights, data_table.fixed_columns
+            )
+
+        # Highlight new streaming rows green (skip initial load)
+        if highlight and self.displayed_rows:
+            styled = [[self._highlight_markup(c) for c in row] for row in styled]
+
+        self.displayed_rows.extend(styled)
+        data_table.add_rows_precomputed(styled)
+        self._last_flushed_idx = len(self.raw_rows)
+
+        if self.is_tailing:
+            data_table.action_scroll_bottom()
+
+        return styled
 
     def _add_rows_incremental(
         self: NlessBuffer,
@@ -370,7 +533,7 @@ class StreamingMixin:
         single pass, then bypasses the normal add_rows width computation.
         """
         data_table = self.query_one(".nless-view")
-        col_positions = [col.data_position for col in self._sorted_visible_columns]
+        col_positions = [col.data_position for col in self.cache.sorted_visible_columns]
         metadata = [mc.value for mc in MetadataColumn]
         expected = len(self.current_columns) - len(
             [c for c in self.current_columns if c.name in metadata]
@@ -381,56 +544,18 @@ class StreamingMixin:
         if len(column_widths) < n_visible:
             column_widths.extend([0] * (n_visible - len(column_widths)))
             data_table.column_widths = column_widths
-        delimiter = self.delimiter
-        has_nested = self._has_nested_delimiters
-        columns = self.current_columns
 
-        # Choose parse strategy once outside the hot loop
-        if not has_nested and delimiter == ",":
-            needs_cleanup = True
+        parse, needs_cleanup = choose_parse_strategy(
+            self.delim.value, self._has_nested_delimiters, self.current_columns
+        )
 
-            def parse(line):
-                s = line.strip()
-                return next(csv.reader([s])) if '"' in s else s.split(",")
-
-        elif not has_nested and delimiter == "\t":
-            needs_cleanup = True
-
-            def parse(line):
-                return line.split("\t")
-
-        elif (
-            not has_nested
-            and isinstance(delimiter, str)
-            and delimiter not in ("raw", "json", " ", "  ")
-        ):
-            needs_cleanup = True
-
-            def parse(line):
-                return line.split(delimiter)
-
-        elif delimiter == "raw":
-            needs_cleanup = False
-            from rich.markup import escape as _rich_escape
-
-            def parse(line):
-                s = line.rstrip("\n\r")
-                return [_rich_escape(s) if "[" in s else s]
-
-        else:
-            needs_cleanup = False  # split_line already cleans cells
-
-            def parse(line):
-                return split_line(line, delimiter, columns)
-
-        # Column widths stabilize quickly; only track for a sample
-        WIDTH_SAMPLE = 10000
+        WIDTH_SAMPLE = COLUMN_WIDTH_SAMPLE_SIZE
         already_displayed = len(self.displayed_rows)
         track_widths = already_displayed < WIDTH_SAMPLE
         _strip = str.strip
         _len = len
 
-        _MAX_SKIPPED_SAMPLE = 200
+        _MAX_SKIPPED_SAMPLE = MAX_SKIPPED_LINES_SAMPLE
         new_rows = []
         cached_cells = []
         skipped_lines = []
@@ -461,17 +586,17 @@ class StreamingMixin:
             row = [cells[p] for p in col_positions]
             new_rows.append(row)
 
-        self._total_skipped += skipped_count
-        remaining = 200 - len(self._skipped_lines)
+        self.delim.total_skipped += skipped_count
+        remaining = MAX_SKIPPED_LINES_SAMPLE - len(self._skipped_lines)
         if remaining > 0:
             self._skipped_lines.extend(skipped_lines[:remaining])
 
         # Populate _parsed_rows cache so the first sort/filter after loading
         # doesn't need to re-parse all rows via split_line.
         if skipped_count == 0 and cached_cells:
-            if self._parsed_rows is None:
-                self._parsed_rows = []
-            self._parsed_rows.extend(cached_cells)
+            if self.cache.parsed_rows is None:
+                self.cache.parsed_rows = []
+            self.cache.parsed_rows.extend(cached_cells)
 
         # Track column widths from a sample to avoid O(n*cols) len() calls
         if track_widths and new_rows:
@@ -486,30 +611,7 @@ class StreamingMixin:
             self._last_flushed_idx = len(self.raw_rows)
             return
 
-        if self.search_term:
-            styled = self._highlight_search_matches(
-                new_rows,
-                data_table.fixed_columns,
-                row_offset=len(self.displayed_rows),
-            )
-        else:
-            styled = new_rows
-
-        if self.regex_highlights:
-            styled = highlight_regex_patterns(
-                styled, self.regex_highlights, data_table.fixed_columns
-            )
-
-        # Highlight new streaming rows green (skip initial load)
-        if highlight and self.displayed_rows:
-            styled = [[self._highlight_markup(c) for c in row] for row in styled]
-
-        self.displayed_rows.extend(styled)
-        data_table.add_rows_precomputed(styled)
-        self._last_flushed_idx = len(self.raw_rows)
-
-        if self.is_tailing:
-            data_table.action_scroll_bottom()
+        self._apply_row_highlighting(new_rows, data_table, highlight)
 
     def _add_log_line(
         self: NlessBuffer, log_line: str, arrival_ts: float | None = None
@@ -520,11 +622,11 @@ class StreamingMixin:
         if self._time_window_ceiling is not None and ts > self._time_window_ceiling:
             return
         data_table = self.query_one(".nless-view")
-        cells = split_line(log_line, self.delimiter, self.current_columns)
+        cells = split_line(log_line, self.delim.value, self.current_columns)
         cells.append(self._format_arrival(ts))
         if self._has_source_column:
             cells.append(self._current_source or "")
-        if self.unique_column_names:
+        if self.query.unique_column_names:
             cells.insert(0, "1")
 
         if len(cells) != len(self.current_columns):
@@ -565,7 +667,7 @@ class StreamingMixin:
 
         self._update_sort_keys_for_line(data_cells, old_row)
 
-        if self.unique_column_names:
+        if self.query.unique_column_names:
             dedup_key = self._build_composite_key(cells, render_position=True)
             self._update_dedup_indices_after_insertion(dedup_key, new_index)
 

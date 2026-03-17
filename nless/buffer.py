@@ -1,4 +1,5 @@
 import csv
+import logging
 from datetime import datetime, timezone
 import json
 import re
@@ -8,21 +9,15 @@ from collections import defaultdict
 from collections.abc import Callable
 from copy import deepcopy
 
-import pyperclip
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.coordinate import Coordinate
-from textual.widgets import (
-    Select,
-    Static,
-)
+from textual.widgets import Static
 from textual import work
 
 from .delimiter import split_line
 from .input import LineStream
-from .nlessselect import NlessSelect
 from .datatable import Datatable as NlessDataTable
 from .dataprocessing import (
     build_composite_key,
@@ -37,19 +32,83 @@ from .dataprocessing import (
     update_sort_keys_for_line,
 )
 from .statusbar import build_status_text
-from .types import CliArgs, Column, Filter, MetadataColumn
+from .types import (
+    CliArgs,
+    CacheState,
+    ChainTimerState,
+    Column,
+    DelimiterState,
+    FilterSortState,
+    LoadingState,
+    MetadataColumn,
+    StatusContext,
+    StreamState,
+    UpdateReason,
+)
 
+from .buffer_actions import ActionsMixin
 from .buffer_columns import ColumnMixin
 from .buffer_delimiter import DelimiterMixin
 from .buffer_search import SearchMixin
 from .buffer_streaming import StreamingMixin
 from .buffer_timewindow import TimeWindowMixin
 
+logger = logging.getLogger(__name__)
+
 
 class NlessBuffer(
-    ColumnMixin, DelimiterMixin, TimeWindowMixin, StreamingMixin, SearchMixin, Static
+    ActionsMixin,
+    ColumnMixin,
+    DelimiterMixin,
+    TimeWindowMixin,
+    StreamingMixin,
+    SearchMixin,
+    Static,
 ):
-    """A modern pager with tabular data sorting/filtering capabilities."""
+    """A modern pager with tabular data sorting/filtering capabilities.
+
+    INVARIANTS
+    ----------
+    Parallel arrays
+      raw_rows, _arrival_timestamps, and _source_labels are parallel
+      arrays and must always satisfy:
+        len(raw_rows) == len(_arrival_timestamps)
+        len(_source_labels) == 0 or len(_source_labels) == len(raw_rows)
+      Any method that appends to or removes from raw_rows MUST perform
+      the same operation on _arrival_timestamps in the same code path.
+      _source_labels is only populated in merge mode (_has_source_column
+      is True); in single-source mode it remains empty.
+      Violation: silent data loss in time window filtering and source
+      column rendering.
+
+    render_position vs data_position
+      Every Column has two position fields:
+        data_position: index into a parsed row's cell list. Stable
+          after column creation. Only modified during delimiter switches
+          and computed column insertion.
+        render_position: visual position on screen. May be freely
+          mutated by column reordering, pinning, and hiding operations.
+      _align_cells_to_visible_columns() bridges the two by mapping
+      render-ordered visible columns back to their data_position
+      indices. Never update data_position for display purposes.
+
+    _last_flushed_idx
+      Tracks how far into raw_rows has been rendered to displayed_rows.
+      Invariant: displayed_rows reflects raw_rows[0:_last_flushed_idx]
+      after applying current filters, sort, and delimiter.
+      Every code path that modifies displayed_rows is responsible for
+      updating _last_flushed_idx to len(raw_rows) when the render is
+      complete. The streaming chain rebuild logic uses the gap between
+      len(raw_rows) and _last_flushed_idx to detect unrendered data.
+
+    _update_generation
+      Monotonically increasing counter incremented at the start of
+      every _deferred_update_table call. Background processing checks
+      this value before applying results - if the generation has
+      advanced since processing started, the result is discarded.
+      This ensures rapid successive operations (sort -> sort -> sort)
+      only apply the final state.
+    """
 
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "nless.tcss"
@@ -119,6 +178,8 @@ class NlessBuffer(
         line_stream: LineStream | None = None,
     ):
         super().__init__()
+
+        # ── Core identity ──────────────────────────────────────
         self._cli_args = cli_args
         self.line_stream = line_stream
         self._lock = threading.RLock()
@@ -129,133 +190,134 @@ class NlessBuffer(
         self.raw_mode: bool = cli_args.raw if cli_args else False
         if line_stream:
             line_stream.subscribe(self, self.add_logs, lambda: self.mounted)
+
+        # ── Streaming state ────────────────────────────────────
+        self.stream = StreamState()
         self.first_row_parsed = False
-        self.raw_rows = []
         self._all_source_lines: list[str] | None = None  # unfiltered history for ~
         self.displayed_rows = []
-        self.first_log_line = ""  # used to determine columns when delimiter is set
-        self._preamble_lines: list[str] = []  # lines skipped by find_header_index
-        self.current_columns: list[Column] = []
-        self.current_filters: list[Filter] = cli_args.filters if cli_args else []
-        self.search_term = None
-        if cli_args and cli_args.sort_by:
-            sort_column, direction = cli_args.sort_by.split("=")
-            self.sort_column = sort_column
-            self.sort_reverse = direction.lower() == "desc"
-        else:
-            self.sort_column = None
-            self.sort_reverse = False
-        self.search_matches: list[Coordinate] = []
-        self.current_match_index: int = -1
+        self.first_log_line = ""
+        self._last_flushed_idx = 0
+        self._initial_load_done = False
 
+        # ── Column / delimiter state ───────────────────────────
+        self.current_columns: list[Column] = []
         if cli_args and cli_args.delimiter:
             pattern = re.compile(cli_args.delimiter)  # validate regex
-            # check if delimiter parses to regex, and has named capture groups
             if pattern.groups > 0 and pattern.groupindex:
-                self.delimiter = pattern
+                initial_delim = pattern
             else:
-                self.delimiter = cli_args.delimiter
+                initial_delim = cli_args.delimiter
         else:
-            self.delimiter = None
+            initial_delim = None
+        self.delim = DelimiterState(value=initial_delim)
+        self._has_nested_delimiters = False
 
-        self.delimiter_inferred = False
-        self.delimiter_name: str | None = None
+        # ── Filter / sort / search state ───────────────────────
+        self.query = FilterSortState(
+            filters=cli_args.filters if cli_args else [],
+            unique_column_names=cli_args.unique_keys if cli_args else set(),
+        )
+        if cli_args and cli_args.sort_by:
+            sort_column, direction = cli_args.sort_by.split("=")
+            self.query.sort_column = sort_column
+            self.query.sort_reverse = direction.lower() == "desc"
+
+        # ── Pivot / dedup state ────────────────────────────────
         self.is_tailing = cli_args.tail if cli_args else False
-        self.unique_column_names = cli_args.unique_keys if cli_args else set()
-        self.count_by_column_key = defaultdict(lambda: 0)
-        # Columns hidden by pivot (to reveal when new lines arrive)
         self._pivot_hidden_columns: set[str] = set()
 
-        # Arrival timestamps parallel to raw_rows (epoch floats)
-        self._arrival_timestamps: list[float] = []
-        # Source labels parallel to raw_rows (for merged streams)
-        self._source_labels: list[str] = []
-        # Current source label set by add_logs(source=...)
+        # ── Arrival / source metadata ──────────────────────────
         self._current_source: str | None = None
-        # Whether the _source metadata column exists
         self._has_source_column: bool = False
-        # Time window filter: only show rows within this many seconds of now
+
+        # ── Time window state ──────────────────────────────────
         self.time_window: float | None = None
-        # When True, the time window re-evaluates periodically
         self.rolling_time_window: bool = False
-        # Fixed upper bound for non-rolling windows (blocks new streaming data)
         self._time_window_ceiling: float | None = None
         self._rolling_timer = None
 
-        # Caches rebuilt when columns change
-        self._col_data_idx: dict[str, int] = {}  # plain_name → data_position
-        self._col_render_idx: dict[str, int] = {}  # plain_name → render_position
-        self._sorted_visible_columns: list[Column] = []
-        # Dedup: composite_key → row index in displayed_rows
-        self._dedup_key_to_row_idx: dict[str, int] = {}
-        # Incremental sort keys for _find_sorted_insert_index
-        self._sort_keys: list = []
-        # Tracks how far into raw_rows has been rendered
-        self._last_flushed_idx = 0
-        # Cache of parsed cells to avoid re-parsing on sort/search
-        self._parsed_rows: list[list[str]] | None = None
-        # Cache of column widths to skip O(N×V) recomputation on sort
-        self._cached_col_widths: list[int] | None = None
-        self._initial_load_done = False
-        self._loading_reason: str | None = None
-        self._flash_message: str | None = None
-        self._flash_timer = None
-        self._spinner_frame: int = 0
-        self._spinner_timer = None
-        self._has_nested_delimiters = False
+        # ── Cache state ────────────────────────────────────────
+        self.cache = CacheState()
+
+        # ── UI / loading state ─────────────────────────────────
+        self.loading_state = LoadingState()
+        self._status_ctx = StatusContext()
         self._update_generation = 0
         self._needs_deferred_update = False
         self._skipped_lines: list[str] = []
-        self._delimiter_suggestion_shown = False
-        self._mismatch_warning_shown = False
-        self._total_skipped = 0
-        # Lines that triggered green highlighting from streaming updates
+
+        # ── Streaming highlight state ──────────────────────────
         self._green_lines: set[str] | None = None
-        # When set, rejects lines that parse with an ancestor buffer's delimiter.
-        # Used by chained ~ (view unparsed) buffers.
         self._source_parse_filter: Callable[[str], bool] | None = None
 
-        # Back pressure tracking
+        # ── Back pressure ──────────────────────────────────────
         self._bp_timer = None
         self._bp_behind: bool = False
 
-        # User-defined regex highlights: list of (compiled_pattern, color)
+        # ── User-defined highlights ────────────────────────────
         self.regex_highlights: list[tuple[re.Pattern, str]] = []
 
-        # Snapshot of buffer state before a view was applied (for undo)
+        # ── Pre-view snapshot (undo) ───────────────────────────
         self._pre_view_state = None
         self._pre_view_raw_rows: list[str] | None = None
         self._pre_view_timestamps: list[float] | None = None
 
-        # Deferred session state to apply once columns are parsed
+        # ── Log format auto-detection ──────────────────────────
+        self._log_format_checked = False
+
+        # ── Session restore ────────────────────────────────────
         self._pending_session_state = None
-        # Deferred cursor position from session restore
         self._pending_cursor_position: tuple[int, int] | None = None
 
-        # Chain-delay for coalescing deferred rebuilds during streaming
-        self._chain_delay: float = self._CHAIN_DELAY_INITIAL
-        self._chain_timer = None
-        self._chain_skips: int = 0
-        self._chain_notified: bool = False
+        # ── Chain rebuild timer ────────────────────────────────
+        self.chain = ChainTimerState()
 
-    def action_copy(self) -> None:
-        """Copy the contents of the currently highlighted cell to the clipboard."""
-        data_table = self.query_one(".nless-view")
-        coordinate = data_table.cursor_coordinate
-        try:
-            cell_value = data_table.get_cell_at(coordinate)
-            cell_value = strip_markup(cell_value)
-        except (IndexError, TypeError):
-            self.notify("Cannot get cell value.", severity="error")
-            return
-        try:
-            pyperclip.copy(cell_value)
-            self.notify("Cell contents copied to clipboard.", severity="information")
-        except pyperclip.PyperclipException:
-            self.notify(
-                "Clipboard not available — is xclip/xsel installed?",
-                severity="error",
-            )
+    # ── StreamState compatibility properties ─────────────────
+    @property
+    def raw_rows(self) -> list[str]:
+        return self.stream.raw_rows
+
+    @raw_rows.setter
+    def raw_rows(self, value: list[str]) -> None:
+        import warnings
+
+        warnings.warn(
+            "Direct assignment to raw_rows is deprecated; use stream.replace_raw_rows()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.stream._raw_rows = value
+
+    @property
+    def _arrival_timestamps(self) -> list[float]:
+        return self.stream.arrival_timestamps
+
+    @_arrival_timestamps.setter
+    def _arrival_timestamps(self, value: list[float]) -> None:
+        import warnings
+
+        warnings.warn(
+            "Direct assignment to _arrival_timestamps is deprecated; use stream methods",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.stream._arrival_timestamps = value
+
+    @property
+    def _source_labels(self) -> list[str]:
+        return self.stream.source_labels
+
+    @_source_labels.setter
+    def _source_labels(self, value: list[str]) -> None:
+        import warnings
+
+        warnings.warn(
+            "Direct assignment to _source_labels is deprecated; use stream.set_source_labels()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.stream._source_labels = value
 
     def _filter_lines(
         self,
@@ -267,7 +329,7 @@ class NlessBuffer(
         now = time.time()
         if timestamps is None:
             timestamps = [now] * len(lines)
-        if not self.current_filters:
+        if not self.query.filters:
             return lines, timestamps, source_labels
         metadata = [mc.value for mc in MetadataColumn]
         expected = len([c for c in self.current_columns if c.name not in metadata])
@@ -276,7 +338,7 @@ class NlessBuffer(
         kept_sources = [] if source_labels is not None else None
         for i, line in enumerate(lines):
             try:
-                cells = split_line(line, self.delimiter, self.current_columns)
+                cells = split_line(line, self.delim.value, self.current_columns)
             except (json.JSONDecodeError, csv.Error, ValueError):
                 continue
             if len(cells) != expected:
@@ -306,20 +368,24 @@ class NlessBuffer(
             new_buffer.first_row_parsed = self.first_row_parsed
             new_buffer.displayed_rows = []
             new_buffer.first_log_line = self.first_log_line
-            new_buffer._preamble_lines = list(self._preamble_lines)
+            new_buffer.delim.preamble_lines = list(self.delim.preamble_lines)
             new_buffer.current_columns = deepcopy(self.current_columns)
-            new_buffer.current_filters = deepcopy(self.current_filters)
-            new_buffer.search_term = self.search_term
-            new_buffer.sort_column = self.sort_column
-            new_buffer.sort_reverse = self.sort_reverse
-            new_buffer.search_matches = deepcopy(self.search_matches)
-            new_buffer.current_match_index = self.current_match_index
-            new_buffer.delimiter = self.delimiter
-            new_buffer.delimiter_inferred = self.delimiter_inferred
-            new_buffer.delimiter_name = self.delimiter_name
+            new_buffer.query.filters = deepcopy(self.query.filters)
+            new_buffer.query.search_term = self.query.search_term
+            new_buffer.query.sort_column = self.query.sort_column
+            new_buffer.query.sort_reverse = self.query.sort_reverse
+            new_buffer.query.search_matches = deepcopy(self.query.search_matches)
+            new_buffer.query.current_match_index = self.query.current_match_index
+            new_buffer.delim.value = self.delim.value
+            new_buffer.delim.inferred = self.delim.inferred
+            new_buffer.delim.name = self.delim.name
             new_buffer.is_tailing = self.is_tailing
-            new_buffer.unique_column_names = deepcopy(self.unique_column_names)
-            new_buffer.count_by_column_key = deepcopy(self.count_by_column_key)
+            new_buffer.query.unique_column_names = deepcopy(
+                self.query.unique_column_names
+            )
+            new_buffer.query.count_by_column_key = deepcopy(
+                self.query.count_by_column_key
+            )
             new_buffer._pivot_hidden_columns = set(self._pivot_hidden_columns)
             new_buffer.time_window = self.time_window
             new_buffer.rolling_time_window = self.rolling_time_window
@@ -337,23 +403,20 @@ class NlessBuffer(
             new_buffer._initial_load_done = True
 
         # Expensive filtering runs outside the lock on the snapshot.
-        new_buffer.raw_rows, new_buffer._arrival_timestamps, filtered_sources = (
-            new_buffer._filter_lines(
-                raw_rows_snapshot,
-                timestamps_snapshot,
-                source_labels=source_labels_snapshot or None,
-            )
+        filtered_rows, filtered_ts, filtered_sources = new_buffer._filter_lines(
+            raw_rows_snapshot,
+            timestamps_snapshot,
+            source_labels=source_labels_snapshot or None,
         )
-        if filtered_sources is not None:
-            new_buffer._source_labels = filtered_sources
+        new_buffer.stream.extend(filtered_rows, filtered_ts, filtered_sources)
         # Copy parsed-row cache so the new buffer's first rebuild doesn't
         # re-parse everything via split_line.  When _filter_lines removed
         # rows, len(_parsed_rows) > len(raw_rows) and _partition_rows will
         # safely ignore the stale cache.
-        if self._parsed_rows is not None and len(self._parsed_rows) == len(
+        if self.cache.parsed_rows is not None and len(self.cache.parsed_rows) == len(
             raw_rows_snapshot
         ):
-            new_buffer._parsed_rows = list(self._parsed_rows)
+            new_buffer.cache.parsed_rows = list(self.cache.parsed_rows)
         # Keep unfiltered history so ~ can find excluded lines even without
         # a line_stream.  The snapshot is shared (not copied) to save memory.
         new_buffer._all_source_lines = raw_rows_snapshot
@@ -375,9 +438,9 @@ class NlessBuffer(
         # Use first buffer's structure
         new_buffer.first_row_parsed = buf1.first_row_parsed
         new_buffer.first_log_line = buf1.first_log_line
-        new_buffer.delimiter = buf1.delimiter
-        new_buffer.delimiter_inferred = buf1.delimiter_inferred
-        new_buffer.delimiter_name = buf1.delimiter_name
+        new_buffer.delim.value = buf1.delim.value
+        new_buffer.delim.inferred = buf1.delim.inferred
+        new_buffer.delim.name = buf1.delim.name
         new_buffer.current_columns = deepcopy(buf1.current_columns)
 
         # Ensure source column exists
@@ -394,9 +457,10 @@ class NlessBuffer(
         )
         merged = sorted(pairs1 + pairs2, key=lambda x: x[0])
 
-        new_buffer.raw_rows = [row for _, row, _ in merged]
-        new_buffer._arrival_timestamps = [ts for ts, _, _ in merged]
-        new_buffer._source_labels = [src for _, _, src in merged]
+        merged_rows = [row for _, row, _ in merged]
+        merged_timestamps = [ts for ts, _, _ in merged]
+        merged_sources = [src for _, _, src in merged]
+        new_buffer.stream.extend(merged_rows, merged_timestamps, merged_sources)
 
         new_buffer._rebuild_column_caches()
         new_buffer._initial_load_done = True
@@ -432,16 +496,15 @@ class NlessBuffer(
         Configures delimiter, columns, raw_rows, and optionally subscribes
         to ongoing stream updates so newly rejected lines appear automatically.
         """
-        self.delimiter = "raw"
-        self.delimiter_inferred = False
+        self.delim.value = "raw"
+        self.delim.inferred = False
         self.first_log_line = rows[0]
         self.first_row_parsed = True
         self.current_columns = self._make_columns(["log"])
         self._ensure_arrival_column(self.current_columns)
         self._rebuild_column_caches()
-        self.raw_rows = rows
         now = time.time()
-        self._arrival_timestamps = [now] * len(rows)
+        self.stream.replace_raw_rows(rows, [now] * len(rows))
         self._initial_load_done = True
         self._source_parse_filter = source_parse_filter
 
@@ -518,7 +581,7 @@ class NlessBuffer(
             if cursor_y and rows:
                 new_widget.move_cursor(row=min(cursor_y, len(rows) - 1))
         except Exception:
-            pass
+            logger.debug("Raw swap row transfer failed", exc_info=True)
 
     def on_mount(self) -> None:
         self.mounted = True
@@ -527,8 +590,8 @@ class NlessBuffer(
 
             apply_buffer_state(self, self._pending_session_state)
             self._pending_session_state = None
-            self._deferred_update_table(reason="Session loaded")
-        if self._loading_reason:
+            self._deferred_update_table(reason=UpdateReason.SESSION)
+        if self.loading_state.reason:
             self._start_spinner()
         if not self._initial_load_done:
             self.set_timer(1.0, self._mark_initial_load_done)
@@ -553,299 +616,6 @@ class NlessBuffer(
         """Handle cell highlighted events to update the status bar."""
         self._update_status_bar()
 
-    def _make_shown_filter(
-        self, *, include_ancestors: bool = True
-    ) -> Callable[[str], bool]:
-        """Build a filter that returns True if a line would be shown in this buffer.
-
-        A line is "shown" if it parses with the delimiter, has the right column
-        count, and passes all content filters.  When *include_ancestors* is True
-        (the default), a line is also considered shown if any ancestor buffer
-        would show it (via _source_parse_filter).  Pass False when building the
-        filter set for ``action_view_unparsed_logs`` so each buffer is evaluated
-        independently.
-        """
-        delimiter = self.delimiter
-        columns = list(self.current_columns)
-        metadata = {mc.value for mc in MetadataColumn}
-        expected = len([c for c in columns if c.name not in metadata])
-        filters = list(self.current_filters)
-        col_lookup = dict(self._col_data_idx)
-        parent = self._source_parse_filter if include_ancestors else None
-
-        def shown(line: str) -> bool:
-            if parent and parent(line):
-                return True
-            try:
-                cells = split_line(line, delimiter, columns)
-            except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
-                return False
-            if len(cells) != expected:
-                return False
-            if not filters:
-                return True
-            # Append a dummy arrival timestamp for filter column alignment
-            cells.append("")
-            return matches_all_filters(
-                cells, filters, lambda name, _rp=False: col_lookup.get(name)
-            )
-
-        return shown
-
-    def action_view_unparsed_logs(self) -> None:
-        """Create a new buffer containing logs not shown in any open buffer."""
-        # Build shown filters for all open buffers.  Each filter answers
-        # "would this buffer display this line?" without considering ancestor
-        # chains — we combine them with any() ourselves.
-        buffer_filters = []
-        for buf in self.app.buffers:
-            shown = buf._make_shown_filter(include_ancestors=False)
-            # A raw buffer with no filters would claim to show every line,
-            # but it may only *contain* a subset.  Fall back to a membership
-            # check against its actual rows so ~ can find genuinely missing lines.
-            if buf.delimiter == "raw" and not buf.current_filters:
-                raw_set = set(buf.raw_rows)
-                buffer_filters.append(lambda line, _s=raw_set: line in _s)
-            else:
-                buffer_filters.append(shown)
-
-        def shown_in_any(line: str) -> bool:
-            return any(f(line) for f in buffer_filters)
-
-        # Use the line stream's full history if available, then unfiltered
-        # snapshot from copy(), then fall back to raw_rows.
-        if self.line_stream:
-            all_lines = self.line_stream.lines
-        elif self._all_source_lines is not None:
-            all_lines = self._all_source_lines
-        else:
-            all_lines = self.raw_rows
-
-        excluded_rows = [line for line in all_lines if not shown_in_any(line)]
-
-        if not excluded_rows:
-            self.notify("All logs are being shown.", severity="information")
-            return
-
-        self.app._create_unparsed_buffer(
-            excluded_rows,
-            source_parse_filter=shown_in_any,
-            line_stream=self.line_stream,
-        )
-
-    def action_jump_columns(self) -> None:
-        """Show columns by user input."""
-        column_options = [
-            (strip_markup(c.name), c.render_position)
-            for c in sorted(self.current_columns, key=lambda c: c.render_position)
-            if not c.hidden
-        ]
-        select = NlessSelect(
-            options=column_options,
-            classes="dock-bottom",
-            prompt="Type a column to jump to",
-            id="column_jump_select",
-        )
-        self.mount(select)
-
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.control.id and event.control.id != "column_jump_select":
-            return  # Not ours — let it bubble to the app
-        col_index = event.value
-        event.control.remove()
-        data_table = self.query_one(".nless-view")
-        data_table.move_cursor(column=col_index)
-
-    def action_move_column(self, direction: int) -> None:
-        with self._try_lock(
-            "move column", deferred=lambda: self.action_move_column(direction)
-        ) as acquired:
-            if not acquired:
-                return
-            data_table = self.query_one(".nless-view")
-            current_cursor_column = data_table.cursor_column
-            selected_column = self._get_column_at_position(current_cursor_column)
-            if not selected_column:
-                self.notify("No column selected to move", severity="error")
-                return
-            if selected_column.name in [m.value for m in MetadataColumn]:
-                return  # can't move metadata columns
-            if (
-                direction == 1
-                and selected_column.render_position == len(self.current_columns) - 1
-            ) or (direction == -1 and selected_column.render_position == 0):
-                return  # can't move further in that direction
-
-            adjacent_column = self._get_column_at_position(
-                selected_column.render_position + direction
-            )
-            if not adjacent_column or adjacent_column.name in [
-                m.value for m in MetadataColumn
-            ]:  # can't move past metadata columns
-                return
-
-            if (
-                adjacent_column.pinned
-                and not selected_column.pinned
-                or (selected_column.pinned and not adjacent_column.pinned)
-            ):
-                return  # can't move a pinned column past a non-pinned column or vice versa
-
-            selected_column.render_position, adjacent_column.render_position = (
-                adjacent_column.render_position,
-                selected_column.render_position,
-            )
-            new_position = selected_column.render_position
-
-        self._deferred_update_table(
-            callback=lambda: data_table.move_cursor(column=new_position),
-            reason="Moving column",
-        )
-
-    def action_move_column_left(self) -> None:
-        self.action_move_column(-1)
-
-    def action_move_column_right(self) -> None:
-        self.action_move_column(1)
-
-    def action_pin_column(self) -> None:
-        """Pin or unpin the currently selected column to the left."""
-        if self.raw_mode:
-            return
-        data_table = self.query_one(".nless-view")
-        selected_column = self._get_column_at_position(data_table.cursor_column)
-        if not selected_column:
-            return
-        if selected_column.name in [m.value for m in MetadataColumn]:
-            return  # can't pin/unpin metadata columns
-
-        if selected_column.pinned:
-            # Unpin: move to just after last remaining pinned column
-            old_pos = selected_column.render_position
-            selected_column.pinned = False
-            selected_column.labels.discard("P")
-            pinned_count = sum(
-                1 for c in self.current_columns if c.pinned and not c.hidden
-            )
-            # Shift pinned columns that were to the right of this one left
-            for c in self.current_columns:
-                if c is selected_column:
-                    continue
-                if c.pinned and c.render_position > old_pos:
-                    c.render_position -= 1
-            # Place unpinned column right after all pinned columns
-            selected_column.render_position = pinned_count
-            # Shift non-pinned columns between target and old position right
-            for c in self.current_columns:
-                if c is selected_column or c.pinned:
-                    continue
-                if not c.hidden and pinned_count <= c.render_position < old_pos:
-                    c.render_position += 1
-        else:
-            # Pin: remove from old position, insert at end of pinned zone
-            old_pos = selected_column.render_position
-            pinned_count = sum(
-                1 for c in self.current_columns if c.pinned and not c.hidden
-            )
-            selected_column.pinned = True
-            selected_column.labels.add("P")
-            # Shift non-pinned columns between pinned_count..old_pos-1 right
-            # (they're being displaced by the new pinned column taking a slot)
-            for c in self.current_columns:
-                if c is selected_column or c.pinned or c.hidden:
-                    continue
-                if pinned_count <= c.render_position < old_pos:
-                    c.render_position += 1
-            # Place at the end of pinned columns
-            selected_column.render_position = pinned_count
-
-        new_pos = selected_column.render_position
-        self.invalidate_caches()
-        self._deferred_update_table(
-            callback=lambda: data_table.move_cursor(column=new_pos),
-            reason="Pinning column",
-        )
-
-    def action_toggle_tail(self) -> None:
-        self.is_tailing = not self.is_tailing
-        self._update_status_bar()
-
-    def action_reset_highlights(self) -> None:
-        """Remove new-line highlights from all displayed rows."""
-        data_table = self.query_one(".nless-view")
-        highlight_re = self._get_theme().highlight_re
-        for row_idx, row in enumerate(self.displayed_rows):
-            new_row = [highlight_re.sub(r"\1", cell) for cell in row]
-            self.displayed_rows[row_idx] = new_row
-            data_table.rows[row_idx] = new_row
-        data_table.refresh()
-
-    def action_next_search(self) -> None:
-        """Move cursor to the next search result."""
-        self._navigate_search(1)
-
-    def action_previous_search(self) -> None:
-        """Move cursor to the previous search result."""
-        self._navigate_search(-1)
-
-    def action_sort(self) -> None:
-        with self._try_lock("sort", deferred=self.action_sort) as acquired:
-            if not acquired:
-                return
-            data_table = self.query_one(".nless-view")
-            current_cursor_column = data_table.cursor_column
-            selected_column = self._get_column_at_position(current_cursor_column)
-            if not selected_column:
-                self.notify("No column selected for sorting", severity="error")
-                return
-
-            new_sort_column_name = strip_markup(selected_column.name)
-
-            if self.sort_column == new_sort_column_name and self.sort_reverse:
-                self.sort_column = None
-            elif self.sort_column == new_sort_column_name and not self.sort_reverse:
-                self.sort_reverse = True
-            else:
-                self.sort_column = new_sort_column_name
-                self.sort_reverse = False
-
-            # Update sort indicators
-            if self.sort_column is None:
-                selected_column.labels.discard("▲")
-                selected_column.labels.discard("▼")
-            elif self.sort_reverse:
-                selected_column.labels.discard("▲")
-                selected_column.labels.add("▼")
-            else:
-                selected_column.labels.discard("▼")
-                selected_column.labels.add("▲")
-
-            # Remove sort indicators from other columns
-            for col in self.current_columns:
-                if col.name != selected_column.name:
-                    col.labels.discard("▲")
-                    col.labels.discard("▼")
-
-        self._deferred_update_table(reason="Sorting")
-
-    def action_aggregations(self) -> None:
-        from .operations import compute_column_aggregations
-
-        data_table = self.query_one(".nless-view")
-        selected_column = self._get_column_at_position(data_table.cursor_column)
-        if not selected_column:
-            self.notify("No column selected", severity="error")
-            return
-
-        col_name = strip_markup(selected_column.name)
-        render_idx = data_table.cursor_column
-        result = compute_column_aggregations(self, render_idx)
-        if result is None:
-            self.notify(f"No data in column '{col_name}'", severity="warning")
-            return
-
-        self.notify(f"[bold]{col_name}[/bold]: {result}", timeout=10)
-
     def _filter_rows(
         self, expected_cell_count: int
     ) -> tuple[list[list[str]], list[str]]:
@@ -853,17 +623,18 @@ class NlessBuffer(
 
         Uses a parsed-row cache to avoid re-parsing on sort/search operations.
         Also compacts raw_rows to only keep matching + unparseable lines so that
-        subsequent _update_table() calls (sort, search, etc.) scan fewer rows.
+        subsequent _deferred_update_table() calls (sort, search, etc.) scan fewer rows.
         """
         filtered, mismatched, compacted = self._partition_rows(expected_cell_count)
         if compacted is not None:
             self._apply_raw_rows_compaction(compacted)
         elif filtered and (
-            self._parsed_rows is None or len(filtered) != len(self._parsed_rows)
+            self.cache.parsed_rows is None
+            or len(filtered) != len(self.cache.parsed_rows)
         ):
             # Partial-cache fast path: update cache with newly parsed rows.
             # Copy so downstream in-place sort doesn't corrupt the cache.
-            self._parsed_rows = list(filtered)
+            self.cache.parsed_rows = list(filtered)
         return filtered, mismatched
 
     def _partition_rows(self, expected_cell_count: int):
@@ -879,10 +650,10 @@ class NlessBuffer(
         # Use cached parsed rows if available (sort/search don't need re-parse).
         # A partial cache (shorter than raw_rows) is also valid — we'll only
         # parse the new rows appended since the last rebuild.
-        if self._parsed_rows is not None and len(self._parsed_rows) <= len(
+        if self.cache.parsed_rows is not None and len(self.cache.parsed_rows) <= len(
             self.raw_rows
         ):
-            parsed = self._parsed_rows
+            parsed = self.cache.parsed_rows
         else:
             parsed = None
 
@@ -890,27 +661,23 @@ class NlessBuffer(
         if (
             parsed is not None
             and len(parsed) == len(self.raw_rows)
-            and not self.current_filters
+            and not self.query.filters
         ):
             return list(parsed), [], None
 
         # Fast path: partial cache + no filters → only parse new rows
         if (
             parsed is not None
-            and not self.current_filters
+            and not self.query.filters
             and len(parsed) < len(self.raw_rows)
         ):
             new_parsed = []
             mismatched = []
             for i in range(len(parsed), len(self.raw_rows)):
                 row_str = self.raw_rows[i]
-                ts = (
-                    self._arrival_timestamps[i]
-                    if i < len(self._arrival_timestamps)
-                    else time.time()
-                )
+                ts = self._arrival_timestamps[i]
                 try:
-                    cells = split_line(row_str, self.delimiter, self.current_columns)
+                    cells = split_line(row_str, self.delim.value, self.current_columns)
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     continue
                 if len(cells) != expected_cell_count:
@@ -929,21 +696,17 @@ class NlessBuffer(
         kept_timestamps = []
         unparseable_raw = []
         unparseable_timestamps = []
-        needs_copy = parsed is not None and bool(self.unique_column_names)
+        needs_copy = parsed is not None and bool(self.query.unique_column_names)
         parsed_len = len(parsed) if parsed is not None else 0
         for i, row_str in enumerate(self.raw_rows):
-            ts = (
-                self._arrival_timestamps[i]
-                if i < len(self._arrival_timestamps)
-                else time.time()
-            )
+            ts = self._arrival_timestamps[i]
             if parsed is not None and i < parsed_len:
                 # Copy when dedup is active to avoid mutating the cache
                 # when _dedup_rows prepends a count column.
                 cells = list(parsed[i]) if needs_copy else parsed[i]
             else:
                 try:
-                    cells = split_line(row_str, self.delimiter, self.current_columns)
+                    cells = split_line(row_str, self.delim.value, self.current_columns)
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     unparseable_raw.append(row_str)
                     unparseable_timestamps.append(ts)
@@ -962,8 +725,7 @@ class NlessBuffer(
                 filtered_rows.append(cells)
                 kept_raw.append(row_str)
                 kept_parsed.append(cells)
-                if i < len(self._arrival_timestamps):
-                    kept_timestamps.append(self._arrival_timestamps[i])
+                kept_timestamps.append(self._arrival_timestamps[i])
 
         compacted = (
             kept_raw,
@@ -983,23 +745,22 @@ class NlessBuffer(
         if compacted is None:
             return
         kept_raw, kept_parsed, kept_ts, unparseable_raw, unparseable_ts = compacted
-        old_len = len(self.raw_rows)
-        self.raw_rows = kept_raw + unparseable_raw
-        self._parsed_rows = kept_parsed
-        self._arrival_timestamps = kept_ts + unparseable_ts
-        # Keep _source_labels in sync if present
-        if self._source_labels and len(self._source_labels) == old_len:
-            # Compaction keeps the same indices as raw_rows — truncate to match
-            self._source_labels = self._source_labels[: len(self.raw_rows)]
+        combined_rows = kept_raw + unparseable_raw
+        combined_ts = kept_ts + unparseable_ts
+        combined_sources = None
+        if self.stream.has_sources:
+            combined_sources = self.stream.source_labels[: len(combined_rows)]
+        self.stream.replace_raw_rows(combined_rows, combined_ts, combined_sources)
+        self.cache.parsed_rows = kept_parsed
 
     def _dedup_rows(self, filtered_rows: list[list[str]]) -> list[list[str]]:
         """Deduplicate rows by composite unique column key, prepending count."""
-        if not self.unique_column_names:
+        if not self.query.unique_column_names:
             return filtered_rows
         dedup_map = {}
         for cells in filtered_rows:
             composite_key = []
-            for col_name in self.unique_column_names:
+            for col_name in self.query.unique_column_names:
                 col_idx = self._get_col_idx_by_name(col_name)
                 if col_idx is None:
                     continue
@@ -1007,19 +768,19 @@ class NlessBuffer(
                 composite_key.append(strip_markup(cells[col_idx]))
             key = ",".join(composite_key)
             dedup_map[key] = cells
-            self.count_by_column_key[key] += 1
+            self.query.count_by_column_key[key] += 1
         deduped_rows = []
         for idx, (k, cells) in enumerate(dedup_map.items()):
-            cells = [str(self.count_by_column_key[k])] + cells
-            self._dedup_key_to_row_idx[k] = idx
+            cells = [str(self.query.count_by_column_key[k])] + cells
+            self.cache.dedup_key_to_row_idx[k] = idx
             deduped_rows.append(cells)
         return deduped_rows
 
     def _sort_rows(self, rows: list[list[str]]) -> None:
         """Sort rows in-place by the current sort column."""
-        if self.sort_column is None:
+        if self.query.sort_column is None:
             return
-        sort_column_idx = self._get_col_idx_by_name(self.sort_column)
+        sort_column_idx = self._get_col_idx_by_name(self.query.sort_column)
         if sort_column_idx is None:
             return
         try:
@@ -1027,7 +788,7 @@ class NlessBuffer(
             # coerce_to_numeric O(N log N) times inside the sort comparator.
             keys = [coerce_to_numeric(r[sort_column_idx]) for r in rows]
             indices = sorted(
-                range(len(rows)), key=keys.__getitem__, reverse=self.sort_reverse
+                range(len(rows)), key=keys.__getitem__, reverse=self.query.sort_reverse
             )
             rows[:] = [rows[i] for i in indices]
         except (ValueError, IndexError):
@@ -1036,241 +797,245 @@ class NlessBuffer(
             try:
                 rows.sort(
                     key=lambda r: r[sort_column_idx],
-                    reverse=self.sort_reverse,
+                    reverse=self.query.sort_reverse,
                 )
             except (TypeError, IndexError):
                 pass
 
+    _CACHE_SAFE_REASONS = frozenset(
+        {
+            UpdateReason.SORT,
+            UpdateReason.SEARCH,
+            UpdateReason.THEME,
+            UpdateReason.DEDUP,
+            UpdateReason.FILTER,
+            UpdateReason.PIVOT,
+            UpdateReason.HIGHLIGHT,
+        }
+    )
+
+    def _process_deferred_data(self, gen: int) -> dict | None:
+        """Pure-data work for deferred updates — no widget access."""
+        if gen != self._update_generation:
+            return None
+        with self._lock:
+            metadata_names = {m.value for m in MetadataColumn}
+            curr_metadata_columns = {
+                c.name for c in self.current_columns if c.name in metadata_names
+            }
+            expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
+            self._rebuild_column_caches()
+            column_labels = self._get_visible_column_labels()
+            fixed_columns = len(
+                [c for c in self.current_columns if c.pinned and not c.hidden]
+            )
+
+            self.query.search_matches = []
+            self.query.current_match_index = -1
+            self.query.count_by_column_key = defaultdict(lambda: 0)
+            self.cache.dedup_key_to_row_idx = {}
+            self.cache.sort_keys = []
+
+            filtered_rows, rows_with_inconsistent_length = self._filter_rows(
+                expected_cell_count
+            )
+            filtered_rows = self._apply_time_window(filtered_rows)
+            deduped_rows = self._dedup_rows(filtered_rows)
+            self._sort_rows(deduped_rows)
+
+            # Rebuild dedup indices after sorting (sort reorders rows)
+            if self.query.unique_column_names:
+                self.cache.dedup_key_to_row_idx = {}
+                for idx, row in enumerate(deduped_rows):
+                    key = self._build_composite_key(row)
+                    self.cache.dedup_key_to_row_idx[key] = idx
+
+            # Populate _sort_keys for incremental inserts.
+            # _sort_keys is always ascending for bisect. Rows are already
+            # sorted by _sort_rows, so extract in order (O(N)) instead of
+            # re-sorting (O(N log N)). If sort_reverse, reverse the list.
+            if self.query.sort_column is not None:
+                sort_col_idx = self._get_col_idx_by_name(
+                    self.query.sort_column, render_position=False
+                )
+                if sort_col_idx is not None:
+                    keys = [
+                        coerce_sort_key(strip_markup(str(r[sort_col_idx])))
+                        for r in deduped_rows
+                    ]
+                    if self.query.sort_reverse:
+                        keys.reverse()
+                    self.cache.sort_keys = keys
+
+            aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
+            styled_rows = self._highlight_search_matches(aligned_rows, fixed_columns)
+
+            # Apply user-defined regex highlights
+            if self.regex_highlights:
+                styled_rows = highlight_regex_patterns(
+                    styled_rows, self.regex_highlights, fixed_columns
+                )
+
+            # Highlight rows affected by newly streamed lines
+            green_lines = self._green_lines
+            if green_lines and self.query.unique_column_names:
+                green_keys = set()
+                for line in green_lines:
+                    cells = split_line(line, self.delim.value, self.current_columns)
+                    cells.append("")  # placeholder for arrival
+                    cells.insert(0, "")  # placeholder for count
+                    key = self._build_composite_key(cells, render_position=False)
+                    green_keys.add(key)
+                for i, row in enumerate(styled_rows):
+                    key = self._build_composite_key(row, render_position=True)
+                    if key in green_keys:
+                        styled_rows[i] = [self._highlight_markup(c) for c in row]
+                self._green_lines = None
+
+            self._last_flushed_idx = len(self.raw_rows)
+            # Snapshot shared state for width computation outside the lock
+            cached_widths = self.cache.col_widths
+            has_markup_changes = bool(self.query.search_term) or bool(
+                self.regex_highlights
+            )
+
+        # Precompute column widths on the bg thread so the main thread
+        # can use add_rows_precomputed (just extends + refresh).
+        # Reuse cached widths on sort-only rebuilds (no search/highlights
+        # → no markup changes → widths are stable).
+        if (
+            cached_widths is not None
+            and not has_markup_changes
+            and len(cached_widths) == len(column_labels)
+        ):
+            col_widths = cached_widths
+        else:
+            col_widths = [len(c) for c in column_labels]
+            for row in styled_rows:
+                for i, cell_str in enumerate(row):
+                    if "[" in cell_str:
+                        try:
+                            str_len = Text.from_markup(cell_str).cell_len
+                        except Exception:
+                            str_len = len(cell_str)
+                    else:
+                        str_len = len(cell_str)
+                    if str_len > col_widths[i]:
+                        col_widths[i] = str_len
+            with self._lock:
+                self.cache.col_widths = col_widths
+
+        return {
+            "styled_rows": styled_rows,
+            "column_labels": column_labels,
+            "column_widths": col_widths,
+            "fixed_columns": fixed_columns,
+            "inconsistent_rows": rows_with_inconsistent_length,
+            "n_filtered": len(filtered_rows),
+        }
+
+    def _apply_deferred_to_widgets(
+        self, result, gen, restore_position, callback, cx, cy, sx, sy
+    ):
+        """Main-thread: push processed data into widgets."""
+        if result is None or gen != self._update_generation:
+            return
+        self._ensure_correct_view_widget()
+        dt = self.query_one(".nless-view")
+        dt.clear(columns=True)
+        dt.fixed_columns = result["fixed_columns"]
+        dt.add_columns(result["column_labels"])
+        dt.column_widths = result["column_widths"]
+
+        self.displayed_rows = result["styled_rows"]
+        dt.add_rows_precomputed(result["styled_rows"])
+
+        bad_lines = result["inconsistent_rows"]
+        if bad_lines:
+            n_total = result["n_filtered"] + len(bad_lines)
+            msg = self._try_auto_switch_delimiter(
+                bad_lines,
+                len(bad_lines),
+                n_total,
+                lines_already_in_raw=True,
+            )
+            if msg:
+                self._flash_status(msg)
+                self._deferred_update_table(reason=UpdateReason.SWITCHING_DELIMITER)
+                return
+
+        # Check if more data arrived while we were processing
+        if len(self.raw_rows) > self._last_flushed_idx:
+            stream_active = self.line_stream and not self.line_stream.done
+            if stream_active and self._needs_full_rebuild():
+                self._schedule_chain_rebuild(restore_position, callback)
+            else:
+                self._stop_chain_timer()
+                self._deferred_update_table(
+                    restore_position=restore_position,
+                    callback=callback,
+                    reason=self._reload_reason(),
+                )
+        else:
+            self._stop_chain_timer()
+            loaded_reason = self.loading_state.reason
+            self.loading_state.reason = None
+            self._stop_spinner()
+            self._update_status_bar()
+            if restore_position:
+                self._restore_position(dt, cx, cy, sx, sy)
+                self._pending_cursor_position = None
+            if loaded_reason:
+                row_count = len(self.displayed_rows)
+                if row_count > 0:
+                    _past = {
+                        UpdateReason.SORT: "Sorted",
+                        UpdateReason.SEARCH: "Searched",
+                        UpdateReason.DEDUP: "Loaded",
+                        UpdateReason.FILTER: "Loaded",
+                    }
+                    done = _past.get(loaded_reason, "Loaded")
+                    self._flash_status(f"{done} {row_count:,} rows")
+            if callback:
+                callback()
+
     def _deferred_update_table(
-        self, restore_position=True, callback=None, reason="Loading"
+        self,
+        restore_position=True,
+        callback=None,
+        reason: UpdateReason = UpdateReason.LOADING,
     ):
         """Run data processing on a bg thread, then apply to widgets on main thread."""
-        self._update_generation += 1
-        gen = self._update_generation
-        self._loading_reason = reason
-        # Invalidate caches for structural changes (not sort/search).
-        # Reasons may have a suffix like " 50,000 rows", so check prefixes.
-        _CACHE_SAFE = (
-            "Sorting",
-            "Searching",
-            "Applying theme",
-            "Deduplicating",
-            "Filtering",
-            "Pivoting",
-            "Highlighting",
-        )
-        if not any(reason.startswith(p) for p in _CACHE_SAFE):
-            self._parsed_rows = None
-            self._cached_col_widths = None
-        elif reason.startswith("Highlighting"):
-            self._cached_col_widths = None
+        with self._lock:
+            self._update_generation += 1
+            gen = self._update_generation
+        self.loading_state.reason = reason
+        if reason not in self._CACHE_SAFE_REASONS:
+            self.cache.parsed_rows = None
+            self.cache.col_widths = None
+        elif reason == UpdateReason.HIGHLIGHT:
+            self.cache.invalidate_widths()
         self._start_spinner()
         self._update_status_bar()
 
         # Snapshot cursor/scroll from widgets before going off-thread.
         data_table = self.query_one(".nless-view")
-        cursor_x = data_table.cursor_column
-        cursor_y = data_table.cursor_row
-        scroll_x = data_table.scroll_x
-        scroll_y = data_table.scroll_y
+        cx = data_table.cursor_column
+        cy = data_table.cursor_row
+        sx = data_table.scroll_x
+        sy = data_table.scroll_y
 
         # Override with session-saved cursor position if pending.
-        # Don't clear it here — clear in _apply_to_widgets after successful
-        # restore, so it survives superseded updates during session load.
         if self._pending_cursor_position is not None:
-            cursor_y, cursor_x = self._pending_cursor_position
+            cy, cx = self._pending_cursor_position
 
         def _process_data():
-            """Pure-data work — no widget access."""
-            if gen != self._update_generation:
-                return None
-            with self._lock:
-                metadata_names = {m.value for m in MetadataColumn}
-                curr_metadata_columns = {
-                    c.name for c in self.current_columns if c.name in metadata_names
-                }
-                expected_cell_count = len(self.current_columns) - len(
-                    curr_metadata_columns
-                )
-                self._rebuild_column_caches()
-                column_labels = self._get_visible_column_labels()
-                fixed_columns = len(
-                    [c for c in self.current_columns if c.pinned and not c.hidden]
-                )
-
-                self.search_matches = []
-                self.current_match_index = -1
-                self.count_by_column_key = defaultdict(lambda: 0)
-                self._dedup_key_to_row_idx = {}
-                self._sort_keys = []
-
-                filtered_rows, rows_with_inconsistent_length = self._filter_rows(
-                    expected_cell_count
-                )
-                filtered_rows = self._apply_time_window(filtered_rows)
-                deduped_rows = self._dedup_rows(filtered_rows)
-                self._sort_rows(deduped_rows)
-
-                # Rebuild dedup indices after sorting (sort reorders rows)
-                if self.unique_column_names:
-                    self._dedup_key_to_row_idx = {}
-                    for idx, row in enumerate(deduped_rows):
-                        key = self._build_composite_key(row)
-                        self._dedup_key_to_row_idx[key] = idx
-
-                # Populate _sort_keys for incremental inserts.
-                # _sort_keys is always ascending for bisect. Rows are already
-                # sorted by _sort_rows, so extract in order (O(N)) instead of
-                # re-sorting (O(N log N)). If sort_reverse, reverse the list.
-                if self.sort_column is not None:
-                    sort_col_idx = self._get_col_idx_by_name(
-                        self.sort_column, render_position=False
-                    )
-                    if sort_col_idx is not None:
-                        keys = [
-                            coerce_sort_key(strip_markup(str(r[sort_col_idx])))
-                            for r in deduped_rows
-                        ]
-                        if self.sort_reverse:
-                            keys.reverse()
-                        self._sort_keys = keys
-
-                aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
-                styled_rows = self._highlight_search_matches(
-                    aligned_rows, fixed_columns
-                )
-
-                # Apply user-defined regex highlights
-                if self.regex_highlights:
-                    styled_rows = highlight_regex_patterns(
-                        styled_rows, self.regex_highlights, fixed_columns
-                    )
-
-                # Highlight rows affected by newly streamed lines
-                green_lines = self._green_lines
-                if green_lines and self.unique_column_names:
-                    green_keys = set()
-                    for line in green_lines:
-                        cells = split_line(line, self.delimiter, self.current_columns)
-                        cells.append("")  # placeholder for arrival
-                        cells.insert(0, "")  # placeholder for count
-                        key = self._build_composite_key(cells, render_position=False)
-                        green_keys.add(key)
-                    for i, row in enumerate(styled_rows):
-                        key = self._build_composite_key(row, render_position=True)
-                        if key in green_keys:
-                            styled_rows[i] = [self._highlight_markup(c) for c in row]
-                    self._green_lines = None
-
-                self._last_flushed_idx = len(self.raw_rows)
-                # Snapshot shared state for width computation outside the lock
-                cached_widths = self._cached_col_widths
-                has_markup_changes = bool(self.search_term) or bool(
-                    self.regex_highlights
-                )
-
-            # Precompute column widths on the bg thread so the main thread
-            # can use add_rows_precomputed (just extends + refresh).
-            # Reuse cached widths on sort-only rebuilds (no search/highlights
-            # → no markup changes → widths are stable).
-            if (
-                cached_widths is not None
-                and not has_markup_changes
-                and len(cached_widths) == len(column_labels)
-            ):
-                col_widths = cached_widths
-            else:
-                col_widths = [len(c) for c in column_labels]
-                for row in styled_rows:
-                    for i, cell_str in enumerate(row):
-                        if "[" in cell_str:
-                            try:
-                                str_len = Text.from_markup(cell_str).cell_len
-                            except Exception:
-                                str_len = len(cell_str)
-                        else:
-                            str_len = len(cell_str)
-                        if str_len > col_widths[i]:
-                            col_widths[i] = str_len
-                with self._lock:
-                    self._cached_col_widths = col_widths
-
-            return {
-                "styled_rows": styled_rows,
-                "column_labels": column_labels,
-                "column_widths": col_widths,
-                "fixed_columns": fixed_columns,
-                "inconsistent_rows": rows_with_inconsistent_length,
-                "n_filtered": len(filtered_rows),
-            }
+            return self._process_deferred_data(gen)
 
         def _apply_to_widgets(result):
-            """Main-thread: push processed data into widgets."""
-            if result is None or gen != self._update_generation:
-                return
-            self._ensure_correct_view_widget()
-            dt = self.query_one(".nless-view")
-            dt.clear(columns=True)
-            dt.fixed_columns = result["fixed_columns"]
-            dt.add_columns(result["column_labels"])
-            dt.column_widths = result["column_widths"]
-
-            self.displayed_rows = result["styled_rows"]
-            dt.add_rows_precomputed(result["styled_rows"])
-
-            bad_lines = result["inconsistent_rows"]
-            if bad_lines:
-                n_total = result["n_filtered"] + len(bad_lines)
-                msg = self._try_auto_switch_delimiter(
-                    bad_lines,
-                    len(bad_lines),
-                    n_total,
-                    lines_already_in_raw=True,
-                )
-                if msg:
-                    self._flash_status(msg)
-                    self._deferred_update_table(reason="Switching delimiter")
-                    return
-
-            # Check if more data arrived while we were processing
-            if len(self.raw_rows) > self._last_flushed_idx:
-                stream_active = self.line_stream and not self.line_stream.done
-                has_expensive_op = (
-                    self.sort_column is not None
-                    or self.unique_column_names
-                    or self.time_window
-                )
-                if stream_active and has_expensive_op:
-                    self._schedule_chain_rebuild(restore_position, callback)
-                else:
-                    self._stop_chain_timer()
-                    self._deferred_update_table(
-                        restore_position=restore_position,
-                        callback=callback,
-                        reason=self._reload_reason(),
-                    )
-            else:
-                self._stop_chain_timer()
-                loaded_reason = self._loading_reason
-                self._loading_reason = None
-                self._stop_spinner()
-                self._update_status_bar()
-                if restore_position:
-                    self._restore_position(dt, cursor_x, cursor_y, scroll_x, scroll_y)
-                    self._pending_cursor_position = None
-                if loaded_reason:
-                    row_count = len(self.displayed_rows)
-                    if row_count > 0:
-                        _past = {
-                            "Sorting": "Sorted",
-                            "Searching": "Searched",
-                            "Deduplicating": "Loaded",
-                            "Filtering": "Loaded",
-                        }
-                        done = _past.get(loaded_reason, "Loaded")
-                        self._flash_status(f"{done} {row_count:,} rows")
-                if callback:
-                    callback()
+            self._apply_deferred_to_widgets(
+                result, gen, restore_position, callback, cx, cy, sx, sy
+            )
 
         self._run_deferred_update(_process_data, _apply_to_widgets)
 
@@ -1279,47 +1044,43 @@ class NlessBuffer(
         result = _process_data()
         self.app.call_from_thread(lambda: _apply_to_widgets(result))
 
-    def _reload_reason(self) -> str:
-        """Build a descriptive reason for chained streaming rebuilds."""
-        if self.sort_column is not None:
-            return "Sorting"
-        if self.unique_column_names:
-            return "Deduplicating"
-        if self.time_window:
-            return "Filtering"
-        return "Loading"
+    def _needs_full_rebuild(self) -> bool:
+        """True when new streaming rows require a full deferred rebuild
+        rather than incremental row insertion."""
+        return self.query.is_expensive or bool(self.time_window)
 
-    _CHAIN_DELAY_INITIAL: float = 0.3
+    def _reload_reason(self) -> UpdateReason:
+        """Build a descriptive reason for chained streaming rebuilds."""
+        if self.query.sort_column is not None:
+            return UpdateReason.SORT
+        if self.query.unique_column_names:
+            return UpdateReason.DEDUP
+        if self.time_window:
+            return UpdateReason.FILTER
+        return UpdateReason.LOADING
 
     def _cancel_chain_timer(self) -> None:
         """Cancel the pending chain timer without resetting delay/skip state."""
-        if self._chain_timer is not None:
-            try:
-                self._chain_timer.stop()
-            except Exception:
-                pass
-            self._chain_timer = None
+        self.chain.cancel_timer()
 
     def _stop_chain_timer(self) -> None:
         """Cancel any pending chain rebuild timer and reset state."""
-        self._cancel_chain_timer()
-        self._chain_delay = self._CHAIN_DELAY_INITIAL
-        self._chain_skips = 0
+        self.chain.stop()
 
     def _schedule_chain_rebuild(self, restore_position, callback):
         """Delay the next rebuild to let more streaming data accumulate."""
-        if not self._chain_notified:
-            self._chain_notified = True
+        if not self.chain.notified:
+            self.chain.notified = True
             self.notify(
                 "[yellow]⚠[/yellow]  Data arriving faster than it can be processed — buffering",
                 severity="warning",
             )
-        self._cancel_chain_timer()
+        self.chain.cancel_timer()
 
-        delay = self._chain_delay
+        delay = self.chain.delay
 
         def _do_chain():
-            self._chain_timer = None
+            self.chain.timer = None
             try:
                 stream_active = self.line_stream and not self.line_stream.done
                 pending = len(self.raw_rows) - self._last_flushed_idx
@@ -1327,92 +1088,24 @@ class NlessBuffer(
 
                 # Stream is outpacing us — skip this rebuild and wait longer.
                 # Cap at 3 skips (~2s) so infinite streams still show progress.
-                if stream_active and pending > displayed and self._chain_skips < 3:
-                    self._chain_skips += 1
-                    self._chain_delay = min(self._chain_delay * 2, 1.5)
+                if stream_active and pending > displayed and self.chain.should_skip:
+                    self.chain.advance_backoff()
                     self._schedule_chain_rebuild(restore_position, callback)
                     return
 
-                self._chain_skips = 0
-                self._chain_delay = self._CHAIN_DELAY_INITIAL
+                self.chain.reset()
                 self._deferred_update_table(
                     restore_position=restore_position,
                     callback=callback,
                     reason=self._reload_reason(),
                 )
             except Exception:
-                pass  # Widget unmounted or app shutting down
+                logger.debug("Chain rebuild failed", exc_info=True)
 
         try:
-            self._chain_timer = self.set_timer(delay, _do_chain)
+            self.chain.timer = self.set_timer(delay, _do_chain)
         except Exception:
-            pass
-
-    def _update_table(self, restore_position: bool = True) -> None:
-        """Completely refreshes the table, repopulating it with the raw backing data, applying all sorts, filters, delimiters, etc."""
-        self._ensure_correct_view_widget()
-        data_table = self.query_one(".nless-view")
-        cursor_x = data_table.cursor_column
-        cursor_y = data_table.cursor_row
-        scroll_x = data_table.scroll_x
-        scroll_y = data_table.scroll_y
-
-        metadata_names = {m.value for m in MetadataColumn}
-        curr_metadata_columns = {
-            c.name for c in self.current_columns if c.name in metadata_names
-        }
-        expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
-        data_table.clear(columns=True)
-
-        data_table.fixed_columns = len(
-            [c for c in self.current_columns if c.pinned and not c.hidden]
-        )
-        self._rebuild_column_caches()
-        data_table.add_columns(self._get_visible_column_labels())
-
-        self.search_matches = []
-        self.current_match_index = -1
-        self.count_by_column_key = defaultdict(lambda: 0)
-        self._dedup_key_to_row_idx = {}
-        self._sort_keys = []
-        self._cached_col_widths = None
-
-        filtered_rows, rows_with_inconsistent_length = self._filter_rows(
-            expected_cell_count
-        )
-        filtered_rows = self._apply_time_window(filtered_rows)
-        deduped_rows = self._dedup_rows(filtered_rows)
-        self._sort_rows(deduped_rows)
-
-        aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
-        styled_rows = self._highlight_search_matches(
-            aligned_rows, data_table.fixed_columns
-        )
-        if self.regex_highlights:
-            styled_rows = highlight_regex_patterns(
-                styled_rows, self.regex_highlights, data_table.fixed_columns
-            )
-
-        if rows_with_inconsistent_length:
-            n_inconsistent = len(rows_with_inconsistent_length)
-            n_total = len(filtered_rows) + n_inconsistent
-            msg = self._try_auto_switch_delimiter(
-                rows_with_inconsistent_length,
-                n_inconsistent,
-                n_total,
-                lines_already_in_raw=True,
-            )
-            if msg:
-                self._flash_status(msg)
-                self._deferred_update_table(reason="Switching delimiter")
-                return
-
-        self.displayed_rows = styled_rows
-        data_table.add_rows(styled_rows)
-        self._last_flushed_idx = len(self.raw_rows)
-
-        if restore_position:
-            self._restore_position(data_table, cursor_x, cursor_y, scroll_x, scroll_y)
+            logger.debug("Failed to schedule chain timer", exc_info=True)
 
     def _restore_position(
         self, data_table: NlessDataTable, cursor_x, cursor_y, scroll_x, scroll_y
@@ -1430,103 +1123,102 @@ class NlessBuffer(
         if self.pane_id != self.app.buffers[self.app.curr_buffer_idx].pane_id:
             return
         data_table = self.query_one(".nless-view")
+        ctx = self._status_ctx
         text = build_status_text(
-            sort_column=self.sort_column,
-            sort_reverse=self.sort_reverse,
-            filters=self.current_filters,
-            search_term=self.search_term,
-            search_matches_count=len(self.search_matches),
-            current_match_index=self.current_match_index,
+            sort_column=self.query.sort_column,
+            sort_reverse=self.query.sort_reverse,
+            filters=self.query.filters,
+            search_term=self.query.search_term,
+            search_matches_count=len(self.query.search_matches),
+            current_match_index=self.query.current_match_index,
             total_rows=data_table.row_count,
             total_cols=len(data_table.columns),
             current_row=data_table.cursor_row + 1,
             current_col=data_table.cursor_column + 1,
             is_tailing=self.is_tailing,
-            unique_column_names=self.unique_column_names,
-            loading_reason=self._loading_reason,
-            flash_message=self._flash_message,
-            theme=self._get_theme(),
-            spinner_frame=self._spinner_frame,
-            format_str=self.app.config.status_format,
-            keymap_name=self.app.nless_keymap.name,
-            theme_name=self.app.nless_theme.name,
-            time_window=self.app._format_window(
-                self.time_window, self.rolling_time_window
-            )
-            if self.time_window
+            unique_column_names=self.query.unique_column_names,
+            loading_reason=self.loading_state.reason,
+            flash_message=self.loading_state.flash_message,
+            theme=ctx.theme or self._get_theme(),
+            spinner_frame=self.loading_state.spinner_frame,
+            format_str=ctx.status_format,
+            keymap_name=ctx.keymap_name,
+            theme_name=ctx.theme_name,
+            time_window=ctx.format_window(self.time_window, self.rolling_time_window)
+            if self.time_window and ctx.format_window
             else None,
             delimiter=self._format_delimiter(),
-            skipped_rows=self._total_skipped,
+            skipped_rows=self.delim.total_skipped,
             behind=self._bp_behind,
             buffered_rows=len(self.raw_rows),
-            pipe_output=getattr(self.app, "pipe_output", False),
+            pipe_output=ctx.pipe_output,
             pipe_row_count=len(self.displayed_rows),
-            session_name=getattr(self.app, "_active_session_name", None),
+            session_name=ctx.session_name,
         )
         self.app.query_one("#status_bar", Static).update(text)
 
     def _flash_status(self, message: str, duration: float = 3.0) -> None:
         """Show a temporary message in the status bar, auto-clearing after *duration* seconds."""
-        if self._flash_timer is not None:
-            self._flash_timer.stop()
-        self._flash_message = message
+        if self.loading_state.flash_timer is not None:
+            self.loading_state.flash_timer.stop()
+        self.loading_state.flash_message = message
         self._update_status_bar()
-        self._flash_timer = self.set_timer(duration, self._clear_flash)
+        self.loading_state.flash_timer = self.set_timer(duration, self._clear_flash)
 
     def _clear_flash(self) -> None:
-        self._flash_message = None
-        self._flash_timer = None
+        self.loading_state.flash_message = None
+        self.loading_state.flash_timer = None
         self._update_status_bar()
 
     def start_loading(self, reason: str) -> None:
         """Show a loading spinner with the given reason text."""
-        self._loading_reason = reason
+        self.loading_state.reason = reason
         self._start_spinner()
         self._update_status_bar()
 
     def stop_loading(self) -> None:
         """Clear the loading state and stop the spinner."""
-        self._loading_reason = None
+        self.loading_state.reason = None
         self._stop_spinner()
         self._update_status_bar()
 
+    def _safe_widget_call(self, fn, *args) -> None:
+        """Call fn(*args) ignoring errors from unmounted widgets or shutdown."""
+        try:
+            fn(*args)
+        except Exception:
+            pass
+
     def _start_spinner(self) -> None:
         """Start the status bar spinner animation (must run on main thread)."""
-        if self._spinner_timer is not None:
+        if self.loading_state.spinner_timer is not None:
             return
-        self._spinner_frame = 0
+        self.loading_state.spinner_frame = 0
         try:
-            self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+            self.loading_state.spinner_timer = self.set_interval(
+                0.1, self._tick_spinner
+            )
         except Exception:
-            pass  # Not mounted yet
+            logger.debug("Spinner start failed", exc_info=True)
 
     def _stop_spinner(self) -> None:
         """Stop the status bar spinner animation (must run on main thread)."""
-        if self._spinner_timer is not None:
-            try:
-                self._spinner_timer.stop()
-            except (RuntimeError, Exception):
-                pass
-            self._spinner_timer = None
+        if self.loading_state.spinner_timer is not None:
+            self._safe_widget_call(self.loading_state.spinner_timer.stop)
+            self.loading_state.spinner_timer = None
 
     def _request_spinner_start(self) -> None:
         """Thread-safe: schedule spinner start on the main thread (non-blocking)."""
-        try:
-            self.app.call_later(self._start_spinner)
-        except Exception:
-            pass  # App shutting down or not running
+        self._safe_widget_call(self.app.call_later, self._start_spinner)
 
     def _request_spinner_stop(self) -> None:
         """Thread-safe: schedule spinner stop on the main thread (non-blocking)."""
-        try:
-            self.app.call_later(self._stop_spinner)
-        except Exception:
-            pass  # App shutting down or not running
+        self._safe_widget_call(self.app.call_later, self._stop_spinner)
 
     def _tick_spinner(self) -> None:
         """Advance the spinner frame and refresh the status bar."""
-        self._spinner_frame += 1
-        if self._loading_reason:
+        self.loading_state.spinner_frame += 1
+        if self.loading_state.reason:
             self._update_status_bar()
         else:
             self._stop_spinner()
@@ -1540,16 +1232,13 @@ class NlessBuffer(
         try:
             self._bp_timer = self.set_interval(0.5, self._tick_bp)
         except Exception:
-            pass
+            logger.debug("BP timer start failed", exc_info=True)
 
     def _stop_bp_timer(self) -> None:
         """Stop the back pressure sampling timer and any pending chain rebuild."""
         self._stop_chain_timer()
         if self._bp_timer is not None:
-            try:
-                self._bp_timer.stop()
-            except (RuntimeError, Exception):
-                pass
+            self._safe_widget_call(self._bp_timer.stop)
             self._bp_timer = None
 
     def _tick_bp(self) -> None:
@@ -1570,19 +1259,19 @@ class NlessBuffer(
             self._bp_behind = behind
 
             # Fire pending chain rebuild immediately when stream finishes
-            if stream_done and self._chain_timer is not None:
+            if stream_done and self.chain.timer is not None:
                 self._stop_chain_timer()
                 self._deferred_update_table()
 
             # Stop timer when stream is done and we're caught up
-            if stream_done and not behind and not self._loading_reason:
+            if stream_done and not behind and not self.loading_state.reason:
                 self._stop_bp_timer()
                 self._bp_behind = False
 
-            if self._spinner_timer is None and not self.locked:
+            if self.loading_state.spinner_timer is None and not self.locked:
                 self._update_status_bar()
         except Exception:
-            pass  # Widget unmounted or app shutting down
+            pass
 
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False
@@ -1590,10 +1279,10 @@ class NlessBuffer(
         """Check if a row matches all current filters."""
         return matches_all_filters(
             cells,
-            self.current_filters,
+            self.query.filters,
             self._get_col_idx_by_name,
             adjust_for_count=adjust_for_count,
-            has_unique_columns=bool(self.unique_column_names),
+            has_unique_columns=bool(self.query.unique_column_names),
         )
 
     _arrival_format_cache: dict[int, str] = {}
@@ -1616,9 +1305,7 @@ class NlessBuffer(
 
         Call after changes to columns, filters, delimiter, or raw_rows.
         """
-        self._parsed_rows = None
-        self._cached_col_widths = None
-        self._sort_keys = []
+        self.cache.invalidate()
 
     def _build_composite_key(
         self, cells: list[str], render_position: bool = False
@@ -1626,7 +1313,7 @@ class NlessBuffer(
         """Build a composite key from the unique column values in a row."""
         return build_composite_key(
             cells,
-            self.unique_column_names,
+            self.query.unique_column_names,
             self._get_col_idx_by_name,
             render_position=render_position,
         )
@@ -1638,50 +1325,50 @@ class NlessBuffer(
 
         Returns (possibly-updated cells, old_index if replacing, old_row if replacing).
         """
-        if not self.unique_column_names:
+        if not self.query.unique_column_names:
             return cells, None, None
 
         new_key = self._build_composite_key(cells)
 
-        if new_key in self._dedup_key_to_row_idx:
-            row_idx = self._dedup_key_to_row_idx[new_key]
+        if new_key in self.cache.dedup_key_to_row_idx:
+            row_idx = self.cache.dedup_key_to_row_idx[new_key]
             if row_idx >= len(self.displayed_rows):
                 # Stale index — table is being rebuilt concurrently
                 return cells, None, None
             new_cells = []
             for col_idx, cell in enumerate(cells):
                 if col_idx == 0:
-                    self.count_by_column_key[new_key] += 1
-                    cell = self.count_by_column_key[new_key]
+                    self.query.count_by_column_key[new_key] += 1
+                    cell = self.query.count_by_column_key[new_key]
                 else:
                     cell = strip_markup(cell)
                 new_cells.append(self._highlight_markup(str(cell)))
             return new_cells, row_idx, self.displayed_rows[row_idx]
 
-        self.count_by_column_key[new_key] = 1
+        self.query.count_by_column_key[new_key] = 1
         return cells, None, None
 
     def _find_sorted_insert_index(self, cells: list[str]) -> int:
         """Find the insertion index for a row based on the current sort."""
         return find_sorted_insert_index(
             cells,
-            self._sort_keys,
-            self.sort_column,
-            self.sort_reverse,
+            self.cache.sort_keys,
+            self.query.sort_column,
+            self.query.sort_reverse,
             self._get_col_idx_by_name,
             num_displayed_rows=len(self.displayed_rows),
         )
 
     def _update_dedup_indices_after_removal(self, old_index: int) -> None:
         """Shift dedup index entries down after a row removal."""
-        update_dedup_indices_after_removal(self._dedup_key_to_row_idx, old_index)
+        update_dedup_indices_after_removal(self.cache.dedup_key_to_row_idx, old_index)
 
     def _update_dedup_indices_after_insertion(
         self, dedup_key: str, new_index: int
     ) -> None:
         """Shift dedup index entries up after a row insertion, then record the new key."""
         update_dedup_indices_after_insertion(
-            self._dedup_key_to_row_idx, dedup_key, new_index
+            self.cache.dedup_key_to_row_idx, dedup_key, new_index
         )
 
     def _update_sort_keys_for_line(
@@ -1693,7 +1380,7 @@ class NlessBuffer(
         update_sort_keys_for_line(
             data_cells,
             old_row,
-            self.sort_column,
-            self._sort_keys,
+            self.query.sort_column,
+            self.cache.sort_keys,
             self._get_col_idx_by_name,
         )
