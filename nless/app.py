@@ -13,7 +13,7 @@ from textual.css.query import NoMatches
 from textual.dom import DOMError
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
-from textual.events import Key
+from textual.events import Click, Key
 from textual.geometry import Offset
 from textual.widgets import (
     Input,
@@ -24,7 +24,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 
 from nless.autocomplete import AutocompleteInput
 from nless.buffer import NlessBuffer
@@ -61,7 +61,8 @@ from .dataprocessing import strip_markup
 from .help import HelpScreen
 from .input import LineStream, ShellCommandLineStream, StdinLineStream
 from .nlessselect import NlessSelect
-from .datatable import Coordinate as NlessCoordinate
+from .datatable import Coordinate as NlessCoordinate, Datatable
+from .rawpager import RawPager
 from .keymap import get_all_keymaps, resolve_keymap
 from .theme import get_all_themes, resolve_theme
 from .types import CliArgs, Filter, MetadataColumn
@@ -69,7 +70,14 @@ from .app_columns import ColumnOpsMixin
 from .app_filters import FilterMixin
 from .app_groups import GroupMixin
 from .buffer_delimiter import _sample_lines
-from .logformats import detect_log_format, load_custom_formats, save_custom_format
+from .logformats import (
+    LogFormat,
+    detect_log_formats,
+    infer_log_pattern,
+    load_custom_formats,
+    save_custom_format,
+)
+from .contextmenu import ContextMenu, MenuItem
 from .regex_wizard import RegexWizardMixin
 
 logger = logging.getLogger(__name__)
@@ -345,6 +353,14 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             return
         if event.control.id == "json_header_select":
             self._apply_json_header(str(event.value))
+            return
+        if event.control.id == "log_format_select":
+            candidates = getattr(self, "_pending_log_format_candidates", None)
+            self._pending_log_format_candidates = None
+            if candidates:
+                fmt = candidates.get(str(event.value))
+                if fmt:
+                    self._apply_log_format(fmt)
             return
         if event.control.id == "highlight_color_select":
             color = str(event.value)
@@ -780,13 +796,62 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             self.notify("No data to analyze", severity="warning")
             return
         sample = _sample_lines(all_lines)
-        result = detect_log_format(sample)
-        if result is None:
+
+        # Collect all matching formats (known + inferred)
+        candidates = detect_log_formats(sample)
+        inferred = infer_log_pattern(sample)
+        if inferred is not None:
+            # Score the inferred pattern the same way
+            non_empty = [line for line in sample if line.strip()]
+            if non_empty:
+                matches = sum(1 for line in non_empty if inferred.pattern.match(line))
+                ratio = matches / len(non_empty)
+                score = ratio * 100 + len(inferred.pattern.groupindex) * 2
+                candidates.append((inferred, score))
+                candidates.sort(key=lambda x: x[1], reverse=True)
+
+        if not candidates:
             self.notify("No known log format detected", severity="warning")
             return
+
+        if len(candidates) == 1:
+            self._apply_log_format(candidates[0][0])
+            return
+
+        # Multiple candidates — show selection menu
+        self._pending_log_format_candidates = {
+            str(i): fmt for i, (fmt, _score) in enumerate(candidates)
+        }
+        options: list[tuple[str, str]] = []
+        for i, (fmt, score) in enumerate(candidates):
+            fields = sorted(fmt.pattern.groupindex.keys())
+            field_str = ", ".join(fields[:5])
+            if len(fields) > 5:
+                field_str += f" +{len(fields) - 5}"
+            label = f"{fmt.name} ({field_str})"
+            options.append((label, str(i)))
+        select = NlessSelect(
+            options=options,
+            prompt="Multiple log formats match — select one",
+            classes="dock-bottom",
+            id="log_format_select",
+        )
+        buffer.mount(select)
+
+    def _apply_log_format(self, result: LogFormat) -> None:
+        """Apply a detected log format to the current buffer."""
+        buffer = self._get_current_buffer()
         buffer.switch_delimiter(result.pattern.pattern)
-        buffer.delimiter_name = result.name
-        self.notify(f"Detected: {result.name}")
+        if result.name == "Auto-detected":
+            self._pending_log_format_pattern = result.pattern.pattern
+            self._create_prompt(
+                "Save as log format? Enter name (Esc to skip)",
+                "save_log_format_input",
+                save_history=False,
+            )
+        else:
+            buffer.delimiter_name = result.name
+            self.notify(f"Detected: {result.name}")
 
     def action_search_to_filter(self) -> None:
         """Convert current search into a filter across all columns."""
@@ -1968,6 +2033,66 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
         self._pending_file_groups = []
         self._switch_to_group(0)
 
+    def on_click(self, event: Click) -> None:
+        """Handle clicks — open help when the help hint is clicked."""
+        widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        if hasattr(widget, "id") and widget.id == "help_hint":
+            self.action_help()
+        # Dismiss context menu on any left-click outside it
+        if event.button == 1:
+            try:
+                menu = self.query_one(ContextMenu)
+                if menu.display and widget is not menu:
+                    menu.dismiss()
+            except NoMatches:
+                pass
+
+    def on_datatable_right_clicked(self, event: Datatable.RightClicked) -> None:
+        """Show context menu on right-click over a datatable cell or header."""
+        dt = self._get_current_buffer().query_one(".nless-view")
+        dt.move_cursor(column=event.column)
+        if event.is_header:
+            items = [
+                MenuItem("Sort column", "sort"),
+                MenuItem("Pin/unpin column", "pin_column"),
+                MenuItem("Show/hide columns", "filter_columns"),
+                MenuItem("Split column", "column_delimiter"),
+                MenuItem("Mark as key", "mark_unique"),
+            ]
+        else:
+            items = [
+                MenuItem("Copy cell", "copy"),
+                MenuItem("Search cursor word", "search_cursor_word"),
+                MenuItem("Filter by value", "filter_cursor_word"),
+                MenuItem("Exclude value", "exclude_filter_cursor_word"),
+                MenuItem("Add highlight", "add_highlight"),
+                MenuItem("Sort column", "sort"),
+            ]
+        menu = self.query_one(ContextMenu)
+        menu.show(event.screen_x, event.screen_y, items)
+
+    def on_raw_pager_right_clicked(self, event: RawPager.RightClicked) -> None:
+        """Show context menu on right-click over a raw pager row."""
+        items = [
+            MenuItem("Copy cell", "copy"),
+            MenuItem("Search cursor word", "search_cursor_word"),
+            MenuItem("Filter by value", "filter_cursor_word"),
+            MenuItem("Exclude value", "exclude_filter_cursor_word"),
+            MenuItem("Add highlight", "add_highlight"),
+        ]
+        menu = self.query_one(ContextMenu)
+        menu.show(event.screen_x, event.screen_y, items)
+
+    async def on_context_menu_selected(self, event: ContextMenu.Selected) -> None:
+        """Dispatch the selected context menu action."""
+        menu = self.query_one(ContextMenu)
+        menu.dismiss()
+        buf = self._get_current_buffer()
+        try:
+            await buf.run_action(event.action)
+        except Exception:
+            await self.run_action(event.action)
+
     def action_help(self) -> None:
         """Show the help screen."""
         self.push_screen(
@@ -2078,27 +2203,29 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
             new_buffer, name=f"buffer{new_buffer.pane_id}", add_prev_index=False
         )
 
-    def _build_title_bar(self) -> str:
-        """Build the title bar text with app name and help hint."""
+    def _build_title_name(self) -> str:
+        return f" {self.nless_theme.markup('brand', 'nless')}  "
+
+    def _build_help_hint(self) -> str:
         help_key = "?"
         bindings = self.nless_keymap.bindings
         if "app.help" in bindings:
             help_key = bindings["app.help"].split(",")[0]
-        name = self.nless_theme.markup("brand", "nless")
-        hint = self.nless_theme.markup("muted", f"{help_key} help")
-        return f" {name}  {hint}"
+        return self.nless_theme.markup("muted", f"{help_key} help")
 
     def _update_title_bar(self) -> None:
         """Refresh the title bar content."""
         try:
-            title = self.query_one("#title_bar", Static)
-            title.update(self._build_title_bar())
+            self.query_one("#title_name", Static).update(self._build_title_name())
+            self.query_one("#help_hint", Static).update(self._build_help_hint())
         except NoMatches:
             pass
 
     def compose(self) -> ComposeResult:
         with Vertical(id="top_bar"):
-            yield Static(self._build_title_bar(), id="title_bar")
+            with Horizontal(id="title_bar"):
+                yield Static(self._build_title_name(), id="title_name")
+                yield Static(self._build_help_hint(), id="help_hint")
             yield Static(id="group_bar")
         init_buffer = self.groups[0].buffers[0]
         with Vertical(id="group_1", classes="buffer-group"):
@@ -2110,3 +2237,4 @@ class NlessApp(RegexWizardMixin, ColumnOpsMixin, FilterMixin, GroupMixin, App):
                     yield init_buffer
 
         yield Static(id="status_bar", classes="dock-bottom")
+        yield ContextMenu(id="context_menu")

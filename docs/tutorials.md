@@ -1031,6 +1031,18 @@ nless -m app.log worker.log
 
 The merged view shows all rows interleaved by arrival time, with a `_source` column pinned on the left identifying which file each row came from. You can filter by `_source` to isolate one file's data (e.g. `f` on the `_source` column, then type `app.log`).
 
+> **Delimiter conflicts:** If merged files use different delimiters (e.g. CSV + TSV), nless auto-switches to raw mode so all lines render cleanly with the `_source` column. Override with `--delimiter` if needed.
+
+### Opening Multiple Files as Separate Groups
+
+Without `-m`, passing multiple files opens each in its own buffer group:
+
+```bash
+nless app.log worker.log metrics.tsv
+```
+
+Switch between groups with `}` and `{`. Each group is independent — you can apply different filters, sorts, and columns to each.
+
 ### In-App Merge
 
 You can also merge buffers that are already open:

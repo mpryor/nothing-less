@@ -24,6 +24,8 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `R` | Rename the current group |
 | `O` | Open a file in a new buffer group |
 
+> **Tip:** You can also pass multiple files from the command line — `nless file1.csv file2.csv` opens each as a separate group.
+
 ## Navigation
 
 | Key | Action |

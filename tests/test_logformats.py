@@ -5,7 +5,10 @@ import pytest
 from nless.logformats import (
     LOG_FORMATS,
     LogFormat,
+    _detect_separator,
     detect_log_format,
+    detect_log_formats,
+    infer_log_pattern,
     load_custom_formats,
     save_custom_format,
 )
@@ -350,6 +353,41 @@ class TestDetectLogFormat:
     def test_all_empty_lines_returns_none(self):
         assert detect_log_format(["", "  ", ""]) is None
 
+    def test_detect_log_formats_returns_ranked_list(self):
+        """detect_log_formats returns multiple candidates sorted by score."""
+        lines = [
+            "2024-01-15 14:23:01,123 INFO com.example.Main Starting application",
+            "2024-01-15 14:23:02,456 DEBUG com.example.DB Loading config",
+            "2024-01-15 14:23:03,789 WARN com.example.Cache Memory low",
+        ]
+        candidates = detect_log_formats(lines)
+        assert len(candidates) >= 2
+        # Should be sorted by descending score
+        scores = [score for _fmt, score in candidates]
+        assert scores == sorted(scores, reverse=True)
+        # Top result should be the most specific match
+        assert candidates[0][0].name == "ISO 8601 + Level + Logger"
+
+    def test_detect_log_formats_empty_returns_empty(self):
+        assert detect_log_formats([]) == []
+
+    def test_detect_log_formats_with_custom(self, tmp_path, monkeypatch):
+        """Custom formats appear in ranked results."""
+        fmt_file = tmp_path / "log_formats.json"
+        monkeypatch.setattr("nless.logformats.LOG_FORMATS_FILE", str(fmt_file))
+        save_custom_format(
+            "My Custom",
+            r"(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+) (?P<level>\w+) (?P<logger>\S+) (?P<message>.*)",
+        )
+        lines = [
+            "2024-01-15 14:23:01,123 INFO com.example.Main Starting",
+            "2024-01-15 14:23:02,456 DEBUG com.example.DB Loading",
+            "2024-01-15 14:23:03,789 WARN com.example.Cache Low mem",
+        ]
+        candidates = detect_log_formats(lines)
+        names = [fmt.name for fmt, _score in candidates]
+        assert "My Custom" in names
+
 
 class TestCustomFormats:
     def test_save_and_load(self, tmp_path, monkeypatch):
@@ -409,6 +447,200 @@ class TestCustomFormats:
         fmt_file.write_text(json.dumps([{"name": "No Groups", "pattern": r"\d+"}]))
         monkeypatch.setattr("nless.logformats.LOG_FORMATS_FILE", str(fmt_file))
         assert load_custom_formats() == []
+
+
+class TestInferLogPattern:
+    """Tests for the flexible infer_log_pattern() fallback."""
+
+    def test_space_separated_date_time_level(self):
+        """Basic space-separated: date time level message (gen-logs.sh style)."""
+        lines = [
+            "2024-01-15 14:23:01 INFO Starting server on port 8080",
+            "2024-01-15 14:23:02 DEBUG Loading configuration from /etc/app.conf",
+            "2024-01-15 14:23:03 WARN Memory usage above threshold",
+            "2024-01-15 14:23:04 ERROR Connection refused to database",
+            "2024-01-15 14:23:05 INFO Request processed successfully",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "timestamp" in m.groupdict()
+        assert m.group("level") == "INFO"
+        assert "message" in m.groupdict()
+
+    def test_tab_separated(self):
+        """Tab-separated logs (CloudWatch-like)."""
+        lines = [
+            "2024-01-15T14:23:01.123Z\td4c3b2a1-e5f6-7890-abcd-ef1234567890\tINFO\tProcessing request",
+            "2024-01-15T14:23:02.456Z\ta1b2c3d4-e5f6-7890-abcd-ef1234567890\tDEBUG\tLoading config",
+            "2024-01-15T14:23:03.789Z\tb2c3d4e5-f6a7-8901-bcde-f12345678901\tWARN\tSlow query detected",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "timestamp" in m.groupdict()
+        assert m.group("level") == "INFO"
+
+    def test_dash_separated_python_logging(self):
+        """Dash-separated (Python logging style)."""
+        lines = [
+            "2024-01-15 14:23:01,123 - myapp.module - INFO - Processing request for user",
+            "2024-01-15 14:23:02,456 - myapp.module - DEBUG - Cache hit for key=abc",
+            "2024-01-15 14:23:03,789 - myapp.module - ERROR - Database connection failed",
+            "2024-01-15 14:23:04,012 - myapp.module - WARNING - Retrying operation",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "message" in m.groupdict()
+
+    def test_bracketed_timestamp(self):
+        """Bracketed timestamps should be named 'timestamp'."""
+        lines = [
+            "[2024-01-15 14:23:01] INFO Application started successfully",
+            "[2024-01-15 14:23:02] DEBUG Loading module configuration",
+            "[2024-01-15 14:23:03] WARN Deprecated API call detected",
+            "[2024-01-15 14:23:04] ERROR Unhandled exception in worker",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "timestamp" in m.groupdict()
+        assert "14:23:01" in m.group("timestamp")
+
+    def test_bracketed_thread_not_level(self):
+        """Bracketed thread names should not be misnamed 'level'."""
+        lines = [
+            "2024-01-15 14:23:01 INFO [main-thread-1] Starting application",
+            "2024-01-15 14:23:02 DEBUG [pool-worker-3] Processing task",
+            "2024-01-15 14:23:03 WARN [main-thread-1] High memory usage",
+            "2024-01-15 14:23:04 ERROR [pool-worker-5] Task failed",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        m.groupdict()
+        # The bracketed token should be captured (as thread or tag), not "level"
+        # and the actual level should be separate
+        assert m.group("level") == "INFO"
+
+    def test_ip_address_token(self):
+        """IPv4 address should be classified as 'ip'."""
+        lines = [
+            "2024-01-15 14:23:01 192.168.1.1 INFO GET /api/users 200",
+            "2024-01-15 14:23:02 10.0.0.5 DEBUG GET /api/health 200",
+            "2024-01-15 14:23:03 172.16.0.1 WARN POST /api/data 429",
+            "2024-01-15 14:23:04 192.168.1.1 ERROR DELETE /api/old 500",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "ip" in m.groupdict()
+        assert m.group("ip") == "192.168.1.1"
+
+    def test_quoted_strings_preserved(self):
+        """Quoted strings should be kept as single tokens."""
+        lines = [
+            '2024-01-15 14:23:01 INFO "GET /api/users HTTP/1.1" 200',
+            '2024-01-15 14:23:02 DEBUG "POST /api/data HTTP/1.1" 201',
+            '2024-01-15 14:23:03 WARN "GET /api/health HTTP/1.1" 429',
+            '2024-01-15 14:23:04 ERROR "DELETE /api/old HTTP/1.1" 500',
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert "request" in m.groupdict()
+        assert "GET /api/users HTTP/1.1" in m.group("request")
+
+    def test_majority_voting_first_line_atypical(self):
+        """First line is atypical but rest are structured — should still detect."""
+        lines = [
+            "--- Application starting ---",  # noise
+            "2024-01-15 14:23:01 INFO Server started on port 8080",
+            "2024-01-15 14:23:02 DEBUG Loading configuration",
+            "2024-01-15 14:23:03 WARN Memory above threshold",
+            "2024-01-15 14:23:04 ERROR Connection refused",
+            "2024-01-15 14:23:05 INFO Request handled OK",
+            "2024-01-15 14:23:06 DEBUG Processing complete",
+            "2024-01-15 14:23:07 INFO Shutdown initiated",
+        ]
+        result = infer_log_pattern(lines)
+        # The noise line is only ~12% — well below 40% threshold
+        # So 60% match should still pass
+        assert result is not None
+
+    def test_minimum_match_rate_validation(self):
+        """Below 60% match rate → returns None."""
+        lines = [
+            "2024-01-15 14:23:01 INFO msg1",
+            "random noise alpha",
+            "random noise beta",
+            "random noise gamma",
+            "random noise delta",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is None
+
+    def test_too_few_lines(self):
+        """Fewer than 3 lines → returns None."""
+        lines = [
+            "2024-01-15 14:23:01 INFO msg1",
+            "2024-01-15 14:23:02 DEBUG msg2",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is None
+
+    def test_pipe_separated_message_first(self):
+        """Message-first format with pipe separators should be detected via RTL fallback."""
+        lines = [
+            "Processing request | INFO | com.app.Server | 2026-03-15 18:14:00,950 | 10.0.0.5",
+            "User logged in | DEBUG | com.app.Auth | 2026-03-15 18:14:01,123 | 10.0.0.6",
+            "Database query slow | WARN | com.app.DB | 2026-03-15 18:14:02,456 | 10.0.0.7",
+            "Connection refused | ERROR | com.app.Net | 2026-03-15 18:14:03,789 | 10.0.0.8",
+            "Cache miss detected | INFO | com.app.Cache | 2026-03-15 18:14:04,012 | 10.0.0.9",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        assert m.group("message") == "Processing request"
+        assert m.group("level") == "INFO"
+        assert m.group("logger") == "com.app.Server"
+        assert "timestamp" in m.groupdict()
+        assert m.group("ip") == "10.0.0.5"
+
+    def test_pipe_separator_detected(self):
+        """_detect_separator returns ' | ' for pipe-delimited lines."""
+        lines = [
+            "Processing request | INFO | com.app.Server | 2026-03-15 18:14:00,950 | 10.0.0.5",
+            "User logged in | DEBUG | com.app.Auth | 2026-03-15 18:14:01,123 | 10.0.0.6",
+            "Database query slow | WARN | com.app.DB | 2026-03-15 18:14:02,456 | 10.0.0.7",
+        ]
+        assert _detect_separator(lines) == " | "
+
+    def test_left_to_right_still_preferred(self):
+        """Standard formats should still use LTR (message at end)."""
+        lines = [
+            "2024-01-15 14:23:01 INFO Starting server on port 8080",
+            "2024-01-15 14:23:02 DEBUG Loading configuration from /etc/app.conf",
+            "2024-01-15 14:23:03 WARN Memory usage above threshold",
+            "2024-01-15 14:23:04 ERROR Connection refused to database",
+        ]
+        result = infer_log_pattern(lines)
+        assert result is not None
+        m = result.pattern.match(lines[0])
+        assert m is not None
+        # Message should be at end, not start
+        assert m.group("message") == "Starting server on port 8080"
+        assert m.group("level") == "INFO"
+        assert "timestamp" in m.groupdict()
 
 
 def _find_format(name: str) -> LogFormat:

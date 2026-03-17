@@ -214,15 +214,6 @@ class HelpScreen(ModalScreen):
     """A screen displaying keybindings and config in separate tabs."""
 
     DEFAULT_CSS = """
-    #help-screen {
-        background: $surface;
-        border: solid $primary;
-        padding: 1;
-        margin: 1;
-        height: 80%;
-        width: 80%;
-        align: center middle;
-    }
     #help-footer {
         dock: bottom;
         height: 1;

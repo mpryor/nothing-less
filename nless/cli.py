@@ -27,7 +27,9 @@ def parse_args(argv=None) -> CliArgs:
     """
     parser = argparse.ArgumentParser(description="nless - A terminal log viewer")
     parser.add_argument(
-        "filename", nargs="*", help="File(s) to read input from (defaults to stdin)"
+        "filename",
+        nargs="*",
+        help="File(s) to read. Multiple files open as separate groups (use -m to merge)",
     )
     parser.add_argument(
         "--merge",

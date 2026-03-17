@@ -7,6 +7,15 @@
 #title_bar {
     height: 1;
     width: 100%;
+    layout: horizontal;
+}
+
+#title_name {
+    width: auto;
+}
+
+#help_hint {
+    width: auto;
 }
 
 #group_bar {

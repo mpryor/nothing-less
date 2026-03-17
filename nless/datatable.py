@@ -74,6 +74,8 @@ class Datatable(ScrollView):
         self.cursor_row: int = 0
         self.cursor_column: int = 0
         self.row_count: int = 0
+        self._hover_row: int = -1
+        self._hover_column: int = -1
 
         self._init_styles(theme)
 
@@ -95,6 +97,8 @@ class Datatable(ScrollView):
         self._style_zebra_even_row = Style(bgcolor=theme.row_even_bg)
         self._style_zebra_odd_col = Style(color=theme.col_odd_fg)
         self._style_zebra_even_col = Style(color=theme.col_even_fg)
+
+        self._style_hover = Style(bgcolor=theme.search_match_bg)
 
         self._cell_styles: dict[tuple[bool, bool, bool], Style] = {}
         self._sep_styles: dict[tuple[bool, bool], Style] = {}
@@ -212,6 +216,109 @@ class Datatable(ScrollView):
         )
         self.refresh()
         self.post_message(Datatable.CellHighlighted())
+
+    def _column_at_x(self, x: int) -> int:
+        """Map a screen x coordinate to a column index."""
+        # Walk fixed columns first
+        fixed_x = 0
+        for i in range(self.fixed_columns):
+            w = self.column_widths[i] + self.col_separator_width
+            if x < fixed_x + w:
+                return i
+            fixed_x += w
+
+        # Walk scrollable columns
+        adjusted_x = x - fixed_x + self.scroll_offset.x
+        acc = 0
+        for i in range(self.fixed_columns, len(self.columns)):
+            w = self.column_widths[i] + self.col_separator_width
+            if adjusted_x < acc + w:
+                return i
+            acc += w
+        return len(self.columns) - 1
+
+    class RightClicked(Message):
+        def __init__(
+            self,
+            row: int,
+            column: int,
+            screen_x: int,
+            screen_y: int,
+            is_header: bool = False,
+        ) -> None:
+            super().__init__()
+            self.row = row
+            self.column = column
+            self.screen_x = screen_x
+            self.screen_y = screen_y
+            self.is_header = is_header
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3:
+            # Right-click: post context menu message instead of moving cursor
+            if event.y == 0:
+                col = self._column_at_x(event.x)
+                self.post_message(
+                    self.RightClicked(
+                        row=-1,
+                        column=col,
+                        screen_x=event.screen_x,
+                        screen_y=event.screen_y,
+                        is_header=True,
+                    )
+                )
+            else:
+                row = int(self.scroll_offset.y) + event.y - 1
+                if row >= len(self.rows):
+                    return
+                col = self._column_at_x(event.x)
+                self.move_cursor(column=col, row=row)
+                self.post_message(
+                    self.RightClicked(
+                        row=row,
+                        column=col,
+                        screen_x=event.screen_x,
+                        screen_y=event.screen_y,
+                        is_header=False,
+                    )
+                )
+            event.stop()
+            return
+        if event.y == 0:
+            return  # header row — ignore
+        row = int(self.scroll_offset.y) + event.y - 1
+        if row >= len(self.rows):
+            return
+        col = self._column_at_x(event.x)
+        self.move_cursor(column=col, row=row)
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self.move_cursor(row=max(0, self.cursor_row - 3))
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self.move_cursor(row=min(len(self.rows) - 1, self.cursor_row + 3))
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if event.y == 0:
+            row = -1
+            col = -1
+        else:
+            row = int(self.scroll_offset.y) + event.y - 1
+            if row >= len(self.rows):
+                row = -1
+                col = -1
+            else:
+                col = self._column_at_x(event.x)
+        if row != self._hover_row or col != self._hover_column:
+            self._hover_row = row
+            self._hover_column = col
+            self.refresh()
+
+    def on_leave(self, event: events.Leave) -> None:
+        if self._hover_row != -1 or self._hover_column != -1:
+            self._hover_row = -1
+            self._hover_column = -1
+            self.refresh()
 
     def action_page_up(self) -> None:
         page = self.size.height - 1  # -1 for header
@@ -344,6 +451,7 @@ class Datatable(ScrollView):
             accumulated_x = 0  # track how far we've rendered horizontally
             is_zebra_row = (y - 1) % 2 != 0
             is_cursor_row = (y - 1) == self.cursor_row
+            is_hover_row = (y - 1) == self._hover_row
             console = self.app.console
 
             for i, cell in enumerate(row):
@@ -357,11 +465,15 @@ class Datatable(ScrollView):
                     continue
                 elif i < self.fixed_columns:
                     is_cursor_cell = i == self.cursor_column and is_cursor_row
-                    fixed_column_style = (
-                        self._style_fixed_column
-                        if not is_cursor_cell
-                        else self._style_cursor
-                    )
+                    is_hover_cell = is_hover_row and i == self._hover_column
+                    if is_cursor_cell:
+                        fixed_column_style = self._style_cursor
+                    elif is_hover_cell:
+                        fixed_column_style = (
+                            self._style_fixed_column + self._style_hover
+                        )
+                    else:
+                        fixed_column_style = self._style_fixed_column
                     cell_text = Text.from_markup(str(cell))
                     for parsed_text, parsed_style, _ in cell_text.render(console):
                         segments.append(
@@ -380,6 +492,9 @@ class Datatable(ScrollView):
                         (is_cursor_cell, is_zebra_row, i % 2 != 0)
                     ]
                     separator_style = self._sep_styles[(is_cursor_cell, is_zebra_row)]
+                    if is_hover_row and i == self._hover_column and not is_cursor_cell:
+                        segment_style = segment_style + self._style_hover
+                        separator_style = separator_style + self._style_hover
 
                     trim_len = 0
 

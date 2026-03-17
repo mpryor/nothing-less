@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.binding import Binding
 from textual.geometry import Region, Size
+from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
@@ -64,6 +66,7 @@ class RawPager(ScrollView):
         self.row_count: int = 0
         self.fixed_columns: int = 0
         self._max_width: int = 0
+        self._hover_row: int = -1
         self._init_styles(theme)
 
     def _init_styles(self, theme: NlessTheme | None = None) -> None:
@@ -75,6 +78,10 @@ class RawPager(ScrollView):
             bold=True, color=theme.cursor_fg, bgcolor=theme.cursor_bg
         )
         self._style_default = Style(color=theme.col_even_fg, bgcolor=theme.row_even_bg)
+        self._style_hover = Style(
+            color=theme.col_even_fg,
+            bgcolor=theme.search_match_bg,
+        )
         self._style_blank = Style(bgcolor=theme.row_even_bg)
         self.styles.scrollbar_background = theme.scrollbar_bg
         self.styles.scrollbar_color = theme.scrollbar_fg
@@ -217,6 +224,50 @@ class RawPager(ScrollView):
     def action_scroll_to_beginning(self) -> None:
         self.scroll_to(0, self.scroll_offset.y, animate=False)
 
+    class RightClicked(Message):
+        def __init__(self, row: int, screen_x: int, screen_y: int) -> None:
+            super().__init__()
+            self.row = row
+            self.screen_x = screen_x
+            self.screen_y = screen_y
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3:
+            row = int(self.scroll_offset.y) + event.y
+            if row >= len(self.rows):
+                return
+            self.move_cursor(row=row)
+            self.post_message(
+                self.RightClicked(
+                    row=row, screen_x=event.screen_x, screen_y=event.screen_y
+                )
+            )
+            event.stop()
+            return
+        row = int(self.scroll_offset.y) + event.y
+        if row >= len(self.rows):
+            return
+        self.move_cursor(row=row)
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self.move_cursor(row=max(0, self.cursor_row - 3))
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self.move_cursor(row=min(len(self.rows) - 1, self.cursor_row + 3))
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        row = int(self.scroll_offset.y) + event.y
+        if row >= len(self.rows):
+            row = -1
+        if row != self._hover_row:
+            self._hover_row = row
+            self.refresh()
+
+    def on_leave(self, event: events.Leave) -> None:
+        if self._hover_row != -1:
+            self._hover_row = -1
+            self.refresh()
+
     # -- Rendering (virtual — only visible lines) -----------------------------
 
     def render_line(self, y: int) -> Strip:
@@ -230,7 +281,12 @@ class RawPager(ScrollView):
 
         line = self.rows[row_idx][0] if self.rows[row_idx] else ""
         is_cursor = row_idx == self.cursor_row
-        style = self._style_cursor if is_cursor else self._style_default
+        if is_cursor:
+            style = self._style_cursor
+        elif row_idx == self._hover_row:
+            style = self._style_hover
+        else:
+            style = self._style_default
 
         if "[" in line:
             try:
