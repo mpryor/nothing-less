@@ -427,6 +427,17 @@ Views are sorted by most recently updated first.
 
 ---
 
+## Update Notifications
+
+nless checks for new versions on PyPI in the background when the app starts. If a newer version is available, a non-blocking toast notification appears with upgrade instructions.
+
+- **Frequency:** At most once every 24 hours
+- **Cache:** The latest version and check timestamp are stored in `~/.config/nless/history.json`
+- **Silent on error:** Network failures or timeouts are silently ignored
+- **No opt-out config:** The check runs automatically and cannot be disabled
+
+---
+
 ## History File
 
 **Location:** `~/.config/nless/history.json`

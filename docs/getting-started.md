@@ -61,6 +61,8 @@ Once data is loaded, press `?` to view all keybindings.
 | `--no-tui` | | Skip the TUI — apply transforms and write to stdout |
 | `--tui` | | Force TUI mode even when stdout is piped with transforms |
 | `--output-format` | `-o` | Output format for pipe/batch output: `csv` (default), `tsv`, `json`, `raw` |
+| `--session` | `-S` | Load a saved session by name |
+| `--merge` | `-m` | Merge multiple files into a single view with a `_source` column |
 
 ### Examples
 
@@ -134,4 +136,16 @@ Force TUI mode when piping with transforms (overrides auto-batch):
 
 ```bash
 cat data.csv | nless --tui -f 'status=shipped' | wc -l
+```
+
+Load a saved session:
+
+```bash
+nless -S my-session file.csv
+```
+
+Merge multiple files into one view:
+
+```bash
+nless file1.csv file2.csv -m
 ```

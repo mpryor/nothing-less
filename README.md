@@ -90,6 +90,9 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - **Raw pager mode** - `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
 - **Excluded lines** - view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
 - **Pipe mode** - use nless as a pipeline stage; interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode
+- **Mouse support** - click column headers to sort, double-click pivot rows to drill in, right-click for context menus, and navigate via the menu bar
+- **Merge files** - combine multiple files into a single view with a `_source` column using `--merge`
+- **Update notifications** - background PyPI version check with non-blocking toast notifications
 
 <details>
 <summary>Full keybinding reference</summary>
@@ -102,6 +105,7 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `Q` - pipe current buffer to stdout and exit immediately (pipe mode shortcut)
 - `N` - create a new buffer from the original data
 - `r` - rename the current buffer
+- `M` - merge the current buffer with another buffer
 
 **Groups**:
 - `}` - switch to the next buffer group
@@ -144,11 +148,13 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `&` - apply the current search as a filter across all columns
 - `@` - set a time window to show only recent rows (e.g. `5m`, `1h`); append `+` for rolling
 
-**Searching**:
+**Searching & Highlighting**:
 - `/` - prompt for a search value and jump to the first match
 - `*` - search all columns for the current highlighted cell value
 - `n` - jump to the next match
 - `p` - jump to previous match
+- `+` - pin the current search as a persistent highlight
+- `-` - navigate or manage pinned highlights
 
 **Output**:
 - `W` - prompt for a file to write the current buffer to (`-` writes to stdout)
@@ -161,6 +167,10 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 - `t` - toggle tail mode
 - `x` - reset new-line highlights
 
+**Sessions & Views**:
+- `S` - open the session menu (save, load, rename, delete)
+- `v` - open the view menu (save, load, rename, delete)
+
 **Themes & Keymaps**:
 - `T` - open the theme selector
 - `K` - open the keymap selector
@@ -168,8 +178,9 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 **Excluded Lines**:
 - `~` - view excluded lines (parse failures + filtered rows), with chained accumulation
 
-**Sorting**:
+**Sorting & Aggregations**:
 - `s` - toggle ascending/descending sort on the current column
+- `a` - show column aggregations (count, distinct, sum, avg, min, max)
 
 **JSON**:
 - `J` - select a JSON field under the current cell to add as a column
@@ -181,6 +192,13 @@ This project is not meant to replace any of the tools mentioned in the [alternat
 
 **Help**:
 - `?` - show the help screen with all keybindings
+
+**Mouse**:
+- Left-click column headers to sort
+- Double-click pivot rows to drill in
+- Right-click cells, headers, tabs, or groups for context menus
+- Click buffer tabs or group bar to switch
+- Menu bar for mouse-driven access to all actions
 
 See the [full keybinding reference](https://mpryor.github.io/nothing-less/keybindings/) and [tutorials](https://mpryor.github.io/nothing-less/tutorials/) for more.
 

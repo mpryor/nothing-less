@@ -152,3 +152,134 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `?` | Show the help screen with all keybindings |
+
+---
+
+## Mouse Interactions
+
+nless supports mouse interactions alongside keyboard controls.
+
+### Click Actions
+
+| Target | Click | Action |
+|--------|-------|--------|
+| Column header | Left-click | Sort by that column (click again to reverse) |
+| Pivot row | Double-click | Drill into the data behind the pivot (same as `enter`) |
+| Buffer tab | Left-click | Switch to that buffer |
+| Group bar | Left-click | Switch to that buffer group |
+| Help hint | Left-click | Open the help screen |
+| Menu bar item | Left-click | Open the menu dropdown |
+
+### Hover Effects
+
+| Target | Effect |
+|--------|--------|
+| Column header | Header cell highlights on hover |
+| Group bar | Group label highlights on hover |
+| Menu bar | Switches to hovered menu when a dropdown is already open |
+
+### Scroll
+
+| Action | Effect |
+|--------|--------|
+| Scroll up | Move cursor up 3 rows |
+| Scroll down | Move cursor down 3 rows |
+
+### Context Menus (Right-Click)
+
+Right-click different elements to open a context menu with relevant actions.
+
+**Data cell:**
+
+| Action |
+|--------|
+| Copy cell |
+| Search cursor word |
+| Filter by value |
+| Exclude value |
+| Add highlight |
+| Sort column |
+
+**Column header:**
+
+| Action |
+|--------|
+| Sort column |
+| Pin/unpin column |
+| Hide column |
+| Move left / Move right |
+| Split column |
+| Pivot |
+
+**Buffer tab:**
+
+| Action |
+|--------|
+| Rename buffer |
+| Close buffer |
+
+**Group bar:**
+
+| Action |
+|--------|
+| Rename group |
+| Close group |
+
+---
+
+## Menu Bar
+
+The menu bar provides mouse-driven access to all major actions. Click a menu label to open it, or hover to switch between menus when one is already open. Each menu item shows its keyboard shortcut.
+
+### File
+
+| Item |
+|------|
+| Open file |
+| New buffer |
+| Rename buffer |
+| Merge buffers |
+| Rename group |
+| Write to file |
+| Run command |
+| Close buffer |
+
+### View
+
+| Item |
+|------|
+| Show/hide columns |
+| Jump to column |
+| Toggle arrival timestamps |
+| Toggle tail mode |
+| Column aggregations |
+| View excluded lines |
+| Reset highlights |
+| Select theme |
+| Select keymap |
+| Sessions |
+| Views |
+
+### Data
+
+| Item |
+|------|
+| Change delimiter |
+| Split column |
+| Extract JSON key |
+| Auto-detect log format |
+| Time window |
+
+### Search
+
+| Item |
+|------|
+| Search |
+| Next match |
+| Previous match |
+| Search to filter |
+| Filter column |
+| Exclude from column |
+| Filter all columns |
+| Add highlight |
+| Navigate highlights |
