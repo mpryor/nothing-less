@@ -115,13 +115,20 @@ class NlessApp(
             ("Open file", "open_file"),
             ("New buffer", "add_buffer"),
             ("Rename buffer", "rename_buffer"),
+            ("Merge buffers", "merge_buffers"),
+            ("Rename group", "rename_group"),
             ("Write to file", "write_to_file"),
             ("Run command", "run_command"),
             ("Close buffer", "close_active_buffer"),
         ],
         "menu_view": [
             ("Show/hide columns", "filter_columns"),
+            ("Jump to column", "jump_columns"),
             ("Toggle arrival timestamps", "toggle_arrival"),
+            ("Toggle tail mode", "toggle_tail"),
+            ("Column aggregations", "aggregations"),
+            ("View excluded lines", "view_unparsed_logs"),
+            ("Reset highlights", "reset_highlights"),
             ("Select theme", "select_theme"),
             ("Select keymap", "select_keymap"),
             ("Sessions", "session_menu"),
@@ -136,6 +143,9 @@ class NlessApp(
         ],
         "menu_search": [
             ("Search", "search"),
+            ("Next match", "next_search"),
+            ("Previous match", "previous_search"),
+            ("Search to filter", "search_to_filter"),
             ("Filter column", "filter"),
             ("Exclude from column", "exclude_filter"),
             ("Filter all columns", "filter_any"),
@@ -1134,6 +1144,7 @@ class NlessApp(
         curr_data_table = self._get_current_buffer().query_one(".nless-view")
 
         self.buffers.append(new_buffer)
+        self._sync_status_context()
         tabbed_content = self._get_active_tabbed_content()
         buffer_number = len(self.buffers)
         tab_pane = TabPane(
