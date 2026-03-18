@@ -110,7 +110,9 @@ class NlessBuffer(
       only apply the final state.
     """
 
+    # ── Class Attributes / Init / Properties ──────────────────────
     ENABLE_COMMAND_PALETTE = False
+
     CSS_PATH = "nless.tcss"
 
     BINDINGS = [
@@ -319,39 +321,50 @@ class NlessBuffer(
         )
         self.stream._source_labels = value
 
-    def _filter_lines(
-        self,
-        lines: list[str],
-        timestamps: list[float] | None = None,
-        source_labels: list[str] | None = None,
-    ) -> tuple[list[str], list[float], list[str] | None]:
-        """Return only lines (and their timestamps/source labels) that match all current filters."""
-        now = time.time()
-        if timestamps is None:
-            timestamps = [now] * len(lines)
-        if not self.query.filters:
-            return lines, timestamps, source_labels
-        metadata = [mc.value for mc in MetadataColumn]
-        expected = len([c for c in self.current_columns if c.name not in metadata])
-        matching = []
-        kept_timestamps = []
-        kept_sources = [] if source_labels is not None else None
-        for i, line in enumerate(lines):
-            try:
-                cells = split_line(line, self.delim.value, self.current_columns)
-            except (json.JSONDecodeError, csv.Error, ValueError):
-                continue
-            if len(cells) != expected:
-                continue
-            cells.append(self._format_arrival(timestamps[i]))
-            if self._has_source_column:
-                cells.append(source_labels[i] if source_labels else "")
-            if self._matches_all_filters(cells, adjust_for_count=True):
-                matching.append(line)
-                kept_timestamps.append(timestamps[i])
-                if kept_sources is not None:
-                    kept_sources.append(source_labels[i])
-        return matching, kept_timestamps, kept_sources
+    # ── Lifecycle ───────────────────────────────────────────────────
+    def compose(self) -> ComposeResult:
+        """Create and yield the DataTable or RawPager widget."""
+        with Vertical():
+            theme = self._get_theme()
+            if self.raw_mode:
+                from .rawpager import RawPager
+
+                yield RawPager(theme=theme)
+            else:
+                yield NlessDataTable(theme=theme)
+
+    def on_mount(self) -> None:
+        self.mounted = True
+        if self._pending_session_state is not None and self.first_row_parsed:
+            from .session import apply_buffer_state
+
+            apply_buffer_state(self, self._pending_session_state)
+            self._pending_session_state = None
+            self._deferred_update_table(reason=UpdateReason.SESSION)
+        if self.loading_state.reason:
+            self._start_spinner()
+        if not self._initial_load_done:
+            self.set_timer(1.0, self._mark_initial_load_done)
+        if self.rolling_time_window and self.time_window:
+            self._start_rolling_timer()
+        if self.line_stream and not self.line_stream.done:
+            is_pipe = True
+            if hasattr(self.line_stream, "is_streaming"):
+                try:
+                    is_pipe = self.line_stream.is_streaming()
+                except (OSError, Exception):
+                    is_pipe = False
+            if is_pipe:
+                self._start_bp_timer()
+
+    def _mark_initial_load_done(self) -> None:
+        self._initial_load_done = True
+
+    def on_datatable_cell_highlighted(
+        self, event: NlessDataTable.CellHighlighted
+    ) -> None:
+        """Handle cell highlighted events to update the status bar."""
+        self._update_status_bar()
 
     def copy(self, pane_id) -> "NlessBuffer":
         """Create a duplicate buffer with shared line_stream subscription.
@@ -466,25 +479,6 @@ class NlessBuffer(
         new_buffer._initial_load_done = True
         return new_buffer
 
-    def _get_theme(self):
-        """Return the current theme from the app, or the default."""
-        try:
-            return self.app.nless_theme
-        except AttributeError:
-            from .theme import BUILTIN_THEMES
-
-            return BUILTIN_THEMES["default"]
-
-    def _highlight_markup(self, text: str) -> str:
-        """Wrap text in the current theme's highlight color markup."""
-        try:
-            open_tag, close_tag = self._highlight_tags
-        except AttributeError:
-            color = self._get_theme().highlight
-            self._highlight_tags = (f"[{color}]", f"[/{color}]")
-            open_tag, close_tag = self._highlight_tags
-        return f"{open_tag}{text}{close_tag}"
-
     def init_as_unparsed(
         self,
         rows: list[str],
@@ -523,98 +517,40 @@ class NlessBuffer(
             )
             self.line_stream = line_stream
 
-    def compose(self) -> ComposeResult:
-        """Create and yield the DataTable or RawPager widget."""
-        with Vertical():
-            theme = self._get_theme()
-            if self.raw_mode:
-                from .rawpager import RawPager
-
-                yield RawPager(theme=theme)
-            else:
-                yield NlessDataTable(theme=theme)
-
-    def _ensure_correct_view_widget(self) -> None:
-        """Swap between RawPager and DataTable if raw_mode changed."""
-        from .rawpager import RawPager
-
-        try:
-            current = self.query_one(".nless-view")
-        except Exception:
-            return
-
-        want_raw = self.raw_mode and not self._has_source_column
-        is_raw = isinstance(current, RawPager)
-        if want_raw == is_raw:
-            return
-
-        theme = self._get_theme()
-        container = self.query_one(Vertical)
-        current.remove_class("nless-view")
-        current.remove()
-        if want_raw:
-            new_widget = RawPager(theme=theme)
-        else:
-            new_widget = NlessDataTable(theme=theme)
-        container.mount(new_widget)
-        new_widget.focus()
-
-    def _deferred_raw_swap(self) -> None:
-        """Swap Datatable→RawPager after incremental load, transferring rows."""
-        from .rawpager import RawPager
-
-        try:
-            current = self.query_one(".nless-view")
-        except Exception:
-            return
-        if isinstance(current, RawPager):
-            return
-
-        rows = list(current.rows)
-        cursor_y = current.cursor_row
-        self._ensure_correct_view_widget()
-
-        try:
-            new_widget = self.query_one(".nless-view")
-            if rows:
-                new_widget.add_rows_precomputed(rows)
-            if cursor_y and rows:
-                new_widget.move_cursor(row=min(cursor_y, len(rows) - 1))
-        except Exception:
-            logger.debug("Raw swap row transfer failed", exc_info=True)
-
-    def on_mount(self) -> None:
-        self.mounted = True
-        if self._pending_session_state is not None and self.first_row_parsed:
-            from .session import apply_buffer_state
-
-            apply_buffer_state(self, self._pending_session_state)
-            self._pending_session_state = None
-            self._deferred_update_table(reason=UpdateReason.SESSION)
-        if self.loading_state.reason:
-            self._start_spinner()
-        if not self._initial_load_done:
-            self.set_timer(1.0, self._mark_initial_load_done)
-        if self.rolling_time_window and self.time_window:
-            self._start_rolling_timer()
-        if self.line_stream and not self.line_stream.done:
-            is_pipe = True
-            if hasattr(self.line_stream, "is_streaming"):
-                try:
-                    is_pipe = self.line_stream.is_streaming()
-                except (OSError, Exception):
-                    is_pipe = False
-            if is_pipe:
-                self._start_bp_timer()
-
-    def _mark_initial_load_done(self) -> None:
-        self._initial_load_done = True
-
-    def on_datatable_cell_highlighted(
-        self, event: NlessDataTable.CellHighlighted
-    ) -> None:
-        """Handle cell highlighted events to update the status bar."""
-        self._update_status_bar()
+    # ── Data Processing (filter / sort / dedup) ────────────────────
+    def _filter_lines(
+        self,
+        lines: list[str],
+        timestamps: list[float] | None = None,
+        source_labels: list[str] | None = None,
+    ) -> tuple[list[str], list[float], list[str] | None]:
+        """Return only lines (and their timestamps/source labels) that match all current filters."""
+        now = time.time()
+        if timestamps is None:
+            timestamps = [now] * len(lines)
+        if not self.query.filters:
+            return lines, timestamps, source_labels
+        metadata = [mc.value for mc in MetadataColumn]
+        expected = len([c for c in self.current_columns if c.name not in metadata])
+        matching = []
+        kept_timestamps = []
+        kept_sources = [] if source_labels is not None else None
+        for i, line in enumerate(lines):
+            try:
+                cells = split_line(line, self.delim.value, self.current_columns)
+            except (json.JSONDecodeError, csv.Error, ValueError):
+                continue
+            if len(cells) != expected:
+                continue
+            cells.append(self._format_arrival(timestamps[i]))
+            if self._has_source_column:
+                cells.append(source_labels[i] if source_labels else "")
+            if self._matches_all_filters(cells, adjust_for_count=True):
+                matching.append(line)
+                kept_timestamps.append(timestamps[i])
+                if kept_sources is not None:
+                    kept_sources.append(source_labels[i])
+        return matching, kept_timestamps, kept_sources
 
     def _filter_rows(
         self, expected_cell_count: int
@@ -802,6 +738,19 @@ class NlessBuffer(
             except (TypeError, IndexError):
                 pass
 
+    def _matches_all_filters(
+        self, cells: list[str], adjust_for_count: bool = False
+    ) -> bool:
+        """Check if a row matches all current filters."""
+        return matches_all_filters(
+            cells,
+            self.query.filters,
+            self._get_col_idx_by_name,
+            adjust_for_count=adjust_for_count,
+            has_unique_columns=bool(self.query.unique_column_names),
+        )
+
+    # ── Deferred Rebuild Pipeline ──────────────────────────────────
     _CACHE_SAFE_REASONS = frozenset(
         {
             UpdateReason.SORT,
@@ -1059,6 +1008,7 @@ class NlessBuffer(
             return UpdateReason.FILTER
         return UpdateReason.LOADING
 
+    # ── Chain Timer / Back Pressure ────────────────────────────────
     def _cancel_chain_timer(self) -> None:
         """Cancel the pending chain timer without resetting delay/skip state."""
         self.chain.cancel_timer()
@@ -1107,6 +1057,104 @@ class NlessBuffer(
         except Exception:
             logger.debug("Failed to schedule chain timer", exc_info=True)
 
+    def _start_bp_timer(self) -> None:
+        """Start the back pressure sampling timer (main thread)."""
+        if self._bp_timer is not None:
+            return
+        try:
+            self._bp_timer = self.set_interval(0.5, self._tick_bp)
+        except Exception:
+            logger.debug("BP timer start failed", exc_info=True)
+
+    def _stop_bp_timer(self) -> None:
+        """Stop the back pressure sampling timer and any pending chain rebuild."""
+        self._stop_chain_timer()
+        if self._bp_timer is not None:
+            self._safe_widget_call(self._bp_timer.stop)
+            self._bp_timer = None
+
+    def _tick_bp(self) -> None:
+        """Check if the OS pipe buffer has data waiting (i.e. we're behind)."""
+        try:
+            stream_done = self.line_stream and self.line_stream.done
+
+            behind = False
+            if (
+                not stream_done
+                and self.line_stream
+                and hasattr(self.line_stream, "pipe_pending_bytes")
+            ):
+                pending = self.line_stream.pipe_pending_bytes()
+                if pending is not None and pending > 0:
+                    behind = True
+
+            self._bp_behind = behind
+
+            # Fire pending chain rebuild immediately when stream finishes
+            if stream_done and self.chain.timer is not None:
+                self._stop_chain_timer()
+                self._deferred_update_table()
+
+            # Stop timer when stream is done and we're caught up
+            if stream_done and not behind and not self.loading_state.reason:
+                self._stop_bp_timer()
+                self._bp_behind = False
+
+            if self.loading_state.spinner_timer is None and not self.locked:
+                self._update_status_bar()
+        except Exception:
+            pass
+
+    # ── Widget / View Management ───────────────────────────────────
+    def _ensure_correct_view_widget(self) -> None:
+        """Swap between RawPager and DataTable if raw_mode changed."""
+        from .rawpager import RawPager
+
+        try:
+            current = self.query_one(".nless-view")
+        except Exception:
+            return
+
+        want_raw = self.raw_mode and not self._has_source_column
+        is_raw = isinstance(current, RawPager)
+        if want_raw == is_raw:
+            return
+
+        theme = self._get_theme()
+        container = self.query_one(Vertical)
+        current.remove_class("nless-view")
+        current.remove()
+        if want_raw:
+            new_widget = RawPager(theme=theme)
+        else:
+            new_widget = NlessDataTable(theme=theme)
+        container.mount(new_widget)
+        new_widget.focus()
+
+    def _deferred_raw_swap(self) -> None:
+        """Swap Datatable→RawPager after incremental load, transferring rows."""
+        from .rawpager import RawPager
+
+        try:
+            current = self.query_one(".nless-view")
+        except Exception:
+            return
+        if isinstance(current, RawPager):
+            return
+
+        rows = list(current.rows)
+        cursor_y = current.cursor_row
+        self._ensure_correct_view_widget()
+
+        try:
+            new_widget = self.query_one(".nless-view")
+            if rows:
+                new_widget.add_rows_precomputed(rows)
+            if cursor_y and rows:
+                new_widget.move_cursor(row=min(cursor_y, len(rows) - 1))
+        except Exception:
+            logger.debug("Raw swap row transfer failed", exc_info=True)
+
     def _restore_position(
         self, data_table: NlessDataTable, cursor_x, cursor_y, scroll_x, scroll_y
     ):
@@ -1119,6 +1167,7 @@ class NlessBuffer(
             )
         )
 
+    # ── Status Bar / Spinner / Loading ─────────────────────────────
     def _update_status_bar(self) -> None:
         if self.pane_id != self.app.buffers[self.app.curr_buffer_idx].pane_id:
             return
@@ -1225,66 +1274,27 @@ class NlessBuffer(
 
     # -- Back pressure monitoring ------------------------------------------
 
-    def _start_bp_timer(self) -> None:
-        """Start the back pressure sampling timer (main thread)."""
-        if self._bp_timer is not None:
-            return
+    # ── Theme Helpers ──────────────────────────────────────────────
+    def _get_theme(self):
+        """Return the current theme from the app, or the default."""
         try:
-            self._bp_timer = self.set_interval(0.5, self._tick_bp)
-        except Exception:
-            logger.debug("BP timer start failed", exc_info=True)
+            return self.app.nless_theme
+        except AttributeError:
+            from .theme import BUILTIN_THEMES
 
-    def _stop_bp_timer(self) -> None:
-        """Stop the back pressure sampling timer and any pending chain rebuild."""
-        self._stop_chain_timer()
-        if self._bp_timer is not None:
-            self._safe_widget_call(self._bp_timer.stop)
-            self._bp_timer = None
+            return BUILTIN_THEMES["default"]
 
-    def _tick_bp(self) -> None:
-        """Check if the OS pipe buffer has data waiting (i.e. we're behind)."""
+    def _highlight_markup(self, text: str) -> str:
+        """Wrap text in the current theme's highlight color markup."""
         try:
-            stream_done = self.line_stream and self.line_stream.done
+            open_tag, close_tag = self._highlight_tags
+        except AttributeError:
+            color = self._get_theme().highlight
+            self._highlight_tags = (f"[{color}]", f"[/{color}]")
+            open_tag, close_tag = self._highlight_tags
+        return f"{open_tag}{text}{close_tag}"
 
-            behind = False
-            if (
-                not stream_done
-                and self.line_stream
-                and hasattr(self.line_stream, "pipe_pending_bytes")
-            ):
-                pending = self.line_stream.pipe_pending_bytes()
-                if pending is not None and pending > 0:
-                    behind = True
-
-            self._bp_behind = behind
-
-            # Fire pending chain rebuild immediately when stream finishes
-            if stream_done and self.chain.timer is not None:
-                self._stop_chain_timer()
-                self._deferred_update_table()
-
-            # Stop timer when stream is done and we're caught up
-            if stream_done and not behind and not self.loading_state.reason:
-                self._stop_bp_timer()
-                self._bp_behind = False
-
-            if self.loading_state.spinner_timer is None and not self.locked:
-                self._update_status_bar()
-        except Exception:
-            pass
-
-    def _matches_all_filters(
-        self, cells: list[str], adjust_for_count: bool = False
-    ) -> bool:
-        """Check if a row matches all current filters."""
-        return matches_all_filters(
-            cells,
-            self.query.filters,
-            self._get_col_idx_by_name,
-            adjust_for_count=adjust_for_count,
-            has_unique_columns=bool(self.query.unique_column_names),
-        )
-
+    # ── Utilities (formatting, caches, incremental ops) ────────────
     _arrival_format_cache: dict[int, str] = {}
 
     @staticmethod

@@ -239,6 +239,28 @@ class ActionsMixin:
             reason=UpdateReason.PINNING_COLUMN,
         )
 
+    def action_hide_column(self: NlessBuffer) -> None:
+        """Hide the currently selected column."""
+        if self.raw_mode:
+            return
+        data_table = self.query_one(".nless-view")
+        selected_column = self._get_column_at_position(data_table.cursor_column)
+        if not selected_column:
+            return
+        if selected_column.name in [m.value for m in MetadataColumn]:
+            return
+        old_pos = selected_column.render_position
+        selected_column.hidden = True
+        selected_column.pinned = False
+        selected_column.render_position = 99_999
+        for c in self.current_columns:
+            if c is selected_column or c.hidden:
+                continue
+            if c.render_position > old_pos:
+                c.render_position -= 1
+        self.invalidate_caches()
+        self._deferred_update_table(reason=UpdateReason.FILTERING_COLUMNS)
+
     def action_toggle_tail(self: NlessBuffer) -> None:
         self.is_tailing = not self.is_tailing
         self._update_status_bar()

@@ -87,6 +87,68 @@ class NlessApp(
     ENABLE_COMMAND_PALETTE = False
     _TAB_LABEL_RE = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
 
+    def _key_for_action(self, action: str) -> str:
+        """Return the key hint for an action name, or empty string."""
+        from .buffer import NlessBuffer
+
+        for binding in self.BINDINGS:
+            if isinstance(binding, Binding) and binding.action == action:
+                return binding.key.split(",")[0]
+        for binding in NlessBuffer.BINDINGS:
+            if isinstance(binding, Binding) and binding.action == action:
+                return binding.key.split(",")[0]
+        return ""
+
+    def _menu_item(self, label: str, action: str) -> MenuItem:
+        """Create a MenuItem with the key hint resolved from bindings."""
+        return MenuItem(label, action, self._key_for_action(action))
+
+    _MENU_BAR_ITEMS = [
+        ("menu_file", "File"),
+        ("menu_view", "View"),
+        ("menu_data", "Data"),
+        ("menu_search", "Search"),
+    ]
+
+    _MENU_DEFS: dict[str, list[tuple[str, str]]] = {
+        "menu_file": [
+            ("Open file", "open_file"),
+            ("New buffer", "add_buffer"),
+            ("Rename buffer", "rename_buffer"),
+            ("Write to file", "write_to_file"),
+            ("Run command", "run_command"),
+            ("Close buffer", "close_active_buffer"),
+        ],
+        "menu_view": [
+            ("Show/hide columns", "filter_columns"),
+            ("Toggle arrival timestamps", "toggle_arrival"),
+            ("Select theme", "select_theme"),
+            ("Select keymap", "select_keymap"),
+            ("Sessions", "session_menu"),
+            ("Views", "view_menu"),
+        ],
+        "menu_data": [
+            ("Change delimiter", "delimiter"),
+            ("Split column", "column_delimiter"),
+            ("Extract JSON key", "json_header"),
+            ("Auto-detect log format", "detect_log_format"),
+            ("Time window", "time_window"),
+        ],
+        "menu_search": [
+            ("Search", "search"),
+            ("Filter column", "filter"),
+            ("Exclude from column", "exclude_filter"),
+            ("Filter all columns", "filter_any"),
+            ("Add highlight", "add_highlight"),
+            ("Navigate highlights", "navigate_highlight"),
+        ],
+    }
+
+    def _build_menu(self, menu_id: str) -> list[MenuItem]:
+        return [
+            self._menu_item(label, action) for label, action in self._MENU_DEFS[menu_id]
+        ]
+
     def __init__(
         self,
         cli_args: CliArgs,
@@ -733,6 +795,15 @@ class NlessApp(
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
+        # Forward keys to context menu when open
+        try:
+            menu = self.query_one(ContextMenu)
+            if menu.is_open and menu.process_key(event.key):
+                event.stop()
+                event.prevent_default()
+                return
+        except NoMatches:
+            pass
         if event.key == "escape" and isinstance(self.focused, Input):
             if isinstance(self.focused.parent, AutocompleteInput):
                 if self.focused.parent.id == "regex_wizard_name_input":
@@ -1250,54 +1321,118 @@ class NlessApp(
         self._pending_file_groups = []
         self._switch_to_group(0)
 
+    def _open_menu_bar(self, widget) -> None:
+        """Open a menu bar dropdown from the given label widget."""
+        items = self._build_menu(widget.id)
+        menu = self.query_one(ContextMenu)
+        region = widget.region
+        menu.source_menu_id = widget.id
+        menu.show(region.x, region.y + 1, items)
+
+    def on_mouse_move(self, event) -> None:
+        """Switch menu bar dropdown on hover when a menu is open."""
+        try:
+            menu = self.query_one(ContextMenu)
+        except NoMatches:
+            return
+        if not menu.is_open or not menu.source_menu_id:
+            return
+        widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        if (
+            hasattr(widget, "id")
+            and widget.id in self._MENU_DEFS
+            and widget.id != menu.source_menu_id
+        ):
+            self._open_menu_bar(widget)
+
+    def on_mouse_down(self, event) -> None:
+        """Show context menu on right-click over a tab."""
+        if event.button != 3:
+            return
+        widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        if isinstance(widget, Tab):
+            items = [
+                self._menu_item("Rename buffer", "rename_buffer"),
+                self._menu_item("Close buffer", "close_active_buffer"),
+            ]
+            menu = self.query_one(ContextMenu)
+            menu.source_menu_id = None
+            menu.show(event.screen_x, event.screen_y, items)
+
     def on_click(self, event: Click) -> None:
-        """Handle clicks — open help when the help hint is clicked."""
+        """Handle clicks — open help, switch groups, dismiss context menu."""
         widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
         if hasattr(widget, "id") and widget.id == "help_hint":
             self.action_help()
-        # Dismiss context menu on any left-click outside it
+        # Menu bar labels
+        if event.button == 1 and hasattr(widget, "id") and widget.id in self._MENU_DEFS:
+            self._open_menu_bar(widget)
+            return
+        # Click on group bar to switch groups
+        if (
+            event.button == 1
+            and hasattr(widget, "id")
+            and widget.id == "group_bar"
+            and len(self.groups) > 1
+        ):
+            self._handle_group_bar_click(event.x)
+        # Dismiss context menu on left-click outside it
         if event.button == 1:
             try:
                 menu = self.query_one(ContextMenu)
-                if menu.display and widget is not menu:
+                if menu.is_open and widget is not menu:
                     menu.dismiss()
             except NoMatches:
                 pass
 
     def on_datatable_right_clicked(self, event: Datatable.RightClicked) -> None:
         """Show context menu on right-click over a datatable cell or header."""
-        dt = self._get_current_buffer().query_one(".nless-view")
+        buf = self._get_current_buffer()
+        dt = buf.query_one(".nless-view")
         dt.move_cursor(column=event.column)
+        mi = self._menu_item
         if event.is_header:
+            n_cols = len(dt.columns)
             items = [
-                MenuItem("Sort column", "sort"),
-                MenuItem("Pin/unpin column", "pin_column"),
-                MenuItem("Show/hide columns", "filter_columns"),
-                MenuItem("Split column", "column_delimiter"),
-                MenuItem("Mark as key", "mark_unique"),
+                mi("Sort column", "sort"),
+                mi("Pin/unpin column", "pin_column"),
+                mi("Hide column", "hide_column"),
             ]
+            if event.column > 0:
+                items.append(mi("Move left", "move_column_left"))
+            if event.column < n_cols - 1:
+                items.append(mi("Move right", "move_column_right"))
+            items.extend(
+                [
+                    mi("Split column", "column_delimiter"),
+                    mi("Pivot", "mark_unique"),
+                ]
+            )
         else:
             items = [
-                MenuItem("Copy cell", "copy"),
-                MenuItem("Search cursor word", "search_cursor_word"),
-                MenuItem("Filter by value", "filter_cursor_word"),
-                MenuItem("Exclude value", "exclude_filter_cursor_word"),
-                MenuItem("Add highlight", "add_highlight"),
-                MenuItem("Sort column", "sort"),
+                mi("Copy cell", "copy"),
+                mi("Search cursor word", "search_cursor_word"),
+                mi("Filter by value", "filter_cursor_word"),
+                mi("Exclude value", "exclude_filter_cursor_word"),
+                mi("Add highlight", "add_highlight"),
+                mi("Sort column", "sort"),
             ]
         menu = self.query_one(ContextMenu)
+        menu.source_menu_id = None
         menu.show(event.screen_x, event.screen_y, items)
 
     def on_raw_pager_right_clicked(self, event: RawPager.RightClicked) -> None:
         """Show context menu on right-click over a raw pager row."""
+        mi = self._menu_item
         items = [
-            MenuItem("Copy cell", "copy"),
-            MenuItem("Search cursor word", "search_cursor_word"),
-            MenuItem("Filter by value", "filter_cursor_word"),
-            MenuItem("Exclude value", "exclude_filter_cursor_word"),
-            MenuItem("Add highlight", "add_highlight"),
+            mi("Copy cell", "copy"),
+            mi("Search cursor word", "search_cursor_word"),
+            mi("Filter by value", "filter_cursor_word"),
+            mi("Exclude value", "exclude_filter_cursor_word"),
+            mi("Add highlight", "add_highlight"),
         ]
         menu = self.query_one(ContextMenu)
+        menu.source_menu_id = None
         menu.show(event.screen_x, event.screen_y, items)
 
     async def on_context_menu_selected(self, event: ContextMenu.Selected) -> None:
@@ -1305,9 +1440,12 @@ class NlessApp(
         menu = self.query_one(ContextMenu)
         menu.dismiss()
         buf = self._get_current_buffer()
-        try:
+        # Buffer-level actions (pin, sort, mark_unique) live on the buffer;
+        # app-level actions (filter, search, copy) live on the app.
+        # Check which one actually has the handler method.
+        if hasattr(buf, f"action_{event.action}"):
             await buf.run_action(event.action)
-        except Exception:
+        else:
             await self.run_action(event.action)
 
     def action_help(self) -> None:
@@ -1441,9 +1579,16 @@ class NlessApp(
             pass
 
     def compose(self) -> ComposeResult:
+        yield ContextMenu(id="context_menu")
         with Vertical(id="top_bar"):
             with Horizontal(id="title_bar"):
                 yield Static(self._build_title_name(), id="title_name")
+                for menu_id, label in self._MENU_BAR_ITEMS:
+                    yield Static(
+                        f" {self.nless_theme.markup('muted', label)} ",
+                        id=menu_id,
+                        classes="menu-label",
+                    )
                 yield Static(self._build_help_hint(), id="help_hint")
             yield Static(id="group_bar")
         init_buffer = self.groups[0].buffers[0]
@@ -1456,4 +1601,3 @@ class NlessApp(
                     yield init_buffer
 
         yield Static(id="status_bar", classes="dock-bottom")
-        yield ContextMenu(id="context_menu")

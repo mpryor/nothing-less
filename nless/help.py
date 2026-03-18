@@ -219,6 +219,14 @@ class HelpScreen(ModalScreen):
         height: 1;
         padding: 0 1;
     }
+    #help-close {
+        dock: right;
+        width: 3;
+        height: 100%;
+        content-align: center top;
+        padding-top: 1;
+        background: $surface;
+    }
     """
 
     BINDINGS = [
@@ -318,5 +326,12 @@ class HelpScreen(ModalScreen):
                     yield HelpScroll(config_title, Static(self._build_config_table(t)))
 
         yield Static(
-            f"[{t.muted}]q to close · h/l to switch tabs[/{t.muted}]", id="help-footer"
+            f"[{t.muted}]q to close · h/l to switch tabs[/{t.muted}]",
+            id="help-footer",
         )
+        yield Static(f"[bold {t.accent}] x [/bold {t.accent}]", id="help-close")
+
+    def on_click(self, event) -> None:
+        widget, _ = self.app.get_widget_at(event.screen_x, event.screen_y)
+        if hasattr(widget, "id") and widget.id == "help-close":
+            self.app.pop_screen()

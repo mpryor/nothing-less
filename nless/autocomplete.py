@@ -1,9 +1,42 @@
 from typing import Callable
 
+from textual import events
 from textual.message import Message
 from textual.widgets import Input, RichLog, Static
 
 from nless.suggestions import HistorySuggestionProvider, SuggestionProvider
+
+
+class _DropdownLog(RichLog):
+    """RichLog subclass that forwards mouse events to the parent AutocompleteInput."""
+
+    can_focus = False
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        parent = self.parent
+        if isinstance(parent, AutocompleteInput) and parent._dropdown_visible:
+            idx = event.y + int(self.scroll_y)
+            if 0 <= idx < len(parent._suggestions) and idx != parent._highlight_index:
+                parent._highlight_index = idx
+                parent._render_dropdown(scroll=False)
+
+    def on_click(self, event: events.Click) -> None:
+        parent = self.parent
+        if (
+            isinstance(parent, AutocompleteInput)
+            and parent._dropdown_visible
+            and event.button == 1
+        ):
+            idx = event.y + int(self.scroll_y)
+            if 0 <= idx < len(parent._suggestions):
+                parent._highlight_index = idx
+                parent._accept_suggestion()
+                value = parent._input.value
+                if value != "":
+                    if value in parent.history:
+                        parent.on_remove(value)
+                    parent.on_add(value)
+                parent.post_message(AutocompleteInput.Submitted(parent, value))
 
 
 class AutocompleteInput(Static):
@@ -15,12 +48,12 @@ class AutocompleteInput(Static):
         height: auto;
         width: 100%;
     }
-    AutocompleteInput.bottom-input RichLog {
+    AutocompleteInput.bottom-input _DropdownLog {
         display: none;
         height: 10;
         border: solid green;
     }
-    AutocompleteInput.bottom-input RichLog.visible {
+    AutocompleteInput.bottom-input _DropdownLog.visible {
         display: block;
     }
     """
@@ -63,7 +96,7 @@ class AutocompleteInput(Static):
         self._dropdown_visible = False
 
     def compose(self):
-        yield RichLog(markup=True, auto_scroll=False)
+        yield _DropdownLog(markup=True, auto_scroll=False)
         yield Input(placeholder=self.placeholder)
 
     def on_mount(self):
@@ -89,15 +122,15 @@ class AutocompleteInput(Static):
         self._highlight_index = -1
         self._dropdown_visible = True
         self._render_dropdown()
-        self.query_one(RichLog).add_class("visible")
+        self.query_one(_DropdownLog).add_class("visible")
 
     def _hide_dropdown(self) -> None:
         self._dropdown_visible = False
         self._suggestions = []
-        self.query_one(RichLog).remove_class("visible")
+        self.query_one(_DropdownLog).remove_class("visible")
 
-    def _render_dropdown(self) -> None:
-        rich_log = self.query_one(RichLog)
+    def _render_dropdown(self, scroll: bool = True) -> None:
+        rich_log = self.query_one(_DropdownLog)
         rich_log.clear()
         try:
             muted = self.app.nless_theme.muted
@@ -108,7 +141,7 @@ class AutocompleteInput(Static):
                 rich_log.write(f"[reverse]{item}[/reverse]")
             else:
                 rich_log.write(f"[{muted}]{item}[/{muted}]")
-        if self._suggestions and self._highlight_index >= 0:
+        if scroll and self._suggestions and self._highlight_index >= 0:
             rich_log.scroll_to(y=self._highlight_index)
 
     def _accept_suggestion(self) -> None:

@@ -18,6 +18,18 @@
     width: auto;
 }
 
+.menu-label {
+    width: auto;
+}
+
+.menu-label:hover {
+    text-style: reverse;
+}
+
+#help_hint:hover {
+    text-style: reverse;
+}
+
 #group_bar {
     height: 0;
     width: 100%;

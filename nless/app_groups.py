@@ -273,6 +273,23 @@ class GroupMixin:
             bar.styles.border = None
             self._stop_group_bar_timer()
 
+    def _handle_group_bar_click(self: NlessApp, click_x: int) -> None:
+        """Switch to the group at the clicked x position in the group bar."""
+        # Build plain-text ranges for each group name.
+        # Format: " [name1]   name2   name3" (1 leading space, 3-space sep)
+        x = 1  # leading space
+        for i, group in enumerate(self.groups):
+            name = group.name
+            if i == self.curr_group_idx:
+                label_len = len(name) + 2  # brackets: [name]
+            else:
+                label_len = len(name)
+            if x <= click_x < x + label_len:
+                if i != self.curr_group_idx:
+                    self._switch_to_group(i)
+                return
+            x += label_len + 3  # 3-space separator
+
     # ── Rename ────────────────────────────────────────────────────────
 
     def action_rename_buffer(self: NlessApp) -> None:
