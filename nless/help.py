@@ -9,6 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
+from rich.markdown import Markdown as RichMarkdown
 from textual.widgets import Static, TabbedContent, TabPane, Tabs
 
 from nless.config import CONFIG_FILE, NlessConfig
@@ -241,12 +242,14 @@ class HelpScreen(ModalScreen):
         keymap_bindings: dict[str, str] | None = None,
         theme: NlessTheme | None = None,
         config: NlessConfig | None = None,
+        release_notes: tuple[str, str] | None = None,
     ) -> None:
         super().__init__()
         self.keymap_name = keymap_name
         self.keymap_bindings = keymap_bindings or {}
         self.help_theme = theme or BUILTIN_THEMES["default"]
         self.config = config
+        self.release_notes = release_notes
 
     def on_mount(self) -> None:
         if self.keymap_bindings:
@@ -324,6 +327,13 @@ class HelpScreen(ModalScreen):
                 config_title = Static(f"  [{t.muted}]{config_path}[/{t.muted}]")
                 with TabPane("Config"):
                     yield HelpScroll(config_title, Static(self._build_config_table(t)))
+            if self.release_notes:
+                version, notes = self.release_notes
+                with TabPane("What's New"):
+                    yield HelpScroll(
+                        Static(f"  [bold {t.accent}]v{version}[/bold {t.accent}]"),
+                        Static(RichMarkdown(notes)),
+                    )
 
         yield Static(
             f"[{t.muted}]q to close · h/l to switch tabs[/{t.muted}]",

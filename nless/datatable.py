@@ -77,6 +77,8 @@ class Datatable(ScrollView):
         self._hover_row: int = -1
         self._hover_column: int = -1
         self._hover_header_col: int = -1
+        self._last_click_time: float = 0.0
+        self._last_click_row: int = -1
 
         self._init_styles(theme)
 
@@ -243,6 +245,12 @@ class Datatable(ScrollView):
             super().__init__()
             self.column = column
 
+    class RowDoubleClicked(Message):
+        def __init__(self, row: int, column: int) -> None:
+            super().__init__()
+            self.row = row
+            self.column = column
+
     class RightClicked(Message):
         def __init__(
             self,
@@ -300,6 +308,17 @@ class Datatable(ScrollView):
             return
         col = self._column_at_x(event.x)
         self.move_cursor(column=col, row=row)
+
+        import time
+
+        now = time.monotonic()
+        if now - self._last_click_time < 0.4 and row == self._last_click_row:
+            self.post_message(self.RowDoubleClicked(row=row, column=col))
+            self._last_click_time = 0.0
+            self._last_click_row = -1
+        else:
+            self._last_click_time = now
+            self._last_click_row = row
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         self.move_cursor(row=max(0, self.cursor_row - 3))

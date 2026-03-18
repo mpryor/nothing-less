@@ -23,8 +23,11 @@ def _load_config_json_file(file_name: str, defaults):
 @dataclass
 class NlessConfig:
     show_getting_started: bool = True
+    last_seen_version: str = ""
     theme: str = "default"
     keymap: str = "vim"
+    latest_pypi_version: str = ""
+    last_update_check: float = 0.0
     status_format: str = (
         "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
         "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
@@ -55,6 +58,44 @@ _DEFAULT_STATUS_FORMAT = (
     "{tailing}{loading} "
     "[{cursor_fg}]{behind}[/{cursor_fg}]"
 )
+
+
+def get_release_notes(version: str) -> str | None:
+    """Extract release notes for a given version from CHANGELOG.md.
+
+    Returns the markdown content for that version, or None if not found.
+    """
+    changelog_path = os.path.join(os.path.dirname(__file__), "..", "CHANGELOG.md")
+    if not os.path.exists(changelog_path):
+        # Try installed package location
+        try:
+            from importlib.resources import files
+
+            changelog_path = str(files("nless").joinpath("..", "CHANGELOG.md"))
+        except Exception:
+            return None
+    if not os.path.exists(changelog_path):
+        return None
+    try:
+        with open(changelog_path) as f:
+            content = f.read()
+    except OSError:
+        return None
+    # Find the section for this version
+    import re
+
+    pattern = rf"^## {re.escape(version)}\b.*$"
+    match = re.search(pattern, content, re.MULTILINE)
+    if not match:
+        return None
+    start = match.end()
+    # Find next version header or end of file
+    next_match = re.search(r"^## \d+\.\d+", content[start:], re.MULTILINE)
+    if next_match:
+        section = content[start : start + next_match.start()]
+    else:
+        section = content[start:]
+    return section.strip() or None
 
 
 def load_input_history():

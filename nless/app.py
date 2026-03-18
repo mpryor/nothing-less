@@ -766,42 +766,40 @@ class NlessApp(
                 break
 
     def _filter_composite_key(self, current_buffer: NlessBuffer) -> None:
+        if not current_buffer.query.unique_column_names:
+            return
         data_table = current_buffer.query_one(".nless-view")
-        cursor_column = data_table.cursor_column
-        selected_column = current_buffer._get_column_at_position(cursor_column)
-        if selected_column:
-            selected_column_name = strip_markup(selected_column.name)
-            if selected_column_name in current_buffer.query.unique_column_names:
-                # Pre-read cell values on main thread (widget access)
-                filters = []
-                unique_columns = list(current_buffer.query.unique_column_names)
-                for column in unique_columns:
-                    col_idx = current_buffer._get_col_idx_by_name(
-                        column, render_position=True
-                    )
-                    cell_value = data_table.get_cell_at(
-                        NlessCoordinate(data_table.cursor_row, col_idx)
-                    )
-                    cell_value = strip_markup(cell_value)
-                    filters.append(
-                        Filter(
-                            column=strip_markup(column),
-                            pattern=re.compile(re.escape(cell_value), re.IGNORECASE),
-                        )
-                    )
-                buffer_name = f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}"
-
-                def setup(new_buffer):
-                    for column in unique_columns:
-                        handle_mark_unique(new_buffer, column)
-                    new_buffer.query.filters.extend(filters)
-
-                self._copy_buffer_async(
-                    setup,
-                    buffer_name,
-                    reason=UpdateReason.FILTER,
-                    done_reason="Filtered",
+        # Pre-read cell values on main thread (widget access)
+        filters = []
+        unique_columns = list(current_buffer.query.unique_column_names)
+        for column in unique_columns:
+            col_idx = current_buffer._get_col_idx_by_name(column, render_position=True)
+            cell_value = data_table.get_cell_at(
+                NlessCoordinate(data_table.cursor_row, col_idx)
+            )
+            cell_value = strip_markup(cell_value) if cell_value else ""
+            filters.append(
+                Filter(
+                    column=strip_markup(column),
+                    pattern=re.compile(re.escape(cell_value), re.IGNORECASE),
                 )
+            )
+        buffer_name = (
+            f"+f:{','.join([f'{f.column}={f.pattern.pattern}' for f in filters])}"
+        )
+
+        def setup(new_buffer):
+            # Toggle off pivot columns — reveals raw data
+            for column in unique_columns:
+                handle_mark_unique(new_buffer, column)
+            new_buffer.query.filters.extend(filters)
+
+        self._copy_buffer_async(
+            setup,
+            buffer_name,
+            reason=UpdateReason.FILTER,
+            done_reason="Filtered",
+        )
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
@@ -1228,6 +1226,18 @@ class NlessApp(
                 )
                 pane.update(curr_title)
 
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        """Sync curr_buffer_idx when the user clicks a tab."""
+        pane_id = event.pane.id or ""
+        if pane_id.startswith("buffer"):
+            for i, buf in enumerate(self.buffers):
+                if f"buffer{buf.pane_id}" == pane_id:
+                    self.curr_buffer_idx = i
+                    buf._update_status_bar()
+                    break
+
     def _switch_to_buffer(self, index: int) -> None:
         if index < 0 or index >= len(self.buffers):
             return
@@ -1319,6 +1329,12 @@ class NlessApp(
             self.push_screen(GettingStartedScreen())
         else:
             self.query_one(".nless-view").focus()
+
+        # Show release notes on version upgrade
+        self._check_release_notes()
+
+        # Check for newer version on PyPI (non-blocking)
+        self._check_for_update()
 
     async def _add_pending_file_groups(self) -> None:
         for filepath, stream in self._pending_file_groups:
@@ -1443,6 +1459,14 @@ class NlessApp(
             except NoMatches:
                 pass
 
+    def on_datatable_row_double_clicked(
+        self, event: Datatable.RowDoubleClicked
+    ) -> None:
+        """Drill into a pivot row on double-click."""
+        buf = self._get_current_buffer()
+        if buf.query.unique_column_names:
+            self._filter_composite_key(buf)
+
     def on_datatable_header_clicked(self, event: Datatable.HeaderClicked) -> None:
         """Sort by the clicked column header."""
         buf = self._get_current_buffer()
@@ -1519,14 +1543,104 @@ class NlessApp(
         else:
             await self.run_action(event.action)
 
+    def _check_release_notes(self) -> None:
+        """Show release notes if the version changed since last run."""
+        from importlib.metadata import version as pkg_version
+
+        from .config import save_config
+
+        try:
+            current = pkg_version("nothing-less")
+        except Exception:
+            return
+        last = self.config.last_seen_version
+        if current == last:
+            return
+        # Update config immediately so we only show once
+        self.config.last_seen_version = current
+        save_config(self.config)
+        if not last:
+            return  # first run, don't show notes
+        self.notify(f"Updated to v{current} — press ? for What's New", timeout=5)
+
+    def _check_for_update(self) -> None:
+        """Show a toast if a newer version is available on PyPI."""
+        import time
+
+        from packaging.version import Version
+
+        from .version import fetch_latest_pypi_version, get_version
+
+        current_str = get_version()
+        if current_str == "unknown":
+            return
+
+        now = time.time()
+        cache_fresh = now - self.config.last_update_check < 86400
+
+        if cache_fresh and self.config.latest_pypi_version:
+            try:
+                if Version(self.config.latest_pypi_version) > Version(current_str):
+                    self.notify(
+                        f"nless v{self.config.latest_pypi_version} available "
+                        "— pip install --upgrade nothing-less",
+                        timeout=8,
+                    )
+            except Exception:
+                pass
+            return
+
+        def _do_check() -> None:
+            latest = fetch_latest_pypi_version()
+            if latest is None:
+                return
+            self.config.latest_pypi_version = latest
+            self.config.last_update_check = time.time()
+            save_config(self.config)
+            try:
+                if Version(latest) > Version(current_str):
+                    self.call_from_thread(
+                        self.notify,
+                        f"nless v{latest} available "
+                        "— pip install --upgrade nothing-less",
+                        timeout=8,
+                    )
+            except Exception:
+                pass
+
+        self.run_worker(_do_check, thread=True)
+
+    def action_open_link(self, url: str) -> None:
+        """Open a URL in the default browser (WSL-aware)."""
+        import shutil
+        import subprocess
+
+        if shutil.which("wslview"):
+            subprocess.Popen(["wslview", url])
+        else:
+            self.open_url(url)
+
     def action_help(self) -> None:
         """Show the help screen."""
+        from importlib.metadata import version as pkg_version
+
+        from .config import get_release_notes
+
+        release_notes = None
+        try:
+            current = pkg_version("nothing-less")
+            notes = get_release_notes(current)
+            if notes:
+                release_notes = (current, notes)
+        except Exception:
+            pass
         self.push_screen(
             HelpScreen(
                 keymap_name=self.nless_keymap.name,
                 keymap_bindings=self.nless_keymap.bindings,
                 theme=self.nless_theme,
                 config=self.config,
+                release_notes=release_notes,
             )
         )
 

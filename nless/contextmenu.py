@@ -142,11 +142,15 @@ class ContextMenu(Static):
         w = getattr(self, "_col_width", 0) or max(
             (len(item.label) for item in self.items), default=0
         )
+        try:
+            accent = self.app.nless_theme.accent
+        except AttributeError:
+            accent = "dim"
         lines = []
         for i, item in enumerate(self.items):
             if item.key_hint:
                 pad = w - len(item.label) - len(item.key_hint)
-                text = f"{item.label}{' ' * pad}[dim]{item.key_hint}[/dim]"
+                text = f"{item.label}{' ' * pad}[{accent}]{item.key_hint}[/{accent}]"
             else:
                 text = item.label.ljust(w)
             if i == self.highlight_index:
