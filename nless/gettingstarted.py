@@ -1,3 +1,5 @@
+from importlib.metadata import version as pkg_version
+
 from textual.containers import Center, Container
 from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
@@ -33,6 +35,14 @@ class GettingStartedScreen(ModalScreen):
             f"[{brand}]<Ctrl+c>[/{brand}] - dismiss this dialog permanently"
         )
 
+    def on_mount(self):
+        try:
+            accent = self.app.nless_theme.accent
+            dialog = self.query_one("#dialog")
+            dialog.styles.border = ("tall", accent)
+        except Exception:
+            pass
+
     def action_dismiss_getting_started(self):
         config = load_config()
         config.show_getting_started = False
@@ -40,18 +50,43 @@ class GettingStartedScreen(ModalScreen):
         self.app.pop_screen()
 
     def compose(self):
+        try:
+            t = self.app.nless_theme
+            accent = t.accent
+            muted = t.muted
+        except AttributeError:
+            accent = "green"
+            muted = "#888888"
+        try:
+            ver = pkg_version("nothing-less")
+        except Exception:
+            ver = "?"
         yield Container(
             Static("\n"),
             Static(
-                """           ░██                                  
-           ░██                                  
-░████████  ░██  ░███████   ░███████   ░███████  
-░██    ░██ ░██ ░██    ░██ ░██        ░██        
-░██    ░██ ░██ ░█████████  ░███████   ░███████  
-░██    ░██ ░██ ░██               ░██        ░██ 
-░██    ░██ ░██  ░███████   ░███████   ░███████
-""",
-                classes="centered green",
+                f"[{accent}]"
+                """           ░██
+           ░██
+░████████  ░██  ░███████   ░███████   ░███████
+░██    ░██ ░██ ░██    ░██ ░██        ░██
+░██    ░██ ░██ ░█████████  ░███████   ░███████
+░██    ░██ ░██ ░██               ░██        ░██
+░██    ░██ ░██  ░███████   ░███████   ░███████"""
+                f"[/{accent}]"
+                f"\n[{muted}]                    v{ver}[/{muted}]",
+                classes="centered",
+            ),
+            Static(
+                f"[{muted}]"
+                f"[@click=app.open_link('https://github.com/mpryor/nothing-less')]GitHub[/]"
+                f" · "
+                f"[@click=app.open_link('https://mpryor.github.io/nothing-less/')]Docs[/]"
+                f" · "
+                f"[@click=app.open_link('https://github.com/mpryor/nothing-less/issues')]Report Issue[/]"
+                f" · "
+                f"[@click=app.open_link('https://mpryor.dev')]Author[/]"
+                f"[/{muted}]",
+                classes="centered",
             ),
             Center(
                 Center(
