@@ -26,6 +26,8 @@ class SessionColumn:
     render_position: int
     hidden: bool
     pinned: bool
+    substitution_pattern: str | None = None
+    substitution_replacement: str | None = None
 
 
 @dataclass
@@ -147,12 +149,16 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
     columns = []
     computed_columns = []
     for col in buf.current_columns:
+        sub_pat = col.substitution[0].pattern if col.substitution else None
+        sub_repl = col.substitution[1] if col.substitution else None
         columns.append(
             SessionColumn(
                 name=col.name,
                 render_position=col.render_position,
                 hidden=col.hidden,
                 pinned=col.pinned,
+                substitution_pattern=sub_pat,
+                substitution_replacement=sub_repl,
             )
         )
         if col.computed and (col.col_ref or col.json_ref):
@@ -388,6 +394,11 @@ def _apply_session_columns(
             col.hidden = saved.hidden
             col.pinned = saved.pinned
             col.render_position = saved.render_position
+            if saved.substitution_pattern is not None:
+                col.substitution = (
+                    re.compile(saved.substitution_pattern),
+                    saved.substitution_replacement or "",
+                )
 
 
 def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
@@ -473,6 +484,8 @@ def _deserialize_buffer_state(b: dict) -> SessionBufferState:
                 render_position=c["render_position"],
                 hidden=c["hidden"],
                 pinned=c.get("pinned", False),
+                substitution_pattern=c.get("substitution_pattern"),
+                substitution_replacement=c.get("substitution_replacement"),
             )
             for c in b.get("columns", [])
         ],

@@ -102,7 +102,8 @@ class ColumnMixin:
             key=lambda c: c.render_position,
         )
         self._has_nested_delimiters = any(
-            c.delimiter or c.json_ref or c.col_ref for c in self.current_columns
+            c.delimiter or c.json_ref or c.col_ref or c.substitution
+            for c in self.current_columns
         )
         self._has_source_column = any(
             c.name == MetadataColumn.SOURCE.value for c in self.current_columns

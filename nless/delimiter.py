@@ -71,7 +71,9 @@ def split_line(
             txt.replace("\t", "  ").strip() for txt in cells
         ]  # Rich rendering breaks on tabs
 
-    if not columns or not any(c.delimiter or c.json_ref or c.col_ref for c in columns):
+    if not columns or not any(
+        c.delimiter or c.json_ref or c.col_ref or c.substitution for c in columns
+    ):
         return cells
 
     sorted_columns = sorted(columns, key=lambda col: col.data_position)
@@ -160,7 +162,15 @@ def split_line(
             result.append(value)
         # Append remaining base cells
         result.extend(cells[base_idx:])
-        return result
+        cells = result
+
+    # Apply regex substitutions to cells
+    for col in sorted_columns:
+        if col.substitution is not None:
+            pat, repl = col.substitution
+            idx = col.data_position - count_metadata_columns
+            if 0 <= idx < len(cells):
+                cells[idx] = pat.sub(repl, cells[idx], count=1)
 
     return cells
 
