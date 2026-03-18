@@ -26,8 +26,35 @@ class NlessConfig:
     theme: str = "default"
     keymap: str = "vim"
     status_format: str = (
-        "{sort} | {filter} | {search} | {position} {unique}{pipe}{tailing}{loading}"
+        "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
+        "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+        "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
+        "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
+        "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+        "[{cursor_fg}]{unique}[/{cursor_fg}]"
+        "[{cursor_fg}]{time_window}[/{cursor_fg}]"
+        "[{cursor_fg}]{skipped}[/{cursor_fg}]"
+        "[{cursor_fg}]{session}[/{cursor_fg}]"
+        "[{cursor_fg}]{pipe}[/{cursor_fg}]"
+        "{tailing}{loading} "
+        "[{cursor_fg}]{behind}[/{cursor_fg}]"
     )
+
+
+_DEFAULT_STATUS_FORMAT = (
+    "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{unique}[/{cursor_fg}]"
+    "[{cursor_fg}]{time_window}[/{cursor_fg}]"
+    "[{cursor_fg}]{skipped}[/{cursor_fg}]"
+    "[{cursor_fg}]{session}[/{cursor_fg}]"
+    "[{cursor_fg}]{pipe}[/{cursor_fg}]"
+    "{tailing}{loading} "
+    "[{cursor_fg}]{behind}[/{cursor_fg}]"
+)
 
 
 def load_input_history():
@@ -39,7 +66,7 @@ def load_config() -> NlessConfig:
         "show_getting_started": True,
         "theme": "default",
         "keymap": "vim",
-        "status_format": "{sort} | {filter} | {search} | {position} {unique}{pipe}{tailing}{loading}",
+        "status_format": _DEFAULT_STATUS_FORMAT,
     }
     data = _load_config_json_file(CONFIG_FILE, defaults)
     # Only pass known fields to avoid errors from stale config keys

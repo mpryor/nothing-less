@@ -11,7 +11,20 @@ if TYPE_CHECKING:
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-DEFAULT_STATUS_FORMAT = "{sort} | {filter} | {search} | {position} | {unique}{time_window}{skipped}{pipe}{tailing}{loading}{behind}"
+DEFAULT_STATUS_FORMAT = (
+    "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{unique}[/{cursor_fg}]"
+    "[{cursor_fg}]{time_window}[/{cursor_fg}]"
+    "[{cursor_fg}]{skipped}[/{cursor_fg}]"
+    "[{cursor_fg}]{session}[/{cursor_fg}]"
+    "[{cursor_fg}]{pipe}[/{cursor_fg}]"
+    "{tailing}{loading} "
+    "[{cursor_fg}]{behind}[/{cursor_fg}]"
+)
 
 
 def build_status_text(

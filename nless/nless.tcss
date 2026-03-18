@@ -26,10 +26,6 @@
     width: auto;
 }
 
-.menu-label:hover {
-    text-style: reverse;
-}
-
 #help_hint:hover {
     text-style: reverse;
 }

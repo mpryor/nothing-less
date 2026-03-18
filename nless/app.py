@@ -1356,8 +1356,27 @@ class NlessApp(
                     return
         except NoMatches:
             pass
-        # Group bar hover highlight
+        # Menu label hover color
         widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        hovered_menu = (
+            widget.id
+            if hasattr(widget, "id") and widget.id in self._MENU_DEFS
+            else None
+        )
+        old_menu = getattr(self, "_hovered_menu_id", None)
+        if hovered_menu != old_menu:
+            self._hovered_menu_id = hovered_menu
+            t = self.nless_theme
+            for menu_id, label in self._MENU_BAR_ITEMS:
+                try:
+                    w = self.query_one(f"#{menu_id}", Static)
+                    if menu_id == hovered_menu:
+                        w.update(f" {t.markup('accent', label)} ")
+                    else:
+                        w.update(f" {t.markup('muted', label)} ")
+                except NoMatches:
+                    pass
+        # Group bar hover highlight
         if hasattr(widget, "id") and widget.id == "group_bar" and len(self.groups) > 1:
             idx = self._group_idx_at_x(event.x)
             old = getattr(self, "_hovered_group_idx", -1)
@@ -1383,6 +1402,20 @@ class NlessApp(
             menu = self.query_one(ContextMenu)
             menu.source_menu_id = None
             menu.show(event.screen_x, event.screen_y, items)
+        elif (
+            hasattr(widget, "id") and widget.id == "group_bar" and len(self.groups) > 1
+        ):
+            idx = self._group_idx_at_x(event.x)
+            if idx >= 0:
+                # Store the target group so the action applies to it
+                self._context_menu_group_idx = idx
+                items = [
+                    self._menu_item("Rename group", "rename_group"),
+                    self._menu_item("Close group", "close_current_group"),
+                ]
+                menu = self.query_one(ContextMenu)
+                menu.source_menu_id = None
+                menu.show(event.screen_x, event.screen_y, items)
 
     def on_click(self, event: Click) -> None:
         """Handle clicks — open help, switch groups, dismiss context menu."""
@@ -1471,6 +1504,12 @@ class NlessApp(
         """Dispatch the selected context menu action."""
         menu = self.query_one(ContextMenu)
         menu.dismiss()
+        # If a group was right-clicked, switch to it before running the action
+        target_group = getattr(self, "_context_menu_group_idx", None)
+        if target_group is not None:
+            self._context_menu_group_idx = None
+            if target_group != self.curr_group_idx:
+                self._switch_to_group(target_group)
         buf = self._get_current_buffer()
         # Buffer-level actions (pin, sort, mark_unique) live on the buffer;
         # app-level actions (filter, search, copy) live on the app.

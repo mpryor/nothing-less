@@ -86,6 +86,12 @@ class GroupMixin:
         self.call_after_refresh(lambda: current_buffer._update_status_bar())
         self._update_group_bar()
 
+    def action_close_current_group(self: NlessApp) -> None:
+        """Close the current buffer group."""
+        if len(self.groups) <= 1:
+            return
+        self._close_current_group()
+
     def _close_current_group(self: NlessApp) -> None:
         group = self._current_group
         # Unsubscribe all buffers

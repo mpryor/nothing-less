@@ -69,12 +69,25 @@ class ContextMenu(Static):
         self.styles.width = menu_w
         self.styles.max_width = menu_w
         self.styles.height = menu_h
-        # Clamp position to screen bounds
-        screen = self.screen.size
-        if y + menu_h > screen.height:
-            y = max(0, screen.height - menu_h)
-        if x + menu_w > screen.width:
-            x = max(0, screen.width - menu_w)
+        # Apply theme border color
+        try:
+            accent = self.app.nless_theme.accent
+            self.styles.border = ("tall", accent)
+        except AttributeError:
+            pass
+        # Clamp to terminal bounds, flip if overflowing
+        try:
+            term_h = self.app.size.height
+            term_w = self.app.size.width
+        except Exception:
+            term_h = self.screen.size.height
+            term_w = self.screen.size.width
+        if y + menu_h > term_h:
+            y = max(0, y - menu_h)
+        if x + menu_w > term_w:
+            x = max(0, term_w - menu_w)
+        x = max(0, x)
+        y = max(0, y)
         self.styles.offset = (x, y)
         self.display = True
 
