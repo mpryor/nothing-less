@@ -76,6 +76,7 @@ class Datatable(ScrollView):
         self.row_count: int = 0
         self._hover_row: int = -1
         self._hover_column: int = -1
+        self._hover_header_col: int = -1
 
         self._init_styles(theme)
 
@@ -237,6 +238,11 @@ class Datatable(ScrollView):
             acc += w
         return len(self.columns) - 1
 
+    class HeaderClicked(Message):
+        def __init__(self, column: int) -> None:
+            super().__init__()
+            self.column = column
+
     class RightClicked(Message):
         def __init__(
             self,
@@ -285,7 +291,10 @@ class Datatable(ScrollView):
             event.stop()
             return
         if event.y == 0:
-            return  # header row — ignore
+            col = self._column_at_x(event.x)
+            self.move_cursor(column=col)
+            self.post_message(self.HeaderClicked(column=col))
+            return
         row = int(self.scroll_offset.y) + event.y - 1
         if row >= len(self.rows):
             return
@@ -300,9 +309,16 @@ class Datatable(ScrollView):
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         if event.y == 0:
+            col = self._column_at_x(event.x)
+            if col != self._hover_header_col:
+                self._hover_header_col = col
+                self.refresh()
             row = -1
             col = -1
         else:
+            if self._hover_header_col != -1:
+                self._hover_header_col = -1
+                self.refresh()
             row = int(self.scroll_offset.y) + event.y - 1
             if row >= len(self.rows):
                 row = -1
@@ -315,9 +331,15 @@ class Datatable(ScrollView):
             self.refresh()
 
     def on_leave(self, event: events.Leave) -> None:
-        if self._hover_row != -1 or self._hover_column != -1:
-            self._hover_row = -1
-            self._hover_column = -1
+        changed = (
+            self._hover_row != -1
+            or self._hover_column != -1
+            or self._hover_header_col != -1
+        )
+        self._hover_row = -1
+        self._hover_column = -1
+        self._hover_header_col = -1
+        if changed:
             self.refresh()
 
     def action_page_up(self) -> None:
@@ -415,27 +437,31 @@ class Datatable(ScrollView):
         self.refresh()
 
     def _render_column_headers(self, x: int) -> Strip:
-        fixed_columns_str = ""
-        for i in range(self.fixed_columns):
-            fixed_columns_str += (
-                self.columns[i].ljust(self.column_widths[i]) + self.col_separator
-            )
+        hover = self._hover_header_col
+        header_style = self._style_header
+        hover_style = header_style + Style(reverse=True)
+        segments: list[Segment] = []
 
-        segment_str = ""
+        # Fixed columns
+        for i in range(self.fixed_columns):
+            style = hover_style if i == hover else header_style
+            text = self.columns[i].ljust(self.column_widths[i]) + self.col_separator
+            segments.append(Segment(text, style))
+
+        # Scrollable columns: build full string, then slice to viewport
+        scroll_segments: list[Segment] = []
         for i, col in enumerate(self.columns):
             if i < self.fixed_columns:
                 continue
-            segment_str += col.ljust(self.column_widths[i])
-            segment_str += self.col_separator
+            style = hover_style if i == hover else header_style
+            text = col.ljust(self.column_widths[i]) + self.col_separator
+            scroll_segments.append(Segment(text, style))
 
-        return Strip(
-            [
-                Segment(
-                    fixed_columns_str + segment_str[x : x + self.size.width],
-                    self._style_header,
-                )
-            ]
-        )
+        # Slice scrollable portion to viewport
+        scroll_strip = Strip(scroll_segments).crop(x, x + self.size.width)
+        segments.extend(scroll_strip._segments)
+
+        return Strip(segments)
 
     def render_line(self, y: int) -> Strip:
         y = y + self.scroll_offset.y

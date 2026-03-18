@@ -212,6 +212,7 @@ class GroupMixin:
 
     def _build_group_bar(self: NlessApp) -> str:
         t = self.nless_theme
+        hovered = getattr(self, "_hovered_group_idx", -1)
         parts = []
         for i, group in enumerate(self.groups):
             name = group.name
@@ -221,6 +222,8 @@ class GroupMixin:
                 name = name.replace(source, icon, 1)
             if i == self.curr_group_idx:
                 parts.append(f"[bold {t.accent}]\\[{name}][/bold {t.accent}]")
+            elif i == hovered:
+                parts.append(f"[reverse {t.muted}]{name}[/reverse {t.muted}]")
             else:
                 parts.append(f"[{t.muted}]{name}[/{t.muted}]")
         return " " + "   ".join(parts)
@@ -273,10 +276,8 @@ class GroupMixin:
             bar.styles.border = None
             self._stop_group_bar_timer()
 
-    def _handle_group_bar_click(self: NlessApp, click_x: int) -> None:
-        """Switch to the group at the clicked x position in the group bar."""
-        # Build plain-text ranges for each group name.
-        # Format: " [name1]   name2   name3" (1 leading space, 3-space sep)
+    def _group_idx_at_x(self: NlessApp, click_x: int) -> int:
+        """Return the group index at the given x position, or -1."""
         x = 1  # leading space
         for i, group in enumerate(self.groups):
             name = group.name
@@ -285,10 +286,15 @@ class GroupMixin:
             else:
                 label_len = len(name)
             if x <= click_x < x + label_len:
-                if i != self.curr_group_idx:
-                    self._switch_to_group(i)
-                return
+                return i
             x += label_len + 3  # 3-space separator
+        return -1
+
+    def _handle_group_bar_click(self: NlessApp, click_x: int) -> None:
+        """Switch to the group at the clicked x position in the group bar."""
+        idx = self._group_idx_at_x(click_x)
+        if idx >= 0 and idx != self.curr_group_idx:
+            self._switch_to_group(idx)
 
     # ── Rename ────────────────────────────────────────────────────────
 

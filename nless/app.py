@@ -1330,20 +1330,34 @@ class NlessApp(
         menu.show(region.x, region.y + 1, items)
 
     def on_mouse_move(self, event) -> None:
-        """Switch menu bar dropdown on hover when a menu is open."""
+        """Switch menu bar dropdown on hover; highlight group bar on hover."""
+        # Menu bar hover-to-switch
         try:
             menu = self.query_one(ContextMenu)
+            if menu.is_open and menu.source_menu_id:
+                widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
+                if (
+                    hasattr(widget, "id")
+                    and widget.id in self._MENU_DEFS
+                    and widget.id != menu.source_menu_id
+                ):
+                    self._open_menu_bar(widget)
+                    return
         except NoMatches:
-            return
-        if not menu.is_open or not menu.source_menu_id:
-            return
+            pass
+        # Group bar hover highlight
         widget, _ = self.get_widget_at(event.screen_x, event.screen_y)
-        if (
-            hasattr(widget, "id")
-            and widget.id in self._MENU_DEFS
-            and widget.id != menu.source_menu_id
-        ):
-            self._open_menu_bar(widget)
+        if hasattr(widget, "id") and widget.id == "group_bar" and len(self.groups) > 1:
+            idx = self._group_idx_at_x(event.x)
+            old = getattr(self, "_hovered_group_idx", -1)
+            if idx != old:
+                self._hovered_group_idx = idx
+                self._update_group_bar()
+        else:
+            old = getattr(self, "_hovered_group_idx", -1)
+            if old != -1:
+                self._hovered_group_idx = -1
+                self._update_group_bar()
 
     def on_mouse_down(self, event) -> None:
         """Show context menu on right-click over a tab."""
@@ -1384,6 +1398,13 @@ class NlessApp(
                     menu.dismiss()
             except NoMatches:
                 pass
+
+    def on_datatable_header_clicked(self, event: Datatable.HeaderClicked) -> None:
+        """Sort by the clicked column header."""
+        buf = self._get_current_buffer()
+        dt = buf.query_one(".nless-view")
+        dt.move_cursor(column=event.column)
+        buf.action_sort()
 
     def on_datatable_right_clicked(self, event: Datatable.RightClicked) -> None:
         """Show context menu on right-click over a datatable cell or header."""
@@ -1589,6 +1610,7 @@ class NlessApp(
                         id=menu_id,
                         classes="menu-label",
                     )
+                yield Static("", id="menu_spacer")
                 yield Static(self._build_help_hint(), id="help_hint")
             yield Static(id="group_bar")
         init_buffer = self.groups[0].buffers[0]
