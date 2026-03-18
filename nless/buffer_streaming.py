@@ -240,13 +240,15 @@ class StreamingMixin:
 
             label = fmt.name or "Auto-detected"
 
-            def _notify():
-                self.notify(f"Detected log format: {label}")
+            if not getattr(self.app, "demo_mode", False):
 
-            if self.app._thread_id == threading.get_ident():
-                _notify()
-            else:
-                self.app.call_from_thread(_notify)
+                def _notify():
+                    self.notify(f"Detected log format: {label}")
+
+                if self.app._thread_id == threading.get_ident():
+                    _notify()
+                else:
+                    self.app.call_from_thread(_notify)
         else:
 
             def _hint():
@@ -323,6 +325,8 @@ class StreamingMixin:
 
         if self._cli_args and self._cli_args.columns:
             self._apply_initial_column_filter(self._cli_args.columns)
+            data_table.clear(columns=True)
+            data_table.add_columns(self._get_visible_column_labels())
 
         if self._cli_args and self._cli_args.time_window:
             self._apply_initial_time_window(self._cli_args.time_window)

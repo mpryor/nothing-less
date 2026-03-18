@@ -1,98 +1,136 @@
-# Nothing-less (nless)
+<h1 align="center">nless</h1>
 
 <p align="center">
-  <img src="./docs/assets/nless-logo.png" width="400px" alt="nless logo"/>
+  <strong>Excel for logs</strong> — pipe in anything, wrangle it into columns.
 </p>
 
-[![PyPI](https://img.shields.io/pypi/v/nothing-less)](https://pypi.org/project/nothing-less/)
-[![Python](https://img.shields.io/pypi/pyversions/nothing-less)](https://pypi.org/project/nothing-less/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml/badge.svg)](https://github.com/mpryor/nothing-less/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-mpryor.github.io%2Fnothing--less-blue)](https://mpryor.github.io/nothing-less/)
+<p align="center">
+  <img src="./docs/assets/demo.gif" width="800px" alt="nless demo — search, filter, sort, and pivot streaming K8s events"/>
+</p>
 
-**Nless** is a TUI paging application (based on the awesome [Textual](https://textual.textualize.io/) library) with vi-like keybindings.
+<p align="center">
+  <a href="https://pypi.org/project/nothing-less/"><img src="https://img.shields.io/pypi/v/nothing-less" alt="PyPI"/></a>
+  <a href="https://pypi.org/project/nothing-less/"><img src="https://img.shields.io/pypi/pyversions/nothing-less" alt="Python"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"/></a>
+  <a href="https://github.com/mpryor/nothing-less/actions/workflows/ci.yml"><img src="https://github.com/mpryor/nothing-less/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+</p>
 
-> **[Read the full documentation](https://mpryor.github.io/nothing-less/)** — tutorials, keybinding reference, configuration, and more.
+<p align="center">
+  <a href="https://mpryor.github.io/nothing-less/">Documentation</a> ·
+  <a href="https://mpryor.github.io/nothing-less/tutorials/">Tutorials</a> ·
+  <a href="https://mpryor.github.io/nothing-less/keybindings/">Keybindings</a> ·
+  <a href="#installation">Install</a>
+</p>
 
-Nless has enhanced functionality for parsing tabular data:
-- inferring file delimiters
-- delimiter swapping on the fly
-- regex-based parsing of raw logs into tabular data using Python's regex engine
-- filtering
-- sorting
-- searching
-- real-time event parsing.
+**nless** is a TUI pager for exploring and analyzing tabular data with vi-like keybindings, built on [Textual](https://textual.textualize.io/). It reads from stdin, files, or shell command output — automatically inferring structure so you can filter, sort, pivot, and reshape on the fly. Works with CSV, TSV, JSON, logs, and any delimited output.
 
-## Getting started
-### Dependencies
-- python>=3.13
-OR
-- [brew](https://brew.sh/)
-### Installation
-`pip install nothing-less`
-OR
-`brew install mpryor/tap/nless`
-### Usage
-- pipe the output of a command to nless to parse the output `$COMMAND | nless`
-- read a file with nless `nless $FILE_NAME`
-- redirect a file into nless `nless < $FILE_NAME`
-- Once output is loaded, press `?` to view the keybindings
+## Installation
+
+```bash
+pip install nothing-less
+```
+
+or
+
+```bash
+brew install mpryor/tap/nless
+```
+
+Requires Python 3.13+.
+
+## Usage
+
+```bash
+kubectl get events -w | nless    # stream K8s events
+cat access.log | nless           # explore log files
+nless data.csv                   # open CSV directly
+nless < output.json              # redirect a file
+```
+
+Press `?` inside nless to view all keybindings.
 
 ## Demos
-### Basic functionality
-The below demo shows basic functionality:
-- starting with a search `/`
-- applying that search `&`
-- filtering the selected column by the value within the selected cell `F`
-- swapping the delimiter `D` (`raw` and `,`)
 
-[![asciicast](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg.svg)](https://asciinema.org/a/k8MOUx01XxnK7Lo9iTcM9QOpg)
+<details>
+<summary>CSV — open, search, filter, sort, pivot</summary>
 
-### Streaming functionality
-The below demo showcases some of nless's features for handling streaming input, and interacting with unknown delimitation:
-- The nless view stays up-to-date as new log lines arrive on stdin (allows pipeline commands, or redirecting a file into nless)
-- Showcases using a custom (Python engine) regex, example - `{(?P<severity>.*)}\((?P<user>.*)\) - (?P<message>.*)` - to parse raw logs into tabular fields.
-- Sorts, filters, and searches on those fields.
-- Flips the delimiter back to raw, sorts, searches, and filters on the raw logs
+<p align="center">
+  <img src="./docs/assets/demo-csv.gif" width="800px" alt="nless CSV demo — open a file, search, filter, sort, and pivot"/>
+</p>
 
-[![asciicast](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5.svg)](https://asciinema.org/a/IeHSjycb9obCYTVxu7ZDH8WO5)
+</details>
+
+<details>
+<summary>JSON — pipe in API responses, auto-detect keys as columns</summary>
+
+<p align="center">
+  <img src="./docs/assets/demo-json.gif" width="800px" alt="nless JSON demo — auto-detect JSON keys as columns"/>
+</p>
+
+</details>
+
+<details>
+<summary>Regex — parse raw logs into columns with named capture groups</summary>
+
+<p align="center">
+  <img src="./docs/assets/demo-regex.gif" width="800px" alt="nless regex demo — parse raw logs into structured columns"/>
+</p>
+
+</details>
+
+<details>
+<summary>Pipe mode — use nless as a pipeline stage</summary>
+
+<p align="center">
+  <img src="./docs/assets/demo-pipe.gif" width="800px" alt="nless pipe mode — filter, transform, and output as JSON"/>
+</p>
+
+</details>
 
 ## Why nless?
 
-As a kubernetes engineer, I frequently need to interact with streaming tabular data. `k get pods -w`, `k get events -w`, etc. I wanted a TUI tool to quickly dissect and analyze this data - and none of the existing alternatives had exactly what I wanted. So I decided to build my own tool, integrating some of my favorite features from other similar tools.
+I frequently need to dissect streaming tabular data — server logs, kubectl output, CSV exports, CI pipelines. None of the existing tools had exactly the feature set I wanted, so I built nless to complement your workflow.
 
-This project is not meant to replace any of the tools mentioned in the [alternatives](#alternatives) section. Instead, it's meant to bring its own unique set of features to complement your workflow:
-
-- **Streaming support** - stay up-to-date as new data arrives on stdin, with arrival timestamps and time window filtering
-- **Delimiter inference** - no configuration needed; nless infers the delimiter from your data and auto-switches on mismatch
-- **Vi-like keybindings** - familiar to any Vim user, minimize keypresses to analyze a dataset
-- **Kubernetes-friendly** - built for K8s use-cases like parsing streams from kubectl
-- **Tabular data toolkit** - filter, sort, search, pivot, and reshape data on the fly
-- **JSON & log parsing** - convert unstructured data streams into tabular data
+- **Zero config** — pipe in anything and nless infers the structure. No schemas, no format flags, no setup.
+- **Stream-native** — built for data that's still arriving. Tail mode, arrival timestamps, and time window filtering come standard.
+- **Vi-native** — if you know Vim, you know nless. Every action is a single keypress away.
+- **One tool, many formats** — CSV, TSV, JSON, space-aligned, regex, raw. Switch between them on the fly without leaving the pager.
 
 ## Features
 
-- **Buffers** - mutating actions create a new buffer, letting you jump up and down your analysis history
-- **Delimiter swapping** - swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
-- **Column delimiters** - split a column into more columns using JSON, regex, or string delimiters with `d`
-- **Filtering** - filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`)
-- **Sorting** - toggle ascending/descending sort on any column with `s`
-- **Searching** - search (`/`), search by cell value (`*`), navigate matches (`n`/`p`)
-- **Pivoting** - group records by composite key with `U`, focused summary view, dive into grouped data with `enter`
-- **Column management** - show/hide columns (`C`), reorder columns (`<`/`>`)
-- **JSON extraction** - promote nested JSON fields to columns with `J`
-- **Shell commands** - run a shell command and pipe its output into a new buffer with `!`
-- **Tail mode** - keep the cursor at the bottom as new data arrives with `t`
-- **Output** - write buffer contents to a file or stdout (`W`), copy cell values (`y`)
-- **Themes** - 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
-- **Arrival timestamps** - every row records when it was received; toggle the `_arrival` column with `A`
-- **Time window filtering** - show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
-- **Raw pager mode** - `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
-- **Excluded lines** - view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
-- **Pipe mode** - use nless as a pipeline stage; interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode
-- **Mouse support** - click column headers to sort, double-click pivot rows to drill in, right-click for context menus, and navigate via the menu bar
-- **Merge files** - combine multiple files into a single view with a `_source` column using `--merge`
-- **Update notifications** - background PyPI version check with non-blocking toast notifications
+- **Delimiter inference & swapping** — auto-detects CSV, TSV, space-aligned, JSON, and more; swap on the fly with `D`, or use regex with named capture groups
+- **Filtering & searching** — filter by column, cell value, or search match; exclude rows; full-text search with match navigation
+- **Sorting & pivoting** — one-key sort on any column; group by composite key with summary view and drill-in
+- **Streaming & tail mode** — live-updating as new data arrives, with arrival timestamps and time window filtering
+- **JSON & log parsing** — extract nested JSON fields into columns; parse unstructured logs with regex
+- **Pipe mode** — use nless as a pipeline stage with `Q` to pipe and exit, or `--no-tui` for batch mode
+
+<details>
+<summary>All features</summary>
+
+- **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
+- **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
+- **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters with `d`
+- **Filtering** — filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`)
+- **Sorting** — toggle ascending/descending sort on any column with `s`
+- **Searching** — search (`/`), search by cell value (`*`), navigate matches (`n`/`p`)
+- **Pivoting** — group records by composite key with `U`, focused summary view, dive into grouped data with `enter`
+- **Column management** — show/hide columns (`C`), reorder columns (`<`/`>`)
+- **JSON extraction** — promote nested JSON fields to columns with `J`
+- **Shell commands** — run a shell command and pipe its output into a new buffer with `!`
+- **Tail mode** — keep the cursor at the bottom as new data arrives with `t`
+- **Output** — write buffer contents to a file or stdout (`W`), copy cell values (`y`)
+- **Themes** — 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
+- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Raw pager mode** — `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
+- **Excluded lines** — view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
+- **Pipe mode** — use nless as a pipeline stage; interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode
+- **Mouse support** — click column headers to sort, double-click pivot rows to drill in, right-click for context menus, and navigate via the menu bar
+- **Merge files** — combine multiple files into a single view with a `_source` column using `--merge`
+- **Update notifications** — background PyPI version check with non-blocking toast notifications
+
+</details>
 
 <details>
 <summary>Full keybinding reference</summary>
@@ -205,11 +243,32 @@ See the [full keybinding reference](https://mpryor.github.io/nothing-less/keybin
 </details>
 
 ## Contributing
-Contributions are welcome! Please open an issue or a pull request - check out the [contributing guidelines](CONTRIBUTING.md) for more information.
+
+Contributions are welcome! Please open an issue or a pull request — check out the [contributing guidelines](CONTRIBUTING.md) for more information.
 
 ## Alternatives
-Shout-outs to all of the below wonderful tools! If my tool doesn't have what you need, they likely will:
-- [visidata](https://www.visidata.org/)
-- [csvlens](https://github.com/YS-L/csvlens)
-- [lnav](https://github.com/tstack/lnav)
-- [toolong](https://github.com/Textualize/toolong)
+
+Shout-outs to all of the below wonderful tools! If nless doesn't have what you need, they likely will:
+
+| | [nless](https://github.com/mpryor/nothing-less) | [VisiData](https://www.visidata.org/) | [csvlens](https://github.com/YS-L/csvlens) | [lnav](https://github.com/tstack/lnav) | [Toolong](https://github.com/Textualize/toolong) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Focus** | Tabular data pager | Data multitool | CSV viewer | Log navigator | Log viewer |
+| **Language** | Python | Python | Rust | C++ | Python |
+| Streaming / stdin | :white_check_mark: | :heavy_minus_sign: | :heavy_minus_sign: | :white_check_mark: | :white_check_mark: |
+| Delimiter inference | :white_check_mark: | :heavy_minus_sign: | :heavy_minus_sign: | :x: | :x: |
+| Vi keybindings | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
+| Filtering | :white_check_mark: | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: |
+| Sorting | :white_check_mark: | :white_check_mark: | :white_check_mark: | :heavy_minus_sign: | :x: |
+| Pivoting / grouping | :white_check_mark: | :white_check_mark: | :x: | :heavy_minus_sign: | :x: |
+| JSON parsing | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :heavy_minus_sign: |
+| Log format detection | :white_check_mark: | :x: | :x: | :white_check_mark: | :heavy_minus_sign: |
+| Regex column parsing | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :x: |
+| Pipe mode | :white_check_mark: | :white_check_mark: | :heavy_minus_sign: | :heavy_minus_sign: | :x: |
+| Raw text pager | :white_check_mark: | :heavy_minus_sign: | :x: | :white_check_mark: | :white_check_mark: |
+| Themes | :white_check_mark: | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: |
+| SQL queries | :x: | :x: | :x: | :white_check_mark: | :x: |
+| Python expressions | :x: | :white_check_mark: | :x: | :x: | :x: |
+| Timestamp parsing | :x: | :x: | :x: | :white_check_mark: | :white_check_mark: |
+| Multi-file merge | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: |
+
+:white_check_mark: full support · :heavy_minus_sign: partial · :x: not supported

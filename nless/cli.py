@@ -120,6 +120,12 @@ def parse_args(argv=None) -> CliArgs:
         help="Load a saved session by name",
         default=None,
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Demo mode: show a caption overlay for each keybinding action",
+        default=False,
+    )
 
     args = parser.parse_args(argv)
 
@@ -183,6 +189,7 @@ def parse_args(argv=None) -> CliArgs:
         tui=args.tui,
         session=args.session,
         output_format=args.output_format,
+        demo=args.demo,
     )
 
     filenames = args.filename or []

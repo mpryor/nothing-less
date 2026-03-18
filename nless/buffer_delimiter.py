@@ -354,6 +354,8 @@ class DelimiterMixin:
         if self.delim.mismatch_warned:
             return
         self.delim.mismatch_warned = True
+        if getattr(self.app, "demo_mode", False):
+            return
         msg = f"{count} rows not matching columns, skipped. Use 'raw' delimiter (press D) to disable parsing."
         if self.app._thread_id == threading.get_ident():
             self.notify(msg, severity="warning")

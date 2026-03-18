@@ -87,6 +87,7 @@ class UpdateReason(StrEnum):
     MOVING_COLUMN = "Moving column"
     PINNING_COLUMN = "Pinning column"
     ADDING_COLUMN = "Adding column"
+    SUBSTITUTION = "Substitution"
     SPLITTING_COLUMN = "Splitting column"
     TOGGLING_ARRIVAL = "Toggling arrival column"
     FILTERING_COLUMNS = "Filtering columns"
@@ -189,6 +190,7 @@ class CliArgs:
     filenames: list[str] = field(default_factory=list)
     pipe_output: bool = False  # computed at runtime: stdout is a pipe
     output_format: str = "csv"  # csv, tsv, json, raw
+    demo: bool = False  # show keybinding captions on every action
 
 
 @dataclass
@@ -204,6 +206,9 @@ class Column:
     col_ref: str = ""  # reference to the original column name
     col_ref_index: int = -1  # reference to the original column index
     json_ref: str = ""  # reference to the original JSON field
+    substitution: tuple[re.Pattern, str] | None = (
+        None  # regex substitution (pattern, replacement)
+    )
 
 
 @dataclass

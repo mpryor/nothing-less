@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Wrapper so VHS tape can show "nless" while running via poetry.
+# Always injects --demo for the recording.
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+exec poetry -C "$REPO_DIR" run nless --demo -t monokai "$@"

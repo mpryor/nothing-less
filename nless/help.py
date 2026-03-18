@@ -120,6 +120,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
                 "a",
                 "Column aggregations (count, sum, avg, min, max)",
             ),
+            ("app.exmode", ":", "Ex mode (s/, sort, filter, w, q, ...)"),
         ],
     ),
     (
@@ -180,6 +181,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         "Help",
         [
             ("app.help", "?", "Show help"),
+            ("app.caption", "#", "Show caption overlay"),
         ],
     ),
 ]
@@ -289,6 +291,51 @@ class HelpScreen(ModalScreen):
                 table.add_row("", "")
         return table
 
+    def _build_exmode_table(self, t: NlessTheme) -> Table:
+        """Build a Rich Table showing ex-mode commands."""
+        table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+        table.add_column(justify="right", width=22, style=t.highlight, no_wrap=True)
+        table.add_column()
+
+        commands: list[tuple[str, str, str]] = [
+            ("Substitution", "", ""),
+            ("s/pat/rep/", "", "Substitute in current column"),
+            ("s/pat/rep/g", "", "Substitute in all columns"),
+            ("", "", ""),
+            ("Filtering & Sorting", "", ""),
+            ("sort <col>", "", "Sort by column name"),
+            ("filter <col> <pat>", "f", "Filter column by pattern"),
+            ("exclude <col> <pat>", "e", "Exclude matches from column"),
+            ("", "", ""),
+            ("Files & Buffers", "", ""),
+            ("w [path]", "write", "Write buffer to file (prompts if no path)"),
+            ("o <path>", "open", "Open file in new group"),
+            ("q", "quit", "Close buffer or quit"),
+            ("q!", "quit!", "Pipe to stdout and exit"),
+            ("", "", ""),
+            ("Settings", "", ""),
+            ("set theme <name>", "", "Switch theme"),
+            ("set keymap <name>", "", "Switch keymap"),
+            ("delim <d>", "delimiter", "Change delimiter"),
+            ("", "", ""),
+            ("Other", "", ""),
+            ("help", "", "Show this help screen"),
+        ]
+
+        for command, alias, description in commands:
+            if not command and not alias and not description:
+                table.add_row("", "")
+            elif not alias and not description:
+                # Section header
+                table.add_row("", f"[bold {t.accent}]{command}[/bold {t.accent}]")
+            else:
+                desc = description
+                if alias:
+                    desc += f" [{t.muted}](alias: {alias})[/{t.muted}]"
+                table.add_row(command, desc)
+
+        return table
+
     def _build_config_table(self, t: NlessTheme) -> Table:
         """Build a Rich Table showing current config values."""
         table = Table(show_header=True, box=None, pad_edge=False, padding=(0, 2))
@@ -322,6 +369,11 @@ class HelpScreen(ModalScreen):
         with TabbedContent():
             with TabPane("Keybindings"):
                 yield HelpScroll(keybindings_title, Static(columns))
+            with TabPane("Ex Mode"):
+                exmode_title = Static(
+                    f"  [{t.muted}]Press : to open ex-mode prompt[/{t.muted}]"
+                )
+                yield HelpScroll(exmode_title, Static(self._build_exmode_table(t)))
             if self.config:
                 config_path = os.path.expanduser(CONFIG_FILE)
                 config_title = Static(f"  [{t.muted}]{config_path}[/{t.muted}]")

@@ -65,8 +65,10 @@ from .logformats import (
     load_custom_formats,
     save_custom_format,
 )
+from .caption import CaptionOverlay
 from .contextmenu import ContextMenu, MenuItem
 from .regex_wizard import RegexWizardMixin
+from .app_exmode import ExModeMixin
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ class NlessApp(
     SessionViewMixin,
     HighlightMixin,
     RegexWizardMixin,
+    ExModeMixin,
     ColumnOpsMixin,
     FilterMixin,
     GroupMixin,
@@ -86,6 +89,62 @@ class NlessApp(
     inherit_bindings = False
     ENABLE_COMMAND_PALETTE = False
     _TAB_LABEL_RE = re.compile(r"((\[#[0-9a-fA-F]+\])?(\d+?)(\[/#[0-9a-fA-F]+\])?) .*")
+
+    def _build_demo_key_map(self) -> dict[str, str]:
+        """Build a mapping of Textual key name → description from all bindings."""
+        from textual.keys import _character_to_key
+
+        from .datatable import Datatable
+        from .rawpager import RawPager
+
+        key_map: dict[str, str] = {}
+        all_bindings = (
+            list(self.BINDINGS)
+            + list(NlessBuffer.BINDINGS)
+            + list(Datatable.BINDINGS)
+            + list(RawPager.BINDINGS)
+        )
+        for binding in all_bindings:
+            if isinstance(binding, Binding) and binding.description:
+                for key in binding.key.split(","):
+                    # Convert binding key (e.g. "/") to Textual key name (e.g. "slash")
+                    textual_key = (
+                        _character_to_key(key.strip())
+                        if len(key.strip()) == 1
+                        else key.strip()
+                    )
+                    key_map.setdefault(textual_key, binding.description)
+        return key_map
+
+    def _demo_caption(self, key: str) -> None:
+        """Show a demo caption for the given key if in demo mode."""
+        # Don't show caption for the caption key itself
+        if key == "number_sign":
+            return
+        desc = self._demo_key_map.get(key)
+        if desc:
+            # Show the original character, not the Textual key name
+            display_key = (
+                key
+                if len(key) == 1
+                else {
+                    "slash": "/",
+                    "ampersand": "&",
+                    "exclamation_mark": "!",
+                    "question_mark": "?",
+                    "dollar_sign": "$",
+                    "at_sign": "@",
+                    "pipe": "|",
+                    "plus": "+",
+                    "minus": "-",
+                    "tilde": "~",
+                }.get(key, key)
+            )
+            try:
+                overlay = self.query_one("#caption_overlay", CaptionOverlay)
+                overlay.show_caption(f"{display_key}  →  {desc}", duration=2.0)
+            except NoMatches:
+                pass
 
     def _key_for_action(self, action: str) -> str:
         """Return the key hint for an action name, or empty string."""
@@ -139,6 +198,7 @@ class NlessApp(
             ("Split column", "column_delimiter"),
             ("Extract JSON key", "json_header"),
             ("Auto-detect log format", "detect_log_format"),
+            ("Ex mode", "exmode"),
             ("Time window", "time_window"),
         ],
         "menu_search": [
@@ -195,20 +255,25 @@ class NlessApp(
         self.curr_group_idx = 0
         self._pending_file_groups: list[tuple[str, StdinLineStream]] = []
         self._exit_event = __import__("threading").Event()
+        self.demo_mode = cli_args.demo
+        if self.demo_mode:
+            self._demo_key_map = self._build_demo_key_map()
 
     @staticmethod
     def _initial_group_name(cli_args: CliArgs) -> str:
+        file_icon = "\uf0f6" if cli_args.demo else "📄"  # nf-fa-file_text_o
+        cmd_icon = "\uf120" if cli_args.demo else "⏵"  # nf-fa-terminal
         if cli_args.merge:
             n = len(cli_args.filenames)
-            return f"⏵ merged ({n} files)"
+            return f"{cmd_icon} merged ({n} files)"
         if cli_args.filename:
-            return f"📄 {os.path.basename(cli_args.filename)}"
+            return f"{file_icon} {os.path.basename(cli_args.filename)}"
         source = get_stdin_source()
         if source is None:
             return "stdin"
         if source.startswith("/"):
-            return f"📄 {source}"
-        return f"⏵ {source}"
+            return f"{file_icon} {source}"
+        return f"{cmd_icon} {source}"
 
     SCREENS = {"HelpScreen": HelpScreen, "GettingStartedScreen": GettingStartedScreen}
     HISTORY_FILE = "~/.config/nless/history.json"
@@ -303,6 +368,7 @@ class NlessApp(
         Binding("T", "select_theme", "Select Theme", id="app.select_theme"),
         Binding("K", "select_keymap", "Select Keymap", id="app.select_keymap"),
         Binding("?", "help", "Show Help", id="app.help"),
+        Binding("#", "caption", "Show Caption", id="app.caption"),
         Binding("}", "show_group_next", "Next Group", id="app.show_group_next"),
         Binding(
             "{", "show_group_previous", "Previous Group", id="app.show_group_previous"
@@ -348,6 +414,7 @@ class NlessApp(
             "Merge with another buffer",
             id="app.merge_buffers",
         ),
+        Binding(":", "exmode", "Ex mode", id="app.exmode"),
     ]
 
     def action_open_file(self) -> None:
@@ -374,7 +441,10 @@ class NlessApp(
                 cli_args=self.cli_args,
                 line_stream=line_stream,
             )
-            await self.add_group(f"⏵ {command}", new_buffer, stream=line_stream)
+            cmd_icon = "\uf120" if self.demo_mode else "⏵"
+            await self.add_group(
+                f"{cmd_icon} {command}", new_buffer, stream=line_stream
+            )
             line_stream.start()
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             self.notify(f"Error running command: {str(e)}", severity="error")
@@ -402,8 +472,9 @@ class NlessApp(
             )
             t = Thread(target=line_stream.run, daemon=True)
             t.start()
+            file_icon = "\uf0f6" if self.demo_mode else "📄"
             await self.add_group(
-                f"📄 {os.path.basename(path)}", new_buffer, stream=line_stream
+                f"{file_icon} {os.path.basename(path)}", new_buffer, stream=line_stream
             )
         except (OSError, FileNotFoundError) as e:
             self.notify(f"Error opening file: {e}", severity="error")
@@ -803,6 +874,8 @@ class NlessApp(
 
     def on_key(self, event: Key) -> None:
         """Handle key events."""
+        if self.demo_mode and not isinstance(self.focused, (Input, Select)):
+            self._demo_caption(event.key)
         # Forward keys to context menu when open
         try:
             menu = self.query_one(ContextMenu)
@@ -914,6 +987,10 @@ class NlessApp(
             self._handle_view_save_submitted(event)
         elif event.input.id == "view_rename_input":
             self._handle_view_rename_submitted(event)
+        elif event.input.id == "exmode_input":
+            self.handle_exmode_submitted(event)
+        elif event.input.id == "caption_input":
+            self.handle_caption_submitted(event)
 
     def action_merge_buffers(self) -> None:
         """Open a select menu to pick a buffer to merge with the current one."""
@@ -923,7 +1000,8 @@ class NlessApp(
             for b in group.buffers:
                 if b is buf:
                     continue
-                label = f"📄 {group.name} / buffer{b.pane_id}"
+                fi = "\uf0f6" if self.demo_mode else "📄"
+                label = f"{fi} {group.name} / buffer{b.pane_id}"
                 options.append((label, f"{group.group_id}:{b.pane_id}"))
         if not options:
             self.notify("No other buffers to merge with", severity="warning")
@@ -1334,7 +1412,8 @@ class NlessApp(
         self._check_release_notes()
 
         # Check for newer version on PyPI (non-blocking)
-        self._check_for_update()
+        if not self.demo_mode:
+            self._check_for_update()
 
     async def _add_pending_file_groups(self) -> None:
         for filepath, stream in self._pending_file_groups:
@@ -1343,7 +1422,8 @@ class NlessApp(
                 cli_args=self.cli_args,
                 line_stream=stream,
             )
-            name = f"📄 {os.path.basename(filepath)}"
+            fi = "\uf0f6" if self.demo_mode else "📄"
+            name = f"{fi} {os.path.basename(filepath)}"
             await self.add_group(name, new_buffer, stream=stream)
         self._pending_file_groups = []
         self._switch_to_group(0)
@@ -1620,6 +1700,19 @@ class NlessApp(
         else:
             self.open_url(url)
 
+    def action_caption(self) -> None:
+        """Prompt for a caption to display as a centered overlay."""
+        self._create_prompt(
+            "Type caption and press Enter", "caption_input", save_history=False
+        )
+
+    def handle_caption_submitted(self, event: AutocompleteInput.Submitted) -> None:
+        event.input.remove()
+        text = event.value.strip()
+        if not text:
+            return
+        self.query_one("#caption_overlay", CaptionOverlay).show_caption(text)
+
     def action_help(self) -> None:
         """Show the help screen."""
         from importlib.metadata import version as pkg_version
@@ -1764,6 +1857,7 @@ class NlessApp(
             pass
 
     def compose(self) -> ComposeResult:
+        yield CaptionOverlay(id="caption_overlay")
         yield ContextMenu(id="context_menu")
         with Vertical(id="top_bar"):
             with Horizontal(id="title_bar"):

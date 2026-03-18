@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake kubectl that simulates streaming output.
+# Dispatches to the right simulator based on subcommand.
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+if [[ "$1" == "logs" ]]; then
+    exec python3 "$SCRIPT_DIR/fake-spring-logs.py"
+else
+    exec python3 "$SCRIPT_DIR/fake-k8s-events.py"
+fi

@@ -105,6 +105,20 @@ class ShellCommandLineStream(LineStream):
         ).start()
 
     def _setup_io_stream(self, io: IO[str]) -> None:
+        # Buffer the first batch so delimiter inference / log format detection
+        # has enough lines to work with (single-line notify causes mis-inference).
+        initial_batch: list[str] = []
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            line = io.readline()
+            if not line:
+                break
+            initial_batch.append(line)
+            if len(initial_batch) >= 15:
+                break
+        if initial_batch:
+            self.notify(initial_batch)
+
         while line := io.readline():
             self.notify([line])
         self.done = True
