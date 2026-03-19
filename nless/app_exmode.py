@@ -221,8 +221,12 @@ class ExModeMixin:
             self.action_open_file()
             return
 
-        from .types import CliArgs
+        import os
+        from threading import Thread
+
+        from .buffer import NlessBuffer
         from .input import StdinLineStream
+        from .types import CliArgs
 
         try:
             cli_args = CliArgs(
@@ -233,9 +237,20 @@ class ExModeMixin:
                 filename=path,
             )
             line_stream = StdinLineStream(cli_args, file_name=path, new_fd=None)
+            new_buffer = NlessBuffer(
+                pane_id=self._get_new_pane_id(),
+                cli_args=cli_args,
+                line_stream=line_stream,
+            )
+            t = Thread(target=line_stream.run, daemon=True)
+            t.start()
+            file_icon = "\uf0f6" if self.demo_mode else "\U0001f4c4"
             self.run_worker(
-                self._open_new_group(line_stream, group_name=path),
-                thread=True,
+                self.add_group(
+                    f"{file_icon} {os.path.basename(path)}",
+                    new_buffer,
+                    stream=line_stream,
+                )
             )
         except Exception as exc:
             self.notify(str(exc), severity="error")
