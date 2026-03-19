@@ -241,18 +241,19 @@ def main():
         print(line, flush=True)
         time.sleep(0.03)
 
-    # Burst: print 20 events quickly to fill the screen
-    for _ in range(20):
+    # Burst: print 40 events quickly to fill the screen
+    for _ in range(40):
         print(gen_event(), flush=True)
-        time.sleep(0.05)
+        time.sleep(0.03)
 
-    # Stream: emit events at varying rates
+    # Stream: emit events at a steady clip so counts visibly update
     while True:
-        print(gen_event(), flush=True)
-        if random.random() < 0.3:
-            time.sleep(random.uniform(0.1, 0.3))
-        else:
-            time.sleep(random.uniform(0.5, 2.0))
+        # Small bursts of 2-5 events with short gaps
+        burst = random.randint(2, 5)
+        for _ in range(burst):
+            print(gen_event(), flush=True)
+            time.sleep(0.04)
+        time.sleep(random.uniform(0.1, 0.4))
 
 
 if __name__ == "__main__":

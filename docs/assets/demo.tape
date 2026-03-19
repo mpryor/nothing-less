@@ -24,14 +24,14 @@ Sleep 3s
 Escape
 Sleep 1s
 
-# Jump to bottom to show live data
-Type "G"
-Sleep 1.5s
-Type "k"
-Sleep 300ms
-Type "k"
-Sleep 300ms
-Type "k"
+# Unique key on NAMESPACE — watch counts update in real time
+Type "0"
+Sleep 400ms
+Type "U"
+Sleep 8s
+
+# Back to raw data
+Type "H"
 Sleep 1.5s
 
 # Search for warnings
@@ -48,33 +48,20 @@ Sleep 2s
 
 # Jump to REASON and sort
 Type "c"
-Sleep 400ms
+Sleep 1s
 Type "REASON"
-Sleep 400ms
+Sleep 1s
 Enter
-Sleep 800ms
+Sleep 2s
 Type "s"
 Sleep 2s
 
 # Filter to CrashLoopBackOff
 Type "f"
-Sleep 400ms
+Sleep 1s
 Type "CrashLoop"
 Sleep 400ms
 Enter
 Sleep 2s
-
-# Pivot by namespace
-Type "#"
-Sleep 500ms
-Type "Which namespaces are crashing?"
-Sleep 2.5s
-Escape
-Sleep 800ms
-
-Type "0"
-Sleep 400ms
-Type "U"
-Sleep 3s
 
 Sleep 2s
