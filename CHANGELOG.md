@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.10.0 (2026-03-19)
+
+### Feat
+
+- infer space-aligned command output (ps aux, lsof, df -h, netstat, ls -la)
+- ex-mode command dispatcher with autocomplete
+- regex find-and-replace substitution on cell values
+- themed getting started screen — For jerr
+- README overhaul, demo GIFs, --demo mode, and caption overlay
+- PyPI update check, double-click pivot drill-in, and tab-click buffer sync
+- themed status format, group context menu, menu hover colors, positioning fixes
+- click-to-sort headers, hover highlights
+- context menu, menu bar, mouse support, and buffer.py reorg
+- log pattern inference, context menu, mixin refactors, and datatable enhancements
+- auto-detect log formats on initial load
+- **wip**: log pattern inference, context menu, and datatable enhancements
+
+### Fix
+
+- status bar empty on new buffer, add missing menu actions
+
 ## 1.9.0 (2026-03-13)
 
 ### Feat
