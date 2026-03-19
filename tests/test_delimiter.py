@@ -3,6 +3,7 @@ import re
 from nless.delimiter import (
     detect_column_positions,
     detect_space_max_fields,
+    find_header_index,
     flatten_json_lines,
     infer_delimiter,
     split_aligned_row,
@@ -449,6 +450,255 @@ class TestPositionBasedSplitting:
             "    return x",
         ]
         assert infer_delimiter(lines) == "raw"
+
+
+class TestProseInfer:
+    """Prose text should infer as raw, not space-delimited."""
+
+    def test_paragraph_infers_raw(self):
+        lines = [
+            "The quick brown fox jumps over the lazy dog. This is a paragraph",
+            "of plain text that should not be interpreted as tabular data by",
+            "the delimiter inference engine. It has varying word counts per",
+            "line and no consistent column structure whatsoever.",
+            "",
+            "A second paragraph continues here with more words and sentences.",
+            "None of this should trigger CSV, TSV, or space-aligned detection.",
+        ]
+        assert infer_delimiter(lines) == "raw"
+
+    def test_markdown_infers_raw(self):
+        lines = [
+            "# Getting Started",
+            "",
+            "Install the package with pip:",
+            "",
+            "```bash",
+            "pip install nothing-less",
+            "```",
+            "",
+            "Then run it:",
+        ]
+        assert infer_delimiter(lines) == "raw"
+
+    def test_log_style_prose_infers_raw(self):
+        lines = [
+            "Starting application server on port 8080...",
+            "Loading configuration from /etc/app/config.yaml",
+            "Connected to database at localhost:5432",
+            "Warming up caches... done (2.3s)",
+            "Ready to accept connections",
+        ]
+        assert infer_delimiter(lines) == "raw"
+
+
+class TestKubectlEventsInfer:
+    """kubectl get events -A -w: double-space aligned with multi-word headers."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "NAMESPACE          LAST SEEN    TYPE       REASON                   OBJECT                                               MESSAGE",
+            "payments           40s          Warning    CrashLoopBackOff         pod/payment-processor-7a3f1-b92e4                    Back-off restarting failed container app in pod payment-processor-7a3f1-b92e4",
+            "kube-system        12s          Normal     Scheduled                pod/coredns-cb523-abd32                              Successfully assigned kube-system/coredns-cb523-abd32 to node-3",
+            'monitoring         5s           Normal     Pulling                  pod/prometheus-server-bb736-52902                    Pulling image "prom/prometheus:v2.51.0"',
+            "auth               23s          Warning    Unhealthy                pod/auth-service-e5f93-1d8b6                         Readiness probe failed: HTTP probe failed with statuscode: 503",
+        ]
+
+    def test_infer_double_space(self):
+        assert infer_delimiter(self._lines()) == "  "
+
+    def test_header_preserved_as_single_field(self):
+        """'LAST SEEN' must stay as one column, not split into two."""
+        lines = self._lines()
+        parts = split_aligned_row_preserve_single_spaces(lines[0])
+        assert "LAST SEEN" in parts
+
+    def test_message_column_intact(self):
+        """MESSAGE column with spaces must not be split."""
+        lines = self._lines()
+        parts = split_aligned_row_preserve_single_spaces(lines[1])
+        assert any("Back-off restarting failed container" in p for p in parts)
+
+    def test_consistent_field_count(self):
+        """All lines should produce the same number of fields."""
+        lines = self._lines()
+        counts = [len(split_aligned_row_preserve_single_spaces(line)) for line in lines]
+        assert len(set(counts)) == 1
+
+
+class TestLsofNiTcpInfer:
+    """lsof -ni tcp: single-space, no empty cells, NAME has spaces."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME",
+            "zellij    856 matt   24u  IPv4 428952      0t0  TCP 127.0.0.1:46029->127.0.0.1:8082 (SYN_SENT)",
+            "zellij    856 matt   38u  IPv4 426939      0t0  TCP 127.0.0.1:46039->127.0.0.1:8082 (SYN_SENT)",
+            "zellij    856 matt   39u  IPv4 430344      0t0  TCP 127.0.0.1:47729->127.0.0.1:8082 (SYN_SENT)",
+            "node     1234 matt   12u  IPv6 531000      0t0  TCP *:3000 (LISTEN)",
+        ]
+
+    def test_infer_single_space(self):
+        assert infer_delimiter(self._lines()) == " "
+
+    def test_header_not_skipped(self):
+        """Header has fewer fields than data (no space in NAME header).
+
+        find_header_index must not skip it.
+        """
+        lines = self._lines()
+        max_fields = detect_space_max_fields(lines, " ")
+        idx = find_header_index(lines, " ", max_fields=max_fields)
+        assert idx == 0
+
+    def test_name_column_intact(self):
+        """NAME value with spaces like '(SYN_SENT)' stays in one field."""
+        lines = self._lines()
+        max_fields = detect_space_max_fields(lines, " ")
+        header = split_aligned_row(lines[0], max_fields=max_fields)
+        columns = [
+            Column(
+                name=name,
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, name in enumerate(header)
+        ]
+        cells = split_line(lines[1], " ", columns)
+        assert cells[-1] == "127.0.0.1:46029->127.0.0.1:8082 (SYN_SENT)"
+
+
+class TestDockerPsInfer:
+    """docker ps: double-space aligned with multi-word headers."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "CONTAINER ID   IMAGE                    COMMAND                  CREATED         STATUS         PORTS                    NAMES",
+            'a1b2c3d4e5f6   nginx:latest             "/docker-entrypoint.…"   2 hours ago     Up 2 hours     0.0.0.0:80->80/tcp       web-server',
+            'f6e5d4c3b2a1   postgres:16              "docker-entrypoint.s…"   3 hours ago     Up 3 hours     0.0.0.0:5432->5432/tcp   db',
+            '1234abcd5678   redis:7-alpine           "docker-entrypoint.s…"   5 hours ago     Up 5 hours     0.0.0.0:6379->6379/tcp   cache',
+        ]
+
+    def test_infer_double_space(self):
+        assert infer_delimiter(self._lines()) == "  "
+
+    def test_multi_word_fields_intact(self):
+        """'2 hours ago' and 'Up 2 hours' must not be split."""
+        lines = self._lines()
+        parts = split_aligned_row_preserve_single_spaces(lines[1])
+        assert any("2 hours ago" in p for p in parts)
+        assert any("Up 2 hours" in p for p in parts)
+
+
+class TestSsInfer:
+    """ss -tlnp: space-aligned with multi-word headers."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "State    Recv-Q   Send-Q     Local Address:Port     Peer Address:Port  Process",
+            'LISTEN   0        128              0.0.0.0:22            0.0.0.0:*      users:(("sshd",pid=1234,fd=3))',
+            'LISTEN   0        511              0.0.0.0:80            0.0.0.0:*      users:(("nginx",pid=5678,fd=6))',
+            'LISTEN   0        128                 [::]:22               [::]:*      users:(("sshd",pid=1234,fd=4))',
+            'LISTEN   0        4096           127.0.0.1:5432          0.0.0.0:*      users:(("postgres",pid=9012,fd=5))',
+        ]
+
+    def test_infer_space(self):
+        result = infer_delimiter(self._lines())
+        assert result in (" ", "  ")
+
+    def test_field_count_consistent(self):
+        """All lines should produce a usable number of fields."""
+        lines = self._lines()
+        d = infer_delimiter(lines)
+        split_fn = (
+            split_aligned_row_preserve_single_spaces if d == "  " else split_aligned_row
+        )
+        counts = [len(split_fn(line)) for line in lines]
+        # Header and data should be within 1 field of each other
+        assert max(counts) - min(counts) <= 2
+
+
+class TestMountInfer:
+    """mount output: space-delimited with 'on' and 'type' keywords."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "sysfs on /sys type sysfs (rw,nosuid,nodev,noexec,relatime)",
+            "proc on /proc type proc (rw,nosuid,nodev,noexec,relatime)",
+            "/dev/sda1 on / type ext4 (rw,relatime,discard)",
+            "tmpfs on /run type tmpfs (rw,nosuid,nodev,noexec,relatime,size=1632852k,mode=755)",
+            "tmpfs on /dev/shm type tmpfs (rw,nosuid,nodev)",
+        ]
+
+    def test_infer_space(self):
+        """mount has no header and consistent structure."""
+        result = infer_delimiter(self._lines())
+        assert result == " "
+
+
+class TestIpAddrInfer:
+    """ip addr output: mixed indentation, not tabular."""
+
+    @staticmethod
+    def _lines():
+        return [
+            "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000",
+            "    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00",
+            "    inet 127.0.0.1/8 scope host lo",
+            "       valid_lft forever preferred_lft forever",
+            "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP group default qlen 1000",
+            "    link/ether 00:15:5d:e8:12:34 brd ff:ff:ff:ff:ff:ff",
+            "    inet 172.28.0.2/20 brd 172.28.15.255 scope global eth0",
+        ]
+
+    def test_infer_raw(self):
+        """ip addr is not tabular — should infer raw."""
+        result = infer_delimiter(self._lines())
+        assert result == "raw"
+
+
+class TestHeaderDetection:
+    """find_header_index edge cases for space-delimited data."""
+
+    def test_header_fewer_fields_than_data(self):
+        """Header has fewer fields when last column name is one word but data has spaces."""
+        lines = [
+            "COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME",
+            "zellij    856 matt   24u  IPv4 428952      0t0  TCP 127.0.0.1:8082 (SYN_SENT)",
+            "zellij    856 matt   38u  IPv4 426939      0t0  TCP 127.0.0.1:8082 (SYN_SENT)",
+        ]
+        max_fields = detect_space_max_fields(lines, " ")
+        idx = find_header_index(lines, " ", max_fields=max_fields)
+        assert idx == 0, "Header should not be skipped even with fewer fields"
+
+    def test_preamble_still_skipped(self):
+        """Lines far below consensus should still be skipped."""
+        lines = [
+            "System Report",
+            "USER   PID  %CPU  %MEM    VSZ   RSS  TTY   STAT  START  TIME  COMMAND",
+            "root     1   0.0   0.0   2616  1752  ?     Sl    07:17  0:00  /init",
+            "matt   100   0.0   0.0  15240  9080  pts/0 Ss    07:17  0:00  -zsh",
+        ]
+        max_fields = detect_space_max_fields(lines, " ")
+        idx = find_header_index(lines, " ", max_fields=max_fields)
+        assert idx == 1, "Preamble line should be skipped"
+
+    def test_header_exact_match(self):
+        """Header with same field count as data is not skipped."""
+        lines = [
+            "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND",
+            "root         1  0.0  0.0   2616  1752 ?        Sl   07:17   0:00 /init",
+            "matt       100  0.0  0.0  15240  9080 pts/0    Ss   07:17   0:00 -zsh",
+        ]
+        idx = find_header_index(lines, " ")
+        assert idx == 0
 
 
 class TestSplitLineComputedColumns:
