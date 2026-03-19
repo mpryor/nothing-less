@@ -44,7 +44,8 @@ markers = ["perf: performance regression tests (may be slow)"]
 
 [tool.poetry]
 packages = [
-    {include="nless"}
+    {include="nless"},
+    {include="CHANGELOG.md"},
 ]
 
 [tool.commitizen]
