@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.3 (2026-03-19)
+
+### Fix
+
+- ex-mode :open uses add_group instead of missing _open_new_group
+
 ## 1.10.2 (2026-03-19)
 
 ### Fix
