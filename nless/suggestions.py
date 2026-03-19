@@ -188,6 +188,153 @@ class FilePathSuggestionProvider(SuggestionProvider):
             return []
 
 
+class ExModeSuggestionProvider(SuggestionProvider):
+    """Provides context-aware completions for ex-mode commands.
+
+    - No space yet → suggest command names (prefix match)
+    - After ``sort `` → column names
+    - After ``filter ``/``f `` → column names; after second space → no suggestions
+    - After ``set theme `` → theme names; ``set keymap `` → keymap names
+    - After ``w ``/``write ``/``o ``/``open `` → file paths
+    - Fallback → ex-mode history
+    """
+
+    MAX_RESULTS = 20
+
+    COMMANDS = [
+        "sort",
+        "filter",
+        "f",
+        "exclude",
+        "e",
+        "s/",
+        "w",
+        "write",
+        "o",
+        "open",
+        "q",
+        "q!",
+        "delim",
+        "delimiter",
+        "set theme",
+        "set keymap",
+        "help",
+    ]
+
+    def __init__(self, app) -> None:
+        self._app = app
+        self._file_provider = FilePathSuggestionProvider()
+
+    def _column_names(self) -> list[str]:
+        from .dataprocessing import strip_markup
+
+        try:
+            buf = self._app._get_current_buffer()
+            return [strip_markup(c.name) for c in buf.current_columns if not c.hidden]
+        except Exception:
+            return []
+
+    def _theme_names(self) -> list[str]:
+        from .theme import get_all_themes
+
+        return sorted(get_all_themes().keys())
+
+    def _keymap_names(self) -> list[str]:
+        from .keymap import get_all_keymaps
+
+        return sorted(get_all_keymaps().keys())
+
+    def get_suggestions(self, value: str) -> list[str]:
+        if not value:
+            # Show command list + history
+            history = [
+                h["val"] for h in self._app.input_history if h["id"] == "exmode_input"
+            ]
+            seen = set()
+            result = []
+            for item in reversed(history):
+                if item not in seen:
+                    seen.add(item)
+                    result.append(item)
+            return result[: self.MAX_RESULTS] if result else self.COMMANDS
+
+        # Check if we're completing a command or its arguments
+        parts = value.split(None, 1)
+        cmd = parts[0].lower()
+
+        # Still typing the command (no space yet)
+        if len(parts) == 1 and not value.endswith(" "):
+            lower = value.lower()
+            return [c for c in self.COMMANDS if c.startswith(lower)][: self.MAX_RESULTS]
+
+        # Command with args
+        args = parts[1] if len(parts) > 1 else ""
+
+        if cmd in ("sort",):
+            cols = self._column_names()
+            if not args:
+                return cols[: self.MAX_RESULTS]
+            lower = args.lower()
+            return [c for c in cols if c.lower().startswith(lower)][: self.MAX_RESULTS]
+
+        if cmd in ("filter", "f", "exclude", "e"):
+            arg_parts = args.split(None, 1)
+            if len(arg_parts) <= 1 and not args.endswith(" "):
+                # Completing column name
+                cols = self._column_names()
+                partial = args.lower()
+                if not partial:
+                    return [f"{cmd} {c}" for c in cols][: self.MAX_RESULTS]
+                return [f"{cmd} {c}" for c in cols if c.lower().startswith(partial)][
+                    : self.MAX_RESULTS
+                ]
+            # After column name, no suggestions (user types pattern)
+            return []
+
+        if cmd == "set":
+            set_parts = args.split(None, 1)
+            subcmd = set_parts[0].lower() if set_parts else ""
+            subarg = set_parts[1] if len(set_parts) > 1 else ""
+
+            if not subcmd or (len(set_parts) == 1 and not args.endswith(" ")):
+                options = ["theme", "keymap"]
+                if subcmd:
+                    options = [o for o in options if o.startswith(subcmd)]
+                return [f"set {o}" for o in options]
+
+            if subcmd == "theme":
+                names = self._theme_names()
+                if not subarg:
+                    return [f"set theme {n}" for n in names][: self.MAX_RESULTS]
+                lower = subarg.lower()
+                return [f"set theme {n}" for n in names if n.lower().startswith(lower)][
+                    : self.MAX_RESULTS
+                ]
+            if subcmd == "keymap":
+                names = self._keymap_names()
+                if not subarg:
+                    return [f"set keymap {n}" for n in names][: self.MAX_RESULTS]
+                lower = subarg.lower()
+                return [
+                    f"set keymap {n}" for n in names if n.lower().startswith(lower)
+                ][: self.MAX_RESULTS]
+            return []
+
+        if cmd in ("w", "write", "o", "open"):
+            return self._file_provider.get_suggestions(args)
+
+        if cmd in ("delim", "delimiter"):
+            if not args:
+                return ["\\t", ",", "|", "space", "raw", "json"]
+            return [
+                d
+                for d in ["\\t", ",", "|", "space", "space+", "raw", "json"]
+                if d.startswith(args)
+            ]
+
+        return []
+
+
 class ShellCommandSuggestionProvider(SuggestionProvider):
     """Provides shell command completions.
 
