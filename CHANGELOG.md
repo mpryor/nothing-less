@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.2 (2026-03-19)
+
+### Fix
+
+- correct cli_args import path in ex-mode
+- include CHANGELOG.md in package for release notes screen
+
 ## 1.10.1 (2026-03-19)
 
 ### Fix
