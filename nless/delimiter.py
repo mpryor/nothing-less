@@ -661,7 +661,15 @@ def detect_space_splitting_strategy(
         long_lines = [
             ln for ln in sample if ln.strip() and len(ln) >= max_line_len * 0.5
         ]
-        normal_counts = [len(split_aligned_row(ln)) for ln in long_lines]
+        # Use the correct split function for the delimiter so single-space
+        # gaps inside field values (e.g. "4584 (3m4s ago)") are not treated
+        # as column boundaries for the space+ delimiter.
+        normal_split = (
+            split_aligned_row
+            if delimiter == " "
+            else split_aligned_row_preserve_single_spaces
+        )
+        normal_counts = [len(normal_split(ln)) for ln in long_lines]
         normal_inconsistent = len(set(normal_counts)) > 1
         if normal_inconsistent:
             pos_consistent = all(
@@ -670,11 +678,17 @@ def detect_space_splitting_strategy(
             first_count = normal_counts[0] if normal_counts else 0
             consensus = max(set(normal_counts), key=normal_counts.count)
             header_overflow = first_count > consensus
-            if pos_consistent and header_overflow:
+            # Reject positions that produce empty header fields — a sign
+            # of a false column boundary inside a wide data value.
+            header_fields = (
+                split_by_positions(long_lines[0], positions) if long_lines else []
+            )
+            has_empty_header = any(f == "" for f in header_fields)
+            if pos_consistent and not has_empty_header and header_overflow:
                 return positions, 0
-            if pos_consistent and not header_overflow:
+            if pos_consistent and not has_empty_header and not header_overflow:
                 maxsplit_counts = [
-                    len(split_aligned_row(ln, max_fields=expected)) for ln in long_lines
+                    len(normal_split(ln, max_fields=expected)) for ln in long_lines
                 ]
                 if len(set(maxsplit_counts)) > 1:
                     return positions, 0

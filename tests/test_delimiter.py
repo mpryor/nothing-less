@@ -3,6 +3,7 @@ import re
 from nless.delimiter import (
     detect_column_positions,
     detect_space_max_fields,
+    detect_space_splitting_strategy,
     find_header_index,
     flatten_json_lines,
     infer_delimiter,
@@ -439,6 +440,75 @@ class TestPositionBasedSplitting:
         cells = split_line(lines[2], " ", columns)
         assert len(cells) == 9
         assert cells[-1] == "file name.txt"
+
+    def test_kubectl_pods_restarts_with_age_space_plus(self):
+        """kubectl RESTARTS '(Xs ago)' must not create a false column boundary with space+ delimiter."""
+        lines = [
+            "NAMESPACE     NAME                                      READY   STATUS    RESTARTS         AGE",
+            "default       nginx-deployment-5d7f8c9b47-abc12         1/1     Running   0                10d",
+            "kube-system   coredns-5d78c9869d-xyz34                  1/1     Running   4584 (3m4s ago)   10d",
+            "kube-system   etcd-control-plane                        1/1     Running   0                10d",
+        ]
+        # With space+ delimiter, the single spaces inside '4584 (3m4s ago)'
+        # must not trigger position-based splitting with false boundaries.
+        positions, _max_fields = detect_space_splitting_strategy(lines, "  ")
+        if positions is not None:
+            # If positions are used, they must not produce empty header fields
+            header_fields = split_by_positions(lines[0], positions)
+            assert all(f != "" for f in header_fields), (
+                f"False column boundary created empty header field: {header_fields}"
+            )
+        # Splitting must keep '4584 (3m4s ago)' intact
+        header_fields = split_aligned_row_preserve_single_spaces(lines[0])
+        columns = [
+            Column(
+                name=f,
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, f in enumerate(header_fields)
+        ]
+        cells = split_line(
+            lines[2],
+            "  ",
+            columns,
+            column_positions=positions,
+        )
+        assert len(cells) == 6
+        assert cells[4] == "4584 (3m4s ago)"
+
+    def test_kubectl_pods_watch_streaming_restarts(self):
+        """Streaming kubectl -w lines with RESTARTS '(Xs ago)' must not be skipped."""
+        lines = [
+            "NAMESPACE     NAME                                      READY   STATUS    RESTARTS         AGE",
+            "default       nginx-deployment-5d7f8c9b47-abc12         1/1     Running   0                10d",
+            "kube-system   coredns-5d78c9869d-xyz34                  1/1     Running   0                10d",
+        ]
+        # Initial sample has no restarts with '(Xs ago)' — strategy chosen from clean data
+        positions, _max_fields = detect_space_splitting_strategy(lines, "  ")
+        header_fields = split_aligned_row_preserve_single_spaces(lines[0])
+        columns = [
+            Column(
+                name=f,
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, f in enumerate(header_fields)
+        ]
+        # Later a streaming line arrives with RESTARTS containing '(Xs ago)'
+        streaming_line = "kube-system   coredns-5d78c9869d-xyz34                  1/1     Running   4584 (3m4s ago)   10d"
+        cells = split_line(
+            streaming_line,
+            "  ",
+            columns,
+            column_positions=positions,
+        )
+        assert len(cells) == 6
+        assert cells[4] == "4584 (3m4s ago)"
 
     def test_source_code_not_space(self):
         """Python source code must not infer as space-delimited."""
