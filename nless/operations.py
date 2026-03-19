@@ -72,6 +72,7 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
                 data_position=0,
                 hidden=False,
                 pinned=True,
+                computed=True,
             ),
         )
 
