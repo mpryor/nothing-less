@@ -174,11 +174,9 @@ class StreamingMixin:
         """
         from .buffer_delimiter import _sample_lines
         from .delimiter import (
-            detect_column_positions,
-            detect_space_max_fields,
+            detect_space_splitting_strategy,
             flatten_json_lines,
             infer_delimiter,
-            split_by_positions,
         )
 
         sample = _sample_lines(log_lines, max_total=15)
@@ -186,55 +184,9 @@ class StreamingMixin:
         self.delim.inferred = True
 
         if isinstance(self.delim.value, str) and self.delim.value in (" ", "  "):
-            # Try position-based splitting first — it handles empty interior
-            # cells (e.g. lsof TID/TASKCMD) that split() can't preserve.
-            positions = detect_column_positions(sample)
-            if len(positions) > 2:
-                from .delimiter import split_aligned_row
-
-                expected = len(positions)
-                # Exclude short preamble lines (same filter as
-                # detect_column_positions uses internally).
-                max_line_len = max((len(ln) for ln in sample if ln.strip()), default=0)
-                long_lines = [
-                    ln for ln in sample if ln.strip() and len(ln) >= max_line_len * 0.5
-                ]
-                normal_counts = [len(split_aligned_row(ln)) for ln in long_lines]
-                normal_inconsistent = len(set(normal_counts)) > 1
-                # Use positions when: (a) the header has more fields
-                # than data (multi-word column names like netstat
-                # "Local Address"), or (b) empty interior cells that
-                # maxsplit can't fix (lsof TID/TASKCMD).
-                # DON'T use positions when data overflows the header
-                # (ps aux COMMAND with spaces) — maxsplit handles that.
-                if normal_inconsistent:
-                    pos_consistent = all(
-                        len(split_by_positions(ln, positions)) == expected
-                        for ln in long_lines
-                    )
-                    # Header has more fields than data → multi-word
-                    # headers or empty interior cells → positions needed.
-                    first_count = normal_counts[0] if normal_counts else 0
-                    consensus = max(set(normal_counts), key=normal_counts.count)
-                    header_overflow = first_count > consensus
-                    if pos_consistent and header_overflow:
-                        self.delim.column_positions = positions
-                    elif pos_consistent and not header_overflow:
-                        # Data overflows header — check if maxsplit
-                        # alone produces consistent results.
-                        maxsplit_counts = [
-                            len(split_aligned_row(ln, max_fields=expected))
-                            for ln in long_lines
-                        ]
-                        if len(set(maxsplit_counts)) > 1:
-                            self.delim.column_positions = positions
-
-            # Fall back to max_fields when positions aren't needed (e.g.
-            # ps aux COMMAND with spaces, df -h "Mounted on").
-            if not self.delim.column_positions:
-                self.delim.max_fields = detect_space_max_fields(
-                    sample, self.delim.value
-                )
+            self.delim.column_positions, self.delim.max_fields = (
+                detect_space_splitting_strategy(sample, self.delim.value)
+            )
 
         flattened = flatten_json_lines(log_lines)
         if flattened is not log_lines:
@@ -325,19 +277,13 @@ class StreamingMixin:
         Preserves skipped preamble lines so they're available when
         switching to raw mode.
         """
-        from .delimiter import find_header_index
+        from .delimiter import find_header_index, find_preamble_end
 
         # Position-based splitting gives consistent field counts for full-
         # width lines, but short preamble lines (e.g. netstat's "Active
         # Internet connections") still need to be skipped.
         if self.delim.column_positions:
-            max_line_len = max((len(ln) for ln in log_lines if ln.strip()), default=0)
-            preamble_end = 0
-            for i, line in enumerate(log_lines):
-                if line.strip() and len(line) < max_line_len * 0.5:
-                    preamble_end = i + 1
-                else:
-                    break
+            preamble_end = find_preamble_end(log_lines)
             if preamble_end > 0:
                 self.delim.preamble_lines = log_lines[:preamble_end]
                 log_lines = log_lines[preamble_end:]

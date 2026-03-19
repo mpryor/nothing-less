@@ -33,6 +33,7 @@ def split_line(
     delimiter: str | re.Pattern[str] | None,
     columns: list[Column],
     column_positions: list[int] | None = None,
+    has_computed: bool | None = None,
 ) -> list[str]:
     """Split a line using the appropriate delimiter method.
 
@@ -40,6 +41,9 @@ def split_line(
         line: The input line to split
         column_positions: Optional fixed-width column positions for
             space-aligned data with empty interior cells (e.g. lsof).
+        has_computed: Pre-computed flag for whether any column has
+            computed fields (delimiter/json_ref/col_ref/substitution).
+            Pass ``False`` to skip the per-row check in hot loops.
 
     Returns:
         List of fields from the line
@@ -59,9 +63,9 @@ def split_line(
         cells = [rich_escape(stripped) if "[" in stripped else stripped]
     elif delimiter == "json":
         cells = [
-            (
-                json.dumps(v) if isinstance(v, dict) or isinstance(v, list) else str(v)
-            ).replace("[", "\\[")
+            (json.dumps(v) if isinstance(v, (dict, list)) else str(v)).replace(
+                "[", "\\["
+            )
             for v in json.loads(line).values()
         ]
     elif isinstance(delimiter, re.Pattern):
@@ -80,9 +84,15 @@ def split_line(
             txt.replace("\t", "  ").strip() for txt in cells
         ]  # Rich rendering breaks on tabs
 
-    if not columns or not any(
-        c.delimiter or c.json_ref or c.col_ref or c.substitution for c in columns
-    ):
+    if has_computed is None:
+        has_computed = bool(
+            columns
+            and any(
+                c.delimiter or c.json_ref or c.col_ref or c.substitution
+                for c in columns
+            )
+        )
+    if not has_computed:
         return cells
 
     sorted_columns = sorted(columns, key=lambda col: col.data_position)
@@ -598,3 +608,66 @@ def detect_space_max_fields(sample_lines: list[str], delimiter: str) -> int:
         return consensus
 
     return 0
+
+
+def detect_space_splitting_strategy(
+    sample: list[str], delimiter: str
+) -> tuple[list[int] | None, int]:
+    """Choose position-based or max_fields splitting for space-delimited data.
+
+    Position-based splitting is preferred when the data has empty interior
+    cells (e.g. lsof TID/TASKCMD) or multi-word column headers (e.g.
+    netstat "Local Address").  Falls back to max_fields capping when data
+    overflows the header (e.g. ps aux COMMAND with spaces).
+
+    Returns:
+        ``(column_positions, max_fields)`` — at most one is set.
+        *column_positions* is a list of character offsets or ``None``;
+        *max_fields* is ``0`` when not applicable.
+    """
+    if delimiter not in (" ", "  "):
+        return None, 0
+
+    positions = detect_column_positions(sample)
+    if len(positions) > 2:
+        expected = len(positions)
+        max_line_len = max((len(ln) for ln in sample if ln.strip()), default=0)
+        long_lines = [
+            ln for ln in sample if ln.strip() and len(ln) >= max_line_len * 0.5
+        ]
+        normal_counts = [len(split_aligned_row(ln)) for ln in long_lines]
+        normal_inconsistent = len(set(normal_counts)) > 1
+        if normal_inconsistent:
+            pos_consistent = all(
+                len(split_by_positions(ln, positions)) == expected for ln in long_lines
+            )
+            first_count = normal_counts[0] if normal_counts else 0
+            consensus = max(set(normal_counts), key=normal_counts.count)
+            header_overflow = first_count > consensus
+            if pos_consistent and header_overflow:
+                return positions, 0
+            if pos_consistent and not header_overflow:
+                maxsplit_counts = [
+                    len(split_aligned_row(ln, max_fields=expected)) for ln in long_lines
+                ]
+                if len(set(maxsplit_counts)) > 1:
+                    return positions, 0
+
+    return None, detect_space_max_fields(sample, delimiter)
+
+
+def find_preamble_end(lines: list[str]) -> int:
+    """Find the index where short preamble lines end.
+
+    Lines shorter than 50% of the max line length at the start of
+    *lines* are considered preamble (e.g. netstat's ``"Active Internet
+    connections"``).  Returns ``0`` if no preamble detected.
+    """
+    max_line_len = max((len(ln) for ln in lines if ln.strip()), default=0)
+    end = 0
+    for i, line in enumerate(lines):
+        if line.strip() and len(line) < max_line_len * 0.5:
+            end = i + 1
+        else:
+            break
+    return end

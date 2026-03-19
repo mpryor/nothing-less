@@ -7,6 +7,21 @@ import tempfile
 HISTORY_FILE = "~/.config/nless/history.json"
 CONFIG_FILE = "~/.config/nless/config.json"
 
+_DEFAULT_STATUS_FORMAT = (
+    "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
+    "[{cursor_fg}]{unique}[/{cursor_fg}]"
+    "[{cursor_fg}]{time_window}[/{cursor_fg}]"
+    "[{cursor_fg}]{skipped}[/{cursor_fg}]"
+    "[{cursor_fg}]{session}[/{cursor_fg}]"
+    "[{cursor_fg}]{pipe}[/{cursor_fg}]"
+    "{tailing}{loading} "
+    "[{cursor_fg}]{behind}[/{cursor_fg}]"
+)
+
 
 def _load_config_json_file(file_name: str, defaults):
     os.makedirs(os.path.dirname(os.path.expanduser(file_name)), exist_ok=True)
@@ -28,36 +43,7 @@ class NlessConfig:
     keymap: str = "vim"
     latest_pypi_version: str = ""
     last_update_check: float = 0.0
-    status_format: str = (
-        "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
-        "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
-        "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
-        "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
-        "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
-        "[{cursor_fg}]{unique}[/{cursor_fg}]"
-        "[{cursor_fg}]{time_window}[/{cursor_fg}]"
-        "[{cursor_fg}]{skipped}[/{cursor_fg}]"
-        "[{cursor_fg}]{session}[/{cursor_fg}]"
-        "[{cursor_fg}]{pipe}[/{cursor_fg}]"
-        "{tailing}{loading} "
-        "[{cursor_fg}]{behind}[/{cursor_fg}]"
-    )
-
-
-_DEFAULT_STATUS_FORMAT = (
-    "[{cursor_fg}]{sort}[/{cursor_fg}] [{muted}]|[/{muted}] "
-    "[{cursor_fg}]{filter}[/{cursor_fg}] [{muted}]|[/{muted}] "
-    "[{cursor_fg}]{search}[/{cursor_fg}] [{muted}]|[/{muted}] "
-    "[{cursor_fg}]{position}[/{cursor_fg}] [{muted}]|[/{muted}] "
-    "[{cursor_fg}]{delimiter}[/{cursor_fg}] [{muted}]|[/{muted}] "
-    "[{cursor_fg}]{unique}[/{cursor_fg}]"
-    "[{cursor_fg}]{time_window}[/{cursor_fg}]"
-    "[{cursor_fg}]{skipped}[/{cursor_fg}]"
-    "[{cursor_fg}]{session}[/{cursor_fg}]"
-    "[{cursor_fg}]{pipe}[/{cursor_fg}]"
-    "{tailing}{loading} "
-    "[{cursor_fg}]{behind}[/{cursor_fg}]"
-)
+    status_format: str = _DEFAULT_STATUS_FORMAT
 
 
 def get_release_notes(version: str) -> str | None:

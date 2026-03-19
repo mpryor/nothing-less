@@ -169,10 +169,7 @@ def parse_args(argv=None) -> CliArgs:
                 )
             )
 
-    unique_keys = set()
-    if len(args.unique) > 0:
-        for unique_key in args.unique:
-            unique_keys.add(unique_key)
+    unique_keys = set(args.unique)
 
     cli_args = CliArgs(
         delimiter=args.delimiter if not args.raw else "raw",

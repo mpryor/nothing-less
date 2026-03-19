@@ -7,15 +7,24 @@ from importlib.metadata import version as get_pkg_version, PackageNotFoundError
 
 
 def get_version() -> str:
-    """Get the current version of the nothing-less package.
-
-    Returns:
-        str: The current version of the nothing-less package.
-    """
+    """Return the installed version string, or ``'unknown'``."""
     try:
         return get_pkg_version("nothing-less")
     except PackageNotFoundError:
         return "unknown"
+
+
+def is_dev_install() -> bool:
+    """Return True if nothing-less is installed in editable/dev mode."""
+    try:
+        import nless
+        import pathlib
+
+        pkg_path = pathlib.Path(nless.__file__).resolve().parent
+        # Editable installs have a pyproject.toml in the parent directory
+        return (pkg_path.parent / "pyproject.toml").exists()
+    except Exception:
+        return False
 
 
 def fetch_latest_pypi_version() -> str | None:

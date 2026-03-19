@@ -45,7 +45,6 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
         new_unique_column.labels.add("U")
 
     if len(new_buffer.query.unique_column_names) == 0:
-        # remove count column
         new_buffer.current_columns = [
             replace(
                 c,
@@ -56,7 +55,6 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
             if c.name != MetadataColumn.COUNT.value
         ]
     elif MetadataColumn.COUNT.value not in [c.name for c in new_buffer.current_columns]:
-        # add count column at the start
         new_buffer.current_columns = [
             replace(
                 c,

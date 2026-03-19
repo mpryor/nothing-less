@@ -244,7 +244,7 @@ class ExModeMixin:
             )
             t = Thread(target=line_stream.run, daemon=True)
             t.start()
-            file_icon = "\uf0f6" if self.demo_mode else "\U0001f4c4"
+            file_icon = "\uf0f6" if self.demo_mode else "📄"
             self.run_worker(
                 self.add_group(
                     f"{file_icon} {os.path.basename(path)}",

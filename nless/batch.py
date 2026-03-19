@@ -10,14 +10,15 @@ import sys
 
 from .dataprocessing import coerce_sort_key, matches_all_filters, strip_markup
 from .delimiter import (
-    detect_column_positions,
-    detect_space_max_fields,
+    detect_space_splitting_strategy,
     find_header_index,
+    find_preamble_end,
     infer_delimiter,
     split_aligned_row,
     split_by_positions,
     split_line,
 )
+from .buffer_columns import ColumnMixin
 from .types import CliArgs, Column
 
 
@@ -31,26 +32,7 @@ def _read_all_lines(cli_args: CliArgs) -> list[str]:
 
 def _build_columns(header_cells: list[str]) -> list[Column]:
     """Build a list of Column objects from header cell strings."""
-    # Deduplicate names so dict-keyed outputs (JSON) keep all columns.
-    seen: dict[str, int] = {}
-    unique: list[str] = []
-    for cell in header_cells:
-        if cell in seen:
-            seen[cell] += 1
-            unique.append(f"{cell}_{seen[cell]}")
-        else:
-            seen[cell] = 1
-            unique.append(cell)
-    return [
-        Column(
-            name=name,
-            labels=set(),
-            render_position=i,
-            data_position=i,
-            hidden=False,
-        )
-        for i, name in enumerate(unique)
-    ]
+    return ColumnMixin._make_columns(header_cells)
 
 
 def _col_lookup(columns: list[Column], name: str, _render: bool = False) -> int | None:
@@ -115,48 +97,16 @@ def _run_batch_inner(cli_args: CliArgs) -> None:
         sample = [line.rstrip("\n\r") for line in lines[:20]]
 
         # Detect position-based or max_fields splitting for space delimiters
-        column_positions = None
-        max_fields = 0
-        if isinstance(delimiter, str) and delimiter in (" ", "  "):
-            positions = detect_column_positions(sample)
-            if len(positions) > 2:
-                expected = len(positions)
-                max_line_len = max((len(ln) for ln in sample if ln.strip()), default=0)
-                long_lines = [
-                    ln for ln in sample if ln.strip() and len(ln) >= max_line_len * 0.5
-                ]
-                normal_counts = [len(split_aligned_row(ln)) for ln in long_lines]
-                normal_inconsistent = len(set(normal_counts)) > 1
-                if normal_inconsistent:
-                    pos_consistent = all(
-                        len(split_by_positions(ln, positions)) == expected
-                        for ln in long_lines
-                    )
-                    first_count = normal_counts[0] if normal_counts else 0
-                    consensus = max(set(normal_counts), key=normal_counts.count)
-                    header_overflow = first_count > consensus
-                    if pos_consistent and header_overflow:
-                        column_positions = positions
-                    elif pos_consistent and not header_overflow:
-                        maxsplit_counts = [
-                            len(split_aligned_row(ln, max_fields=expected))
-                            for ln in long_lines
-                        ]
-                        if len(set(maxsplit_counts)) > 1:
-                            column_positions = positions
-            if not column_positions:
-                max_fields = detect_space_max_fields(sample, delimiter)
+        column_positions, max_fields = (
+            detect_space_splitting_strategy(sample, delimiter)
+            if isinstance(delimiter, str)
+            else (None, 0)
+        )
 
         # Position-based splitting gives consistent field counts for full-
         # width lines, but short preamble lines still need to be skipped.
         if column_positions:
-            max_line_len = max((len(ln) for ln in sample if ln.strip()), default=0)
-            header_idx = 0
-            for i, line in enumerate(sample):
-                if line.strip() and len(line) < max_line_len * 0.5:
-                    header_idx = i + 1
-                else:
-                    break
+            header_idx = find_preamble_end(sample)
         else:
             header_idx = find_header_index(sample, delimiter, max_fields=max_fields)
 

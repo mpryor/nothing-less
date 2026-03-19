@@ -105,42 +105,30 @@ class BufferProtocol(Protocol):
     the implicit mixin contract explicit and statically checkable.
     """
 
-    # Lock
     _lock: threading.RLock
     _pending_action: tuple | None
     locked: bool
-
-    # State objects
     stream: "StreamState"
     query: "FilterSortState"
     cache: "CacheState"
     chain: "ChainTimerState"
     delim: "DelimiterState"
     loading_state: "LoadingState"
-
-    # State flags
     first_row_parsed: bool
     raw_mode: bool
     _initial_load_done: bool
     _last_flushed_idx: int
-
-    # Data arrays (read-only shims to stream)
     raw_rows: list[str]
     displayed_rows: list[list[str]]
     _arrival_timestamps: list[float]
     _source_labels: list[str]
-
-    # Delimiter shims (delegate to delim)
     delimiter: str | re.Pattern | None
     delimiter_inferred: bool
     delimiter_name: str | None
-
-    # Column state
     current_columns: list["Column"]
     _has_nested_delimiters: bool
     _has_source_column: bool
 
-    # Methods mixins call on self
     def notify(self, message: str, severity: str = ...) -> None: ...
     def query_one(self, selector: str) -> object: ...
     def _try_lock(self, action: str, deferred: "Callable | None" = ...) -> object: ...

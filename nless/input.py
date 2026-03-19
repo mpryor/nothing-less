@@ -311,10 +311,8 @@ class StdinLineStream(LineStream):
         stripped = [line.strip() for line in lines if line.strip()]
         if not stripped:
             return False
-        # JSON array: first line starts with [
         if stripped[0].startswith("["):
             return True
-        # Line-delimited JSON: first line starts with {
         if stripped[0].startswith("{"):
             try:
                 json.loads(stripped[0].rstrip(","))
