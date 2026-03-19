@@ -221,7 +221,7 @@ class ExModeMixin:
             self.action_open_file()
             return
 
-        from .cli_args import CliArgs
+        from .types import CliArgs
         from .input import StdinLineStream
 
         try:
