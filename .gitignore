@@ -4,3 +4,8 @@ example_data
 dist/
 site/
 .claude/
+
+# Generated demo data files
+api-response.json
+app.log
+people-1000.csv
