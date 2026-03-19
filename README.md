@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="./docs/assets/demo.gif" width="800px" alt="nless demo — search, filter, sort, and pivot streaming K8s events"/>
+  <img src="./docs/assets/demo.webp" width="800px" alt="nless demo — search, filter, sort, and pivot streaming K8s events"/>
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@ Press `?` inside nless to view all keybindings.
 <summary>CSV — open, search, filter, sort, pivot</summary>
 
 <p align="center">
-  <img src="./docs/assets/demo-csv.gif" width="800px" alt="nless CSV demo — open a file, search, filter, sort, and pivot"/>
+  <img src="./docs/assets/demo-csv.webp" width="800px" alt="nless CSV demo — open a file, search, filter, sort, and pivot"/>
 </p>
 
 </details>
@@ -64,7 +64,7 @@ Press `?` inside nless to view all keybindings.
 <summary>JSON — pipe in API responses, auto-detect keys as columns</summary>
 
 <p align="center">
-  <img src="./docs/assets/demo-json.gif" width="800px" alt="nless JSON demo — auto-detect JSON keys as columns"/>
+  <img src="./docs/assets/demo-json.webp" width="800px" alt="nless JSON demo — auto-detect JSON keys as columns"/>
 </p>
 
 </details>
@@ -73,7 +73,7 @@ Press `?` inside nless to view all keybindings.
 <summary>Regex — parse raw logs into columns with named capture groups</summary>
 
 <p align="center">
-  <img src="./docs/assets/demo-regex.gif" width="800px" alt="nless regex demo — parse raw logs into structured columns"/>
+  <img src="./docs/assets/demo-regex.webp" width="800px" alt="nless regex demo — parse raw logs into structured columns"/>
 </p>
 
 </details>
@@ -82,7 +82,7 @@ Press `?` inside nless to view all keybindings.
 <summary>Pipe mode — use nless as a pipeline stage</summary>
 
 <p align="center">
-  <img src="./docs/assets/demo-pipe.gif" width="800px" alt="nless pipe mode — filter, transform, and output as JSON"/>
+  <img src="./docs/assets/demo-pipe.webp" width="800px" alt="nless pipe mode — filter, transform, and output as JSON"/>
 </p>
 
 </details>

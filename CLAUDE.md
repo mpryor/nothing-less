@@ -71,6 +71,46 @@ Input (stdin/file/command) → StdinLineStream (async, threaded)
 - Poetry for dependency management
 - Textual CSS in `nless/nless.tcss`
 
+## Recording Demos
+
+Demos are recorded with [VHS](https://github.com/charmbracelet/vhs) from `.tape` files in `docs/assets/`, then converted to WebP via `gif2webp`.
+
+### Setup
+
+VHS needs chromium, ffmpeg, and webp tools. On this WSL machine, the recording infra lives in `/tmp/` (not persistent across reboots):
+
+1. **Chromium**: `npx @puppeteer/browsers install chromium@latest --path /tmp/chromium/chromium`
+2. **Symlinks in `/tmp/vhs-bin/`**: chromium, ffmpeg, ttyd, plus `kubectl` → `scripts/fake-kubectl` and `nless` → `scripts/fake-nless`
+3. **webp**: `brew install webp` (provides `gif2webp`)
+
+### Recording
+
+```bash
+# Record all tapes and convert to WebP
+./scripts/record-demos.sh
+
+# Record a single tape
+./scripts/record-demos.sh docs/assets/demo.tape
+```
+
+The script handles: VHS recording (GIF) → `gif2webp` conversion → cleanup of intermediate GIF.
+
+### How it works
+
+- `scripts/fake-kubectl` dispatches to `scripts/fake-k8s-events.py` (simulates streaming K8s events)
+- `scripts/fake-nless` wraps `poetry run nless --demo -t monokai` (shows caption overlays for each action)
+- VHS symlinks in `/tmp/vhs-bin/` let the tape reference `kubectl` and `nless` by name
+- VHS doesn't support WebP natively, so tapes output GIF and `scripts/record-demos.sh` converts to WebP
+
+### Tape files
+
+- `docs/assets/demo.tape` — hero demo (K8s events: search, filter, sort, pivot)
+- `docs/assets/demo-csv.tape` — CSV demo
+- `docs/assets/demo-deep-dive.tape` — deep-dive demo (drill into pod logs)
+- `docs/assets/demo-json.tape` — JSON demo
+- `docs/assets/demo-regex.tape` — regex parsing demo
+- `docs/assets/demo-pipe.tape` — pipe mode demo
+
 ## Roadmap & Project Management
 
 The GitHub repo tracks all planned work:
