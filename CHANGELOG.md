@@ -1,5 +1,140 @@
 # Changelog
 
+## 2.0.0 (2026-03-19)
+
+### BREAKING CHANGE
+
+- initial stable release with all MVP features
+
+### Feat
+
+- infer space-aligned command output (ps aux, lsof, df -h, netstat, ls -la)
+- ex-mode command dispatcher with autocomplete
+- regex find-and-replace substitution on cell values
+- themed getting started screen — For jerr
+- README overhaul, demo GIFs, --demo mode, and caption overlay
+- PyPI update check, double-click pivot drill-in, and tab-click buffer sync
+- themed status format, group context menu, menu hover colors, positioning fixes
+- click-to-sort headers, hover highlights
+- context menu, menu bar, mouse support, and buffer.py reorg
+- log pattern inference, context menu, mixin refactors, and datatable enhancements
+- auto-detect log formats on initial load
+- **wip**: log pattern inference, context menu, and datatable enhancements
+- multi-file buffer groups, merge delimiter conflict detection, and JSON extraction fixes
+- add views with undo, report skipped settings, and fix filter case sensitivity
+- persist computed columns in sessions and fix session loading bugs
+- menu UX — icons, labels, and separators
+- session save/restore for multi-group sessions
+- highlight menu enhancements — recolor, match counts, duplicate prevention
+- column aggregations — press `a` to show count, distinct, sum, avg, min, max
+- infer output format from file extension in W (write to file)
+- explicit pipe-and-exit with Q, --tui flag, and docs update
+- improved pipe support — interactive pipe mode, batch mode, and output formats (#35)
+- column pinning — press m to freeze columns to the left during horizontal scrolling
+- scan for matching lines when manually switching delimiter
+- prompt to save custom log format before applying delimiter
+- auto-detect log formats with P, custom format persistence, and regex wizard docs
+- regex delimiter builder wizard for unnamed capture groups
+- add autocomplete suggestions to time window prompt
+- fast incremental raw mode, ScrollView-based RawPager, and header detection
+- rewrite RawPager to use RichLog with cursor overlay and fix streaming bugs
+- raw pager mode with on-demand columnar parsing
+- add cross-version performance history and benchmark suite
+- coalesce chained deferred rebuilds during streaming
+- add back pressure detection and status bar indicators
+- show history in delimiter autocomplete dropdown
+- add --tail, --time-window, and --columns CLI arguments
+- ~ shows all excluded logs (filters + parse failures, not just parse)
+- chained ~ buffers exclude lines from all ancestor delimiters
+- unparsed buffer (~) stays updated with streaming data
+- ~ creates a new raw buffer from unparsed logs instead of a popup screen
+- show skipped row count in status bar, suppress repeated mismatch warnings
+- smarter delimiter inference with auto-switch on mismatch
+- delimiter fixes, empty-input guards, space+ option, status bar
+- queue user actions during data loading instead of rejecting them
+- flash message when delimiter change clears active filters
+- arrival timestamps, time window filter, and rolling window
+- buffer groups with animated stream icons, group bar styling, and docs updates
+- loading indicators, status bar flash, group icons, and UX fixes
+- add open file keybinding, smart autocomplete, and stdin source detection
+- add config viewer tab to help screen and autocomplete suggestions
+- add configurable keymaps, status bar format, and theming system
+- add pivot focused view, reset highlights keybind, exclude filters, and docs updates
+- release 1.0.0
+- release 1.0.0!
+- test release change
+- major performance enhancements, details in description (#22)
+- numeric sort (#21)
+- permanently dismiss getting started screen with Ctrl+c (#19)
+- don't add prev index to buffer name when using the `!` run_comm… (#18)
+- add ability to yank a cell with `y` keybinding (#17)
+- run external commands with ! (#15)
+- add github workflow
+- adds ruff pre-commit hooks for formatting and linting
+- added a new select widget, NlessSelect, which offers type-based completion and arrow selection
+- added a new select widget, NlessSelect, which offers type-based completion (#14)
+- CLI flags for delimiter, unique, filters, and sort (#13)
+- arbitrary column delimiters (#12)
+
+### Fix
+
+- improve space-delimiter inference for prose and edge cases
+- ex-mode :open uses add_group instead of missing _open_new_group
+- correct cli_args import path in ex-mode
+- include CHANGELOG.md in package for release notes screen
+- add missing packaging dependency
+- status bar empty on new buffer, add missing menu actions
+- column unpin breaking render positions for < and > movement
+- use full terminal size when stdout is piped
+- preserve preamble lines skipped by find_header_index on delimiter switch
+- column selection by cursor index after filtering + splitting
+- delimiter inference picks space over comma for CSV with spaces in data
+- raw pager rendering issues
+- remove zebra striping from raw pager mode
+- escape Rich markup in raw pager lines
+- update stream_sort_100k perf baseline to 2.10s
+- ~ operator with deleted buffers and @ time window ceiling
+- prevent double lines when switching delimiter to raw
+- filters now match text that looks like Rich markup tags (e.g. [INFO])
+- update 5 stale tests to match current behavior
+- catch parse errors in view_unparsed_logs for JSON/CSV delimiters
+- JSON delimiter switch from raw/regex uses first data row as header
+- one-shot time window, cursor scroll behind header, page up/down
+- resize handling, status bar spacing, and UX improvements
+- auto-detect JSON delimiter for JSONL and JSON array input
+- fix an issue with more recent versions of textual
+- fixes the initialization bug for real this time
+- bug with initializing empty config file
+- external command streaming
+- getting-started-screen rendering - overflow scrolling, and spacing (#16)
+- github release tagging to match cz tagging pattern
+- markdown output in workflow
+- changelog message for GH release
+- remove v from changelog version
+- remove env vars for twine
+- add environment
+- python version in GH workflow
+- cz adds, commits, and tags for us
+- run git status for debugging
+- move git config earlier in the flow
+- testing cz
+- fixes a bug where duplicate columns mess up data position indexing (#11)
+
+### Refactor
+
+- performance optimizations, DRY extractions, and code cleanup
+- extract mixins from god objects, fix bugs, and improve test suite
+- improve state management and fix code smells across codebase
+- consolidate delimiter auto-switch logic and fix review findings
+- extract shared auto-switch method, remove redundant state
+- extract data processing, operations, status bar, and unparsed logs into separate modules
+
+### Perf
+
+- populate parsed-row cache during incremental loading
+- optimize streaming rebuild pipeline
+- optimize sort pipeline for 100K+ rows
+
 ## 1.10.3 (2026-03-19)
 
 ### Fix
