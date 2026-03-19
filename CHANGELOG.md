@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1 (2026-03-19)
+
+### Fix
+
+- add missing packaging dependency
+
 ## 1.10.0 (2026-03-19)
 
 ### Feat
