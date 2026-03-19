@@ -1,7 +1,7 @@
 <h1 align="center">nless</h1>
 
 <p align="center">
-  <strong>Excel for logs</strong> — pipe in anything, wrangle it into columns.
+  <strong>excel for your logs</strong> — pipe in **anything**, wrangle it into columns.
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
   <a href="#installation">Install</a>
 </p>
 
-**nless** is a TUI pager for exploring and analyzing tabular data with vi-like keybindings, built on [Textual](https://textual.textualize.io/). It reads from stdin, files, or shell command output — automatically inferring structure so you can filter, sort, pivot, and reshape on the fly. Works with CSV, TSV, JSON, logs, and any delimited output.
+**nless** is a TUI pager for exploring and analyzing tabular data with vi-like keybindings, built on [Textual](https://textual.textualize.io/). Pipe in anything and nless infers the structure so you can filter, sort, pivot, and reshape without config. Works with CSV, TSV, JSON, logs, and any delimited output.
 
 ## Installation
 
@@ -89,46 +89,46 @@ Press `?` inside nless to view all keybindings.
 
 ## Why nless?
 
-I frequently need to dissect streaming tabular data — server logs, kubectl output, CSV exports, CI pipelines. None of the existing tools had exactly the feature set I wanted, so I built nless to complement your workflow.
+I frequently need to explore streaming tabular data: server logs, kubectl output, CSV exports, CI pipelines. None of the existing tools had exactly the feature set I wanted, so I built nless.
 
-- **Zero config** — pipe in anything and nless infers the structure. No schemas, no format flags, no setup.
-- **Stream-native** — built for data that's still arriving. Tail mode, arrival timestamps, and time window filtering come standard.
-- **Vi-native** — if you know Vim, you know nless. Every action is a single keypress away.
-- **One tool, many formats** — CSV, TSV, JSON, space-aligned, regex, raw. Switch between them on the fly without leaving the pager.
+- **Zero config** — pipe in anything and nless infers the structure.
+- **Stream-native** — built for data that's still arriving, with streaming features like tail mode, arrival timestamps, and time window filtering.
+- **Vi-native** — if you know Vim, nless should feel familiar. If you don't, choose from the other built-in keymaps or build your own. 
+- **Mouse-friendly** — click column headers to sort, double-click pivot rows to drill in, right-click for context menus, navigate via the menu bar.
+- **One tool, many formats** — CSV, TSV, JSON, space-aligned, regex, raw. Switch between them without leaving the pager.
 
 ## Features
 
-- **Delimiter inference & swapping** — auto-detects CSV, TSV, space-aligned, JSON, and more; swap on the fly with `D`, or use regex with named capture groups
-- **Filtering & searching** — filter by column, cell value, or search match; exclude rows; full-text search with match navigation
-- **Sorting & pivoting** — one-key sort on any column; group by composite key with summary view and drill-in
-- **Streaming & tail mode** — live-updating as new data arrives, with arrival timestamps and time window filtering
-- **JSON & log parsing** — extract nested JSON fields into columns; parse unstructured logs with regex
-- **Pipe mode** — use nless as a pipeline stage with `Q` to pipe and exit, or `--no-tui` for batch mode
+- **Delimiter inference & swapping** — auto-detects CSV, TSV, space-aligned, JSON, and more. Swap with `D`, or use regex with named capture groups.
+- **Filtering & searching** — filter by column, cell value, or search match. Exclude rows. Full-text search with match navigation.
+- **Sorting & pivoting** — one-key sort on any column. Group by composite key with summary view and drill-in.
+- **Streaming & tail mode** — live-updating as new data arrives, with arrival timestamps and time window filtering.
+- **JSON & log parsing** — extract nested JSON fields into columns. Parse unstructured logs with regex.
+- **Pipe mode** — use nless as a pipeline stage with `Q` to pipe and exit, or `--no-tui` for batch mode.
 
 <details>
 <summary>All features</summary>
 
-- **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
-- **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly with `D`
-- **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters with `d`
-- **Filtering** — filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`)
-- **Sorting** — toggle ascending/descending sort on any column with `s`
-- **Searching** — search (`/`), search by cell value (`*`), navigate matches (`n`/`p`)
-- **Pivoting** — group records by composite key with `U`, focused summary view, dive into grouped data with `enter`
-- **Column management** — show/hide columns (`C`), reorder columns (`<`/`>`)
-- **JSON extraction** — promote nested JSON fields to columns with `J`
-- **Shell commands** — run a shell command and pipe its output into a new buffer with `!`
-- **Tail mode** — keep the cursor at the bottom as new data arrives with `t`
-- **Output** — write buffer contents to a file or stdout (`W`), copy cell values (`y`)
-- **Themes** — 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`
-- **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
-- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
-- **Raw pager mode** — `--raw` or auto-detected; a fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead
-- **Excluded lines** — view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers
-- **Pipe mode** — use nless as a pipeline stage; interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode
-- **Mouse support** — click column headers to sort, double-click pivot rows to drill in, right-click for context menus, and navigate via the menu bar
-- **Merge files** — combine multiple files into a single view with a `_source` column using `--merge`
-- **Update notifications** — background PyPI version check with non-blocking toast notifications
+- **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history.
+- **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode with `D`.
+- **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters with `d`.
+- **Filtering** — filter by column (`f`/`F`), exclude (`e`/`E`), across all columns (`|`), or from a search (`&`).
+- **Sorting** — toggle ascending/descending sort on any column with `s`.
+- **Searching** — search (`/`), search by cell value (`*`), navigate matches (`n`/`p`).
+- **Pivoting** — group records by composite key with `U`, focused summary view, dive into grouped data with `enter`.
+- **Column management** — show/hide columns (`C`), reorder columns (`<`/`>`).
+- **JSON extraction** — promote nested JSON fields to columns with `J`.
+- **Shell commands** — run a shell command and pipe its output into a new buffer with `!`.
+- **Tail mode** — keep the cursor at the bottom as new data arrives with `t`.
+- **Output** — write buffer contents to a file or stdout (`W`), copy cell values (`y`).
+- **Themes** — 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`.
+- **Arrival timestamps** — every row records when it was received. Toggle the `_arrival` column with `A`.
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`). Append `+` for rolling windows.
+- **Raw pager mode** — `--raw` or auto-detected. A fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead.
+- **Excluded lines** — view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers.
+- **Pipe mode** — use nless as a pipeline stage. Interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode.
+- **Mouse support** — click column headers to sort, double-click pivot rows to drill in, right-click for context menus, navigate via the menu bar.
+- **Merge files** — combine multiple files into a single view with a `_source` column using `--merge`.
 
 </details>
 
@@ -244,11 +244,11 @@ See the [full keybinding reference](https://mpryor.github.io/nothing-less/keybin
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or a pull request — check out the [contributing guidelines](CONTRIBUTING.md) for more information.
+Contributions are welcome! See the [contributing guidelines](CONTRIBUTING.md) for details.
 
 ## Alternatives
 
-Shout-outs to all of the below wonderful tools! If nless doesn't have what you need, they likely will:
+If nless doesn't have what you need, check out these other great tools:
 
 | | [nless](https://github.com/mpryor/nothing-less) | [VisiData](https://www.visidata.org/) | [csvlens](https://github.com/YS-L/csvlens) | [lnav](https://github.com/tstack/lnav) | [Toolong](https://github.com/Textualize/toolong) |
 |---|:---:|:---:|:---:|:---:|:---:|
