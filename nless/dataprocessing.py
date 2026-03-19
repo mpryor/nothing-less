@@ -43,8 +43,12 @@ def coerce_to_numeric(value: Any) -> int | float | str:
     """Try to coerce *value* to a numeric type."""
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and not _looks_numeric(value):
-        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        c = value[0]
+        if c not in "0123456789+-.":
+            return value
     try:
         return float(value)
     except (ValueError, TypeError):
@@ -54,7 +58,12 @@ def coerce_to_numeric(value: Any) -> int | float | str:
 
 def coerce_sort_key(value: str) -> int | float | str:
     """Coerce a string to numeric if possible, for sort comparison."""
-    if not _looks_numeric(value):
+    if not value:
+        return value
+    # Fast first-char reject avoids int()/float() exception overhead
+    # on obviously non-numeric strings.
+    c = value[0]
+    if c not in "0123456789+-.":
         return value
     try:
         return int(value)

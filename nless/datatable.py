@@ -485,15 +485,13 @@ class Datatable(ScrollView):
     def render_line(self, y: int) -> Strip:
         y = y + self.scroll_offset.y
         x = self.scroll_offset.x
-        # if we're at the top, render the column header
         if y == self.scroll_offset.y:
             return self._render_column_headers(x)
 
-        # else render the rows
         if y - 1 < len(self.rows):
-            row = self.rows[y - 1]  # -1 to account for header
+            row = self.rows[y - 1]
             segments = []
-            accumulated_x = 0  # track how far we've rendered horizontally
+            accumulated_x = 0
             is_zebra_row = (y - 1) % 2 != 0
             is_cursor_row = (y - 1) == self.cursor_row
             is_hover_row = (y - 1) == self._hover_row
@@ -505,7 +503,6 @@ class Datatable(ScrollView):
                     accumulated_x + curr_column_width <= x
                     and i > self.fixed_columns - 1
                 ):
-                    # skip this cell if it's before the x offset
                     accumulated_x += curr_column_width
                     continue
                 elif i < self.fixed_columns:

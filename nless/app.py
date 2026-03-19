@@ -1244,7 +1244,6 @@ class NlessApp(
 
     def on_exit_app(self) -> None:
         self._stop_group_bar_timer()
-        # check if file exists, if not create it
         os.makedirs(
             os.path.dirname(os.path.expanduser(self.HISTORY_FILE)), exist_ok=True
         )
@@ -1411,9 +1410,12 @@ class NlessApp(
         # Show release notes on version upgrade
         self._check_release_notes()
 
-        # Check for newer version on PyPI (non-blocking)
+        # Check for newer version on PyPI (non-blocking, skip in dev installs)
         if not self.demo_mode:
-            self._check_for_update()
+            from .version import is_dev_install
+
+            if not is_dev_install():
+                self._check_for_update()
 
     async def _add_pending_file_groups(self) -> None:
         for filepath, stream in self._pending_file_groups:

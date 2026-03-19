@@ -22,7 +22,6 @@ from .datatable import Datatable as NlessDataTable
 from .dataprocessing import (
     build_composite_key,
     coerce_sort_key,
-    coerce_to_numeric,
     find_sorted_insert_index,
     highlight_regex_patterns,
     matches_all_filters,
@@ -181,7 +180,6 @@ class NlessBuffer(
     ):
         super().__init__()
 
-        # ── Core identity ──────────────────────────────────────
         self._cli_args = cli_args
         self.line_stream = line_stream
         self._lock = threading.RLock()
@@ -193,7 +191,6 @@ class NlessBuffer(
         if line_stream:
             line_stream.subscribe(self, self.add_logs, lambda: self.mounted)
 
-        # ── Streaming state ────────────────────────────────────
         self.stream = StreamState()
         self.first_row_parsed = False
         self._all_source_lines: list[str] | None = None  # unfiltered history for ~
@@ -202,10 +199,9 @@ class NlessBuffer(
         self._last_flushed_idx = 0
         self._initial_load_done = False
 
-        # ── Column / delimiter state ───────────────────────────
         self.current_columns: list[Column] = []
         if cli_args and cli_args.delimiter:
-            pattern = re.compile(cli_args.delimiter)  # validate regex
+            pattern = re.compile(cli_args.delimiter)
             if pattern.groups > 0 and pattern.groupindex:
                 initial_delim = pattern
             else:
@@ -215,7 +211,6 @@ class NlessBuffer(
         self.delim = DelimiterState(value=initial_delim)
         self._has_nested_delimiters = False
 
-        # ── Filter / sort / search state ───────────────────────
         self.query = FilterSortState(
             filters=cli_args.filters if cli_args else [],
             unique_column_names=cli_args.unique_keys if cli_args else set(),
@@ -225,54 +220,35 @@ class NlessBuffer(
             self.query.sort_column = sort_column
             self.query.sort_reverse = direction.lower() == "desc"
 
-        # ── Pivot / dedup state ────────────────────────────────
         self.is_tailing = cli_args.tail if cli_args else False
         self._pivot_hidden_columns: set[str] = set()
-
-        # ── Arrival / source metadata ──────────────────────────
         self._current_source: str | None = None
         self._has_source_column: bool = False
 
-        # ── Time window state ──────────────────────────────────
         self.time_window: float | None = None
         self.rolling_time_window: bool = False
         self._time_window_ceiling: float | None = None
         self._rolling_timer = None
 
-        # ── Cache state ────────────────────────────────────────
         self.cache = CacheState()
-
-        # ── UI / loading state ─────────────────────────────────
         self.loading_state = LoadingState()
         self._status_ctx = StatusContext()
         self._update_generation = 0
         self._needs_deferred_update = False
         self._skipped_lines: list[str] = []
 
-        # ── Streaming highlight state ──────────────────────────
         self._green_lines: set[str] | None = None
         self._source_parse_filter: Callable[[str], bool] | None = None
-
-        # ── Back pressure ──────────────────────────────────────
         self._bp_timer = None
         self._bp_behind: bool = False
-
-        # ── User-defined highlights ────────────────────────────
         self.regex_highlights: list[tuple[re.Pattern, str]] = []
 
-        # ── Pre-view snapshot (undo) ───────────────────────────
         self._pre_view_state = None
         self._pre_view_raw_rows: list[str] | None = None
         self._pre_view_timestamps: list[float] | None = None
-
-        # ── Log format auto-detection ──────────────────────────
         self._log_format_checked = False
-
-        # ── Session restore ────────────────────────────────────
         self._pending_session_state = None
         self._pending_cursor_position: tuple[int, int] | None = None
-
-        # ── Chain rebuild timer ────────────────────────────────
         self.chain = ChainTimerState()
 
     # ── StreamState compatibility properties ─────────────────
@@ -606,6 +582,9 @@ class NlessBuffer(
         ):
             return list(parsed), [], None
 
+        # Pre-computed by _rebuild_column_caches() before _filter_rows().
+        has_computed = self._has_nested_delimiters
+
         # Fast path: partial cache + no filters → only parse new rows
         if (
             parsed is not None
@@ -623,6 +602,7 @@ class NlessBuffer(
                         self.delim.value,
                         self.current_columns,
                         column_positions=self.delim.column_positions,
+                        has_computed=has_computed,
                     )
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     continue
@@ -657,6 +637,7 @@ class NlessBuffer(
                         self.delim.value,
                         self.current_columns,
                         column_positions=self.delim.column_positions,
+                        has_computed=has_computed,
                     )
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     unparseable_raw.append(row_str)
@@ -727,23 +708,32 @@ class NlessBuffer(
             deduped_rows.append(cells)
         return deduped_rows
 
-    def _sort_rows(self, rows: list[list[str]]) -> None:
-        """Sort rows in-place by the current sort column."""
+    def _sort_rows(self, rows: list[list[str]]) -> list | None:
+        """Sort rows in-place by the current sort column.
+
+        Returns the computed sort keys (always ascending order for bisect)
+        when sorting succeeds, or ``None`` if no sort was performed.
+        """
         if self.query.sort_column is None:
-            return
+            return None
         sort_column_idx = self._get_col_idx_by_name(self.query.sort_column)
         if sort_column_idx is None:
-            return
+            return None
         try:
             # Precompute sort keys in one O(N) pass to avoid calling
             # coerce_to_numeric O(N log N) times inside the sort comparator.
-            keys = [coerce_to_numeric(r[sort_column_idx]) for r in rows]
+            keys = [coerce_sort_key(strip_markup(r[sort_column_idx])) for r in rows]
             indices = sorted(
                 range(len(rows)), key=keys.__getitem__, reverse=self.query.sort_reverse
             )
             rows[:] = [rows[i] for i in indices]
+            # Return keys in ascending order for bisect-based incremental inserts
+            sorted_keys = [keys[i] for i in indices]
+            if self.query.sort_reverse:
+                sorted_keys.reverse()
+            return sorted_keys
         except (ValueError, IndexError):
-            pass
+            return None
         except TypeError:
             try:
                 rows.sort(
@@ -752,6 +742,7 @@ class NlessBuffer(
                 )
             except (TypeError, IndexError):
                 pass
+            return None
 
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False
@@ -805,7 +796,7 @@ class NlessBuffer(
             )
             filtered_rows = self._apply_time_window(filtered_rows)
             deduped_rows = self._dedup_rows(filtered_rows)
-            self._sort_rows(deduped_rows)
+            sort_keys = self._sort_rows(deduped_rows)
 
             # Rebuild dedup indices after sorting (sort reorders rows)
             if self.query.unique_column_names:
@@ -814,22 +805,9 @@ class NlessBuffer(
                     key = self._build_composite_key(row)
                     self.cache.dedup_key_to_row_idx[key] = idx
 
-            # Populate _sort_keys for incremental inserts.
-            # _sort_keys is always ascending for bisect. Rows are already
-            # sorted by _sort_rows, so extract in order (O(N)) instead of
-            # re-sorting (O(N log N)). If sort_reverse, reverse the list.
-            if self.query.sort_column is not None:
-                sort_col_idx = self._get_col_idx_by_name(
-                    self.query.sort_column, render_position=False
-                )
-                if sort_col_idx is not None:
-                    keys = [
-                        coerce_sort_key(strip_markup(str(r[sort_col_idx])))
-                        for r in deduped_rows
-                    ]
-                    if self.query.sort_reverse:
-                        keys.reverse()
-                    self.cache.sort_keys = keys
+            # Reuse sort keys from _sort_rows for incremental inserts.
+            if sort_keys is not None:
+                self.cache.sort_keys = sort_keys
 
             aligned_rows = self._align_cells_to_visible_columns(deduped_rows)
             styled_rows = self._highlight_search_matches(aligned_rows, fixed_columns)
@@ -1291,8 +1269,6 @@ class NlessBuffer(
             self._update_status_bar()
         else:
             self._stop_spinner()
-
-    # -- Back pressure monitoring ------------------------------------------
 
     # ── Theme Helpers ──────────────────────────────────────────────
     def _get_theme(self):
