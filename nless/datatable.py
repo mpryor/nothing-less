@@ -195,24 +195,25 @@ class Datatable(ScrollView):
             self.col_separator_width * self.fixed_columns
         )
 
-        if (
-            self.scroll_offset.x < total_width
-            and self.cursor_column <= len(self.columns) - 1
-        ):  # we're left of the column, so we need to scroll the right edge into view
-            total_width += (
-                self.column_widths[self.cursor_column] + self.col_separator_width
-            )
-
         if self.cursor_column == 0:
             total_width = 0
 
-        total_width = max(total_width - sum_fixed_column_widths, 0)
+        cursor_cell_width = (
+            self.column_widths[self.cursor_column] + self.col_separator_width
+            if self.cursor_column < len(self.column_widths)
+            else 1
+        )
 
+        # Build a region that includes both the cursor cell and enough left
+        # padding to clear the fixed (pinned) columns.  scroll_to_region will
+        # scroll the minimum amount to make this entire region visible, which
+        # guarantees the cursor is never hidden behind pinned columns.
+        fixed_pad = min(total_width, sum_fixed_column_widths)
         self.scroll_to_region(
             region=Region(
-                x=total_width,
+                x=max(total_width - fixed_pad, 0),
                 y=self.cursor_row,
-                width=1,
+                width=cursor_cell_width + fixed_pad,
                 height=2,
             ),
             animate=animate if animate else False,

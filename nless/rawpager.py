@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -303,15 +304,34 @@ class RawPager(ScrollView):
         remaining_trim = x
         for seg_text, seg_style, control in text.render(console):
             if remaining_trim > 0:
-                if len(seg_text) <= remaining_trim:
-                    remaining_trim -= len(seg_text)
+                seg_width = cell_len(seg_text)
+                if seg_width <= remaining_trim:
+                    remaining_trim -= seg_width
                     continue
-                seg_text = seg_text[remaining_trim:]
-                remaining_trim = 0
+                # Partial trim: remove characters from the left
+                while remaining_trim > 0 and seg_text:
+                    ch_w = cell_len(seg_text[0])
+                    if ch_w > remaining_trim:
+                        # Wide char straddles trim boundary — replace with space
+                        seg_text = seg_text[1:]
+                        remaining_trim = 0
+                        segments.append(
+                            Segment(
+                                " ",
+                                style + seg_style if seg_style else style,
+                            )
+                        )
+                        consumed += 1
+                        break
+                    seg_text = seg_text[1:]
+                    remaining_trim -= ch_w
+                if not seg_text:
+                    continue
+            seg_cell_width = cell_len(seg_text)
             segments.append(
                 Segment(seg_text, style + seg_style if seg_style else style, control)
             )
-            consumed += len(seg_text)
+            consumed += seg_cell_width
 
         # Pad to full width so cursor highlight covers the line
         width = self.size.width

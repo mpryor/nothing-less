@@ -1015,9 +1015,12 @@ class NlessBuffer(
         """Cancel any pending chain rebuild timer and reset state."""
         self.chain.stop()
 
+    _BACKPRESSURE_NOTIFY_THRESHOLD = 100
+
     def _schedule_chain_rebuild(self, restore_position, callback):
         """Delay the next rebuild to let more streaming data accumulate."""
-        if not self.chain.notified:
+        pending = len(self.raw_rows) - self._last_flushed_idx
+        if not self.chain.notified and pending >= self._BACKPRESSURE_NOTIFY_THRESHOLD:
             self.chain.notified = True
             self.notify(
                 "[yellow]⚠[/yellow]  Data arriving faster than it can be processed — buffering",
