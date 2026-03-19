@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.4 (2026-03-19)
+
+### Fix
+
+- improve space-delimiter inference for prose and edge cases
+
+### Refactor
+
+- performance optimizations, DRY extractions, and code cleanup
+
 ## 1.10.3 (2026-03-19)
 
 ### Fix
