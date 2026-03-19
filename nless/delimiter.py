@@ -384,9 +384,17 @@ def find_header_index(lines: list[str], delimiter: str, max_fields: int = 0) -> 
     if consensus <= 1:
         return 0
 
-    # First line already matches — no skip needed
-    if lines and _field_count(lines[0], delimiter, max_fields=max_fields) == consensus:
-        return 0
+    # First line already matches — no skip needed.
+    # For space-delimited data, allow the header to be slightly under
+    # consensus: the last column often contains spaces in data values
+    # (e.g. lsof NAME "127.0.0.1:... (SYN_SENT)") but not in the
+    # header name, producing fewer fields in the header line.
+    if lines:
+        first_count = _field_count(lines[0], delimiter, max_fields=max_fields)
+        if first_count == consensus:
+            return 0
+        if delimiter in (" ", "  ") and first_count == consensus - 1:
+            return 0
 
     for i, line in enumerate(lines):
         if not line.strip():
@@ -483,6 +491,7 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
     # Penalize delimiters with inconsistent field counts across lines.
     # Tabular data has the same number of columns on every row; source code,
     # prose, and config files produce wildly varying split counts.
+    dblspace_raw_agreement = 0.0
     for delimiter, counts in delimiter_field_counts.items():
         if non_empty_lines >= 2:
             # A delimiter that doesn't split the first line (header) but
@@ -497,6 +506,8 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
             if len(counts) >= 2:
                 most_common = max(set(counts), key=counts.count)
                 agreement = counts.count(most_common) / len(counts)
+                if delimiter == "  ":
+                    dblspace_raw_agreement = agreement
 
                 # For space delimiters, retry with adjustments before
                 # giving up: (a) exclude a preamble first-line whose
@@ -504,9 +515,12 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                 # (spaces in last column) to the consensus count.
                 if agreement < 0.8 and delimiter in (" ", "  ") and most_common > 2:
                     adjusted = []
+                    n_below = 0
                     for i, c in enumerate(counts):
                         if i == 0 and c < most_common * 0.5:
                             continue  # preamble line (e.g. "total 40")
+                        if c < most_common:
+                            n_below += 1
                         # Cap overflow from spaces in the last column
                         # (e.g. ls -la filenames, ps aux COMMAND). Only
                         # cap lines moderately above consensus — very
@@ -515,7 +529,13 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                             adjusted.append(most_common)
                         else:
                             adjusted.append(c)
-                    if adjusted:
+                    # Only accept adjustment when disagreement is from
+                    # overflow (above consensus) and the spread is small
+                    # relative to the field count.  Prose/logs scatter
+                    # widely — reject those.
+                    count_range = max(counts) - min(counts) if counts else 0
+                    relative_range = count_range / most_common if most_common else 1
+                    if adjusted and n_below <= 1 and relative_range <= 0.35:
                         adj_agreement = adjusted.count(most_common) / len(adjusted)
                         if adj_agreement >= 0.8:
                             agreement = adj_agreement
@@ -532,8 +552,14 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
     # with empty cells (e.g. lsof, where TID/TASKCMD columns are blank).
     # split() collapses empty cells, producing inconsistent field counts,
     # but fixed-width position slicing gives perfect consistency.
+    # Skip if double-space already has naturally high agreement —
+    # position-based splitting can't distinguish single-space word
+    # boundaries within header names (e.g. "LAST SEEN") from column
+    # boundaries. Only check raw agreement (before adjustment), since
+    # adjusted agreement can rescue genuinely broken splits (e.g. lsof).
     if (
         delimiter_scores.get(" ", 0) == 0
+        and dblspace_raw_agreement < 0.8
         and first_line_splits.get(" ", False)
         and non_empty_lines >= 2
     ):
