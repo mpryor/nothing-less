@@ -3,9 +3,9 @@
 # via streaming after the initial batch is clean.
 #
 # Test:
-#   ./scripts/fake-kubectl-pods.sh | poetry run nless -d 'space+'
+#   ./scripts/fake-kubectl-pods.sh | poetry run nless
 #
-# Watch the streaming lines arrive — RESTARTS should stay intact.
+# Watch the streaming lines arrive — RESTARTS should stay intact, no Skipped.
 
 cat <<'EOF'
 NAMESPACE       NAME                                       READY   STATUS    RESTARTS          AGE

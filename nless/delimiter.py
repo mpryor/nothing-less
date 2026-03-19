@@ -548,6 +548,27 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                     # Inconsistent — zero out the score
                     delimiter_scores[delimiter] = 0
 
+    # When both space delimiters survive consistency checks, prefer "  "
+    # (space+) if it has strictly better raw agreement.  " " splits on ALL
+    # whitespace, so fields with internal single spaces (e.g. kubectl
+    # RESTARTS "2000 (8s ago)") inflate its per-line field count and base
+    # score even though the splits are wrong.  "  " preserves those values
+    # and should win when its consistency is higher.
+    sp_score = delimiter_scores.get(" ", 0)
+    sp2_score = delimiter_scores.get("  ", 0)
+    if sp_score > 0 and sp2_score > 0:
+        sp_counts = delimiter_field_counts.get(" ", [])
+        sp2_counts = delimiter_field_counts.get("  ", [])
+        if sp_counts and sp2_counts:
+            sp_agree = sp_counts.count(max(set(sp_counts), key=sp_counts.count)) / len(
+                sp_counts
+            )
+            sp2_agree = sp2_counts.count(
+                max(set(sp2_counts), key=sp2_counts.count)
+            ) / len(sp2_counts)
+            if sp2_agree > sp_agree:
+                delimiter_scores[" "] = 0
+
     # Last resort: try position-based splitting for space-aligned output
     # with empty cells (e.g. lsof, where TID/TASKCMD columns are blank).
     # split() collapses empty cells, producing inconsistent field counts,
