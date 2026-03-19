@@ -260,7 +260,7 @@ def matches_all_filters(
     return True
 
 
-def choose_parse_strategy(delimiter, has_nested, columns):
+def choose_parse_strategy(delimiter, has_nested, columns, column_positions=None):
     """Return (parse_fn, needs_cleanup) for a given delimiter.
 
     Selecting the strategy once outside a hot loop avoids repeated
@@ -299,4 +299,9 @@ def choose_parse_strategy(delimiter, has_nested, columns):
         return parse_raw, False
 
     # split_line already cleans cells
-    return lambda line: split_line(line, delimiter, columns), False
+    return (
+        lambda line: split_line(
+            line, delimiter, columns, column_positions=column_positions
+        ),
+        False,
+    )

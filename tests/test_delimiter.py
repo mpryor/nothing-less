@@ -1,10 +1,13 @@
 import re
 
 from nless.delimiter import (
+    detect_column_positions,
+    detect_space_max_fields,
     flatten_json_lines,
     infer_delimiter,
     split_aligned_row,
     split_aligned_row_preserve_single_spaces,
+    split_by_positions,
     split_csv_row,
     split_line,
 )
@@ -214,6 +217,238 @@ class TestFlattenJsonLines:
         result = flatten_json_lines(lines)
         assert result is not lines
         assert len(result) == 50
+
+
+class TestMaxFieldsSplit:
+    def test_max_fields_caps_split(self):
+        result = split_aligned_row("a b c d e", max_fields=3)
+        assert result == ["a", "b", "c d e"]
+
+    def test_max_fields_preserve_single_spaces(self):
+        result = split_aligned_row_preserve_single_spaces(
+            "New York  San Francisco  Los Angeles  United States", max_fields=3
+        )
+        assert result == ["New York", "San Francisco", "Los Angeles  United States"]
+
+    def test_max_fields_zero_unchanged(self):
+        assert split_aligned_row("a b c d e") == ["a", "b", "c", "d", "e"]
+
+    def test_max_fields_equal_to_field_count(self):
+        result = split_aligned_row("a b c", max_fields=3)
+        assert result == ["a", "b", "c"]
+
+
+class TestPsAuxInfer:
+    def test_ps_aux_infer(self, ps_aux_lines):
+        result = infer_delimiter(ps_aux_lines)
+        assert result == " "
+
+    def test_ps_aux_split_line(self, ps_aux_lines):
+        # Build columns matching the 11-field header
+        header_fields = split_aligned_row(ps_aux_lines[0])
+        assert len(header_fields) == 11
+        columns = [
+            Column(
+                name=name,
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, name in enumerate(header_fields)
+        ]
+        # Split a data line with spaces in COMMAND
+        cells = split_line(ps_aux_lines[2], " ", columns)
+        assert len(cells) == 11
+        assert "python /home/matt/app.py arg1 arg2" in cells[-1]
+
+    def test_df_h_infer(self):
+        lines = [
+            "Filesystem      Size  Used Avail Use% Mounted on",
+            "/dev/sda1        50G   20G   28G  42% /",
+            "tmpfs           3.9G     0  3.9G   0% /dev/shm",
+            "/dev/sdb1       100G   60G   35G  64% /home",
+        ]
+        result = infer_delimiter(lines)
+        # "  " (double-space) is preferred here because the header contains
+        # the multi-word column "Mounted on" separated by single spaces.
+        assert result in (" ", "  ")
+
+    def test_detect_space_max_fields_ps_aux(self, ps_aux_lines):
+        # Header has 11 fields, data rows have 12+ → max_fields = 11 (header wins)
+        result = detect_space_max_fields(ps_aux_lines, " ")
+        assert result == 11
+
+    def test_detect_space_max_fields_df_h(self):
+        lines = [
+            "Filesystem      Size  Used Avail Use% Mounted on",
+            "/dev/sda1        50G   20G   28G  42% /",
+            "tmpfs           3.9G     0  3.9G   0% /dev/shm",
+            "/dev/sdb1       100G   60G   35G  64% /home",
+        ]
+        # Header has 7 fields, data rows have 6 → max_fields = 6
+        result = detect_space_max_fields(lines, " ")
+        assert result == 6
+
+    def test_detect_space_max_fields_no_mismatch(self, space_aligned_lines):
+        # All lines have the same field count → no cap needed
+        result = detect_space_max_fields(space_aligned_lines, " ")
+        assert result == 0
+
+    def test_df_h_split_with_max_fields(self):
+        header = "Filesystem      Size  Used Avail Use% Mounted on"
+        # With max_fields=6, "Mounted on" stays as one field
+        result = split_aligned_row(header, max_fields=6)
+        assert result == ["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"]
+
+
+class TestPositionBasedSplitting:
+    def test_detect_column_positions(self):
+        lines = [
+            "COMMAND     PID   TID TASKCMD   USER   FD      TYPE",
+            "init(Ubun     1                 root  cwd   unknown",
+        ]
+        positions = detect_column_positions(lines)
+        assert positions[0] == 0  # COMMAND
+        # PID position may vary based on data alignment
+        assert len(positions) >= 7  # 7 columns
+
+    def test_split_by_positions_with_empty_cells(self):
+        lines = [
+            "COMMAND     PID   TID TASKCMD   USER",
+            "init(Ubun     1                 root",
+            "init(Ubun     1     8 Interop   root",
+        ]
+        positions = detect_column_positions(lines)
+        # Header itself splits correctly
+        assert split_by_positions(lines[0], positions) == [
+            "COMMAND",
+            "PID",
+            "TID",
+            "TASKCMD",
+            "USER",
+        ]
+        # Data line with empty TID and TASKCMD
+        fields = split_by_positions(lines[1], positions)
+        assert fields[0] == "init(Ubun"
+        assert fields[1] == "1"
+        assert fields[2] == ""  # TID empty
+        assert fields[3] == ""  # TASKCMD empty
+        assert fields[4] == "root"
+
+    def test_lsof_infer(self):
+        lines = [
+            "COMMAND     PID   TID TASKCMD   USER   FD      TYPE             DEVICE  SIZE/OFF             NODE NAME",
+            "init(Ubun     1                 root  cwd   unknown                                               /proc/1/cwd (readlink: Permission denied)",
+            "init(Ubun     1     8 Interop   root  cwd   unknown                                               /proc/1/task/8/cwd (readlink: Permission denied)",
+            "init          6                 root  cwd   unknown                                               /proc/6/cwd (readlink: Permission denied)",
+            "init          6     7 init      root  cwd   unknown                                               /proc/6/task/7/cwd (readlink: Permission denied)",
+        ]
+        result = infer_delimiter(lines)
+        assert result == " "
+
+    def test_lsof_split_by_positions(self):
+        lines = [
+            "COMMAND     PID   TID TASKCMD   USER   FD      TYPE             DEVICE  SIZE/OFF             NODE NAME",
+            "init(Ubun     1     8 Interop   root  cwd   unknown                                               /proc/1/task/8/cwd (readlink: Permission denied)",
+            "init(Ubun     1                 root  cwd   unknown                                               /proc/1/cwd (readlink: Permission denied)",
+        ]
+        positions = detect_column_positions(lines)
+        fields = split_by_positions(lines[1], positions)
+        assert len(fields) == 11
+        assert fields[0] == "init(Ubun"
+        assert fields[1] == "1"
+        assert fields[2] == "8"
+        assert fields[3] == "Interop"
+        assert fields[4] == "root"
+        assert fields[5] == "cwd"
+        assert fields[10] == "/proc/1/task/8/cwd (readlink: Permission denied)"
+
+    def test_split_line_with_positions(self):
+        """split_line uses column_positions when provided."""
+        lines = [
+            "COMMAND     PID   TID TASKCMD   USER",
+            "init(Ubun     1                 root",
+            "init(Ubun     1     8 Interop   root",
+        ]
+        positions = detect_column_positions(lines)
+        fields = split_line(lines[1], " ", [], column_positions=positions)
+        assert len(fields) == 5
+        assert fields[2] == ""  # TID empty
+        assert fields[3] == ""  # TASKCMD empty
+
+    def test_netstat_infer(self):
+        lines = [
+            "Active Internet connections (only servers)",
+            "Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name",
+            "tcp        0      0 127.0.0.1:40881         0.0.0.0:*               LISTEN      27281/ttyd",
+            "tcp        0      0 127.0.0.1:40675         0.0.0.0:*               LISTEN      28459/ttyd",
+            "tcp        0      0 10.255.255.254:53       0.0.0.0:*               LISTEN      -",
+        ]
+        assert infer_delimiter(lines) == " "
+
+    def test_netstat_position_split(self):
+        """netstat multi-word headers like 'Local Address' stay intact."""
+        lines = [
+            "Active Internet connections (only servers)",
+            "Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name",
+            "tcp        0      0 127.0.0.1:40881         0.0.0.0:*               LISTEN      27281/ttyd",
+            "tcp        0      0 10.255.255.254:53       0.0.0.0:*               LISTEN      -",
+        ]
+        positions = detect_column_positions(lines)
+        header = split_by_positions(lines[1], positions)
+        assert "Local Address" in header
+        assert "Foreign Address" in header
+        assert "PID/Program name" in header
+        data = split_by_positions(lines[2], positions)
+        assert "127.0.0.1:40881" in data
+        assert "27281/ttyd" in data
+
+    def test_ls_la_infer(self):
+        lines = [
+            "total 312",
+            "drwxr-xr-x  16 matt matt   4096 Mar 18 18:58 .",
+            "drwxrwxr-x  15 matt matt   4096 Mar 17 08:33 ..",
+            "-rw-r--r--   1 matt matt    125 Mar 18 18:57 .gitignore",
+            "-rw-r--r--   1 matt matt      0 Mar 18 19:43 file name.txt",
+        ]
+        assert infer_delimiter(lines) == " "
+
+    def test_ls_la_filename_with_spaces(self):
+        """Filenames with spaces are kept intact via maxsplit."""
+        lines = [
+            "total 312",
+            "drwxr-xr-x  16 matt matt   4096 Mar 18 18:58 .",
+            "-rw-r--r--   1 matt matt      0 Mar 18 19:43 file name.txt",
+        ]
+        # After preamble skip, first data line becomes header (9 fields)
+        header_fields = split_aligned_row(lines[1])
+        assert len(header_fields) == 9
+        columns = [
+            Column(
+                name=f,
+                labels=set(),
+                render_position=i,
+                data_position=i,
+                hidden=False,
+            )
+            for i, f in enumerate(header_fields)
+        ]
+        # Data line with spaces in filename: maxsplit keeps it as one field
+        cells = split_line(lines[2], " ", columns)
+        assert len(cells) == 9
+        assert cells[-1] == "file name.txt"
+
+    def test_source_code_not_space(self):
+        """Python source code must not infer as space-delimited."""
+        lines = [
+            "def main():",
+            "    x = get_value()",
+            "    if x > 0:",
+            '        print("positive")',
+            "    return x",
+        ]
+        assert infer_delimiter(lines) == "raw"
 
 
 class TestSplitLineComputedColumns:

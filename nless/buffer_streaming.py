@@ -173,11 +173,68 @@ class StreamingMixin:
         log_lines list.
         """
         from .buffer_delimiter import _sample_lines
-        from .delimiter import flatten_json_lines, infer_delimiter
+        from .delimiter import (
+            detect_column_positions,
+            detect_space_max_fields,
+            flatten_json_lines,
+            infer_delimiter,
+            split_by_positions,
+        )
 
         sample = _sample_lines(log_lines, max_total=15)
         self.delim.value = infer_delimiter(sample)
         self.delim.inferred = True
+
+        if isinstance(self.delim.value, str) and self.delim.value in (" ", "  "):
+            # Try position-based splitting first — it handles empty interior
+            # cells (e.g. lsof TID/TASKCMD) that split() can't preserve.
+            positions = detect_column_positions(sample)
+            if len(positions) > 2:
+                from .delimiter import split_aligned_row
+
+                expected = len(positions)
+                # Exclude short preamble lines (same filter as
+                # detect_column_positions uses internally).
+                max_line_len = max((len(ln) for ln in sample if ln.strip()), default=0)
+                long_lines = [
+                    ln for ln in sample if ln.strip() and len(ln) >= max_line_len * 0.5
+                ]
+                normal_counts = [len(split_aligned_row(ln)) for ln in long_lines]
+                normal_inconsistent = len(set(normal_counts)) > 1
+                # Use positions when: (a) the header has more fields
+                # than data (multi-word column names like netstat
+                # "Local Address"), or (b) empty interior cells that
+                # maxsplit can't fix (lsof TID/TASKCMD).
+                # DON'T use positions when data overflows the header
+                # (ps aux COMMAND with spaces) — maxsplit handles that.
+                if normal_inconsistent:
+                    pos_consistent = all(
+                        len(split_by_positions(ln, positions)) == expected
+                        for ln in long_lines
+                    )
+                    # Header has more fields than data → multi-word
+                    # headers or empty interior cells → positions needed.
+                    first_count = normal_counts[0] if normal_counts else 0
+                    consensus = max(set(normal_counts), key=normal_counts.count)
+                    header_overflow = first_count > consensus
+                    if pos_consistent and header_overflow:
+                        self.delim.column_positions = positions
+                    elif pos_consistent and not header_overflow:
+                        # Data overflows header — check if maxsplit
+                        # alone produces consistent results.
+                        maxsplit_counts = [
+                            len(split_aligned_row(ln, max_fields=expected))
+                            for ln in long_lines
+                        ]
+                        if len(set(maxsplit_counts)) > 1:
+                            self.delim.column_positions = positions
+
+            # Fall back to max_fields when positions aren't needed (e.g.
+            # ps aux COMMAND with spaces, df -h "Mounted on").
+            if not self.delim.column_positions:
+                self.delim.max_fields = detect_space_max_fields(
+                    sample, self.delim.value
+                )
 
         flattened = flatten_json_lines(log_lines)
         if flattened is not log_lines:
@@ -270,7 +327,25 @@ class StreamingMixin:
         """
         from .delimiter import find_header_index
 
-        header_idx = find_header_index(log_lines, self.delim.value)
+        # Position-based splitting gives consistent field counts for full-
+        # width lines, but short preamble lines (e.g. netstat's "Active
+        # Internet connections") still need to be skipped.
+        if self.delim.column_positions:
+            max_line_len = max((len(ln) for ln in log_lines if ln.strip()), default=0)
+            preamble_end = 0
+            for i, line in enumerate(log_lines):
+                if line.strip() and len(line) < max_line_len * 0.5:
+                    preamble_end = i + 1
+                else:
+                    break
+            if preamble_end > 0:
+                self.delim.preamble_lines = log_lines[:preamble_end]
+                log_lines = log_lines[preamble_end:]
+            return log_lines
+
+        header_idx = find_header_index(
+            log_lines, self.delim.value, max_fields=self.delim.max_fields
+        )
         if header_idx > 0:
             self.delim.preamble_lines = log_lines[:header_idx]
             log_lines = log_lines[header_idx:]
@@ -303,7 +378,9 @@ class StreamingMixin:
             self._rebuild_column_caches()
             data_table.add_columns(self._get_visible_column_labels())
         else:
-            data_table.add_columns([str(p) for p in parts])
+            data_table.add_columns(
+                [c.name for c in self.current_columns if not c.hidden]
+            )
 
         # For non-special delimiters, first line is the header
         header_consumed = (
@@ -550,7 +627,10 @@ class StreamingMixin:
             data_table.column_widths = column_widths
 
         parse, needs_cleanup = choose_parse_strategy(
-            self.delim.value, self._has_nested_delimiters, self.current_columns
+            self.delim.value,
+            self._has_nested_delimiters,
+            self.current_columns,
+            column_positions=self.delim.column_positions,
         )
 
         WIDTH_SAMPLE = COLUMN_WIDTH_SAMPLE_SIZE
@@ -626,7 +706,12 @@ class StreamingMixin:
         if self._time_window_ceiling is not None and ts > self._time_window_ceiling:
             return
         data_table = self.query_one(".nless-view")
-        cells = split_line(log_line, self.delim.value, self.current_columns)
+        cells = split_line(
+            log_line,
+            self.delim.value,
+            self.current_columns,
+            column_positions=self.delim.column_positions,
+        )
         cells.append(self._format_arrival(ts))
         if self._has_source_column:
             cells.append(self._current_source or "")

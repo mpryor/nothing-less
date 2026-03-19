@@ -537,7 +537,12 @@ class NlessBuffer(
         kept_sources = [] if source_labels is not None else None
         for i, line in enumerate(lines):
             try:
-                cells = split_line(line, self.delim.value, self.current_columns)
+                cells = split_line(
+                    line,
+                    self.delim.value,
+                    self.current_columns,
+                    column_positions=self.delim.column_positions,
+                )
             except (json.JSONDecodeError, csv.Error, ValueError):
                 continue
             if len(cells) != expected:
@@ -613,7 +618,12 @@ class NlessBuffer(
                 row_str = self.raw_rows[i]
                 ts = self._arrival_timestamps[i]
                 try:
-                    cells = split_line(row_str, self.delim.value, self.current_columns)
+                    cells = split_line(
+                        row_str,
+                        self.delim.value,
+                        self.current_columns,
+                        column_positions=self.delim.column_positions,
+                    )
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     continue
                 if len(cells) != expected_cell_count:
@@ -642,7 +652,12 @@ class NlessBuffer(
                 cells = list(parsed[i]) if needs_copy else parsed[i]
             else:
                 try:
-                    cells = split_line(row_str, self.delim.value, self.current_columns)
+                    cells = split_line(
+                        row_str,
+                        self.delim.value,
+                        self.current_columns,
+                        column_positions=self.delim.column_positions,
+                    )
                 except (json.JSONDecodeError, csv.Error, ValueError):
                     unparseable_raw.append(row_str)
                     unparseable_timestamps.append(ts)
@@ -830,7 +845,12 @@ class NlessBuffer(
             if green_lines and self.query.unique_column_names:
                 green_keys = set()
                 for line in green_lines:
-                    cells = split_line(line, self.delim.value, self.current_columns)
+                    cells = split_line(
+                        line,
+                        self.delim.value,
+                        self.current_columns,
+                        column_positions=self.delim.column_positions,
+                    )
                     cells.append("")  # placeholder for arrival
                     cells.insert(0, "")  # placeholder for count
                     key = self._build_composite_key(cells, render_position=False)

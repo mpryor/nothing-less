@@ -537,6 +537,8 @@ class DelimiterState:
     value: str | re.Pattern | None = None
     inferred: bool = False
     name: str | None = None
+    max_fields: int = 0
+    column_positions: list[int] | None = None
     preamble_lines: list[str] = field(default_factory=list)
     suggestion_shown: bool = False
     mismatch_warned: bool = False
@@ -548,6 +550,8 @@ class DelimiterState:
         self.suggestion_shown = False
         self.mismatch_warned = False
         self.total_skipped = 0
+        self.max_fields = 0
+        self.column_positions = None
 
 
 @dataclass

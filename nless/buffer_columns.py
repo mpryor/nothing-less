@@ -7,7 +7,11 @@ import re
 from typing import TYPE_CHECKING
 
 from .dataprocessing import strip_markup
-from .delimiter import split_line
+from .delimiter import (
+    split_aligned_row,
+    split_aligned_row_preserve_single_spaces,
+    split_line,
+)
 from .types import Column, MetadataColumn
 
 # Render position assigned to hidden columns. Must be larger than any real
@@ -25,15 +29,26 @@ class ColumnMixin:
     @staticmethod
     def _make_columns(names: list) -> list[Column]:
         """Create a list of Column objects from a list of names."""
+        # Deduplicate names so cache lookups (keyed by name) stay correct.
+        seen: dict[str, int] = {}
+        unique: list[str] = []
+        for n in names:
+            s = str(n)
+            if s in seen:
+                seen[s] += 1
+                unique.append(f"{s}_{seen[s]}")
+            else:
+                seen[s] = 1
+                unique.append(s)
         return [
             Column(
-                name=str(n),
+                name=name,
                 labels=set(),
                 render_position=i,
                 data_position=i,
                 hidden=False,
             )
-            for i, n in enumerate(names)
+            for i, name in enumerate(unique)
         ]
 
     @staticmethod
@@ -87,6 +102,22 @@ class ColumnMixin:
                 pass
             return ["value"]
         else:
+            if self.delim.column_positions and self.delim.value in (" ", "  "):
+                from .delimiter import split_by_positions
+
+                return split_by_positions(first_log_line, self.delim.column_positions)
+            if self.delim.max_fields and self.delim.value in (" ", "  "):
+                split_fn = (
+                    split_aligned_row
+                    if self.delim.value == " "
+                    else split_aligned_row_preserve_single_spaces
+                )
+                return [
+                    txt.replace("\t", "  ").strip()
+                    for txt in split_fn(
+                        first_log_line, max_fields=self.delim.max_fields
+                    )
+                ]
             return split_line(first_log_line, self.delim.value, self.current_columns)
 
     def _rebuild_column_caches(self: NlessBuffer) -> None:

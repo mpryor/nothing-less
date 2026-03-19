@@ -29,20 +29,29 @@ def _find_ref_column_cell(
 
 
 def split_line(
-    line: str, delimiter: str | re.Pattern[str] | None, columns: list[Column]
+    line: str,
+    delimiter: str | re.Pattern[str] | None,
+    columns: list[Column],
+    column_positions: list[int] | None = None,
 ) -> list[str]:
     """Split a line using the appropriate delimiter method.
 
     Args:
         line: The input line to split
+        column_positions: Optional fixed-width column positions for
+            space-aligned data with empty interior cells (e.g. lsof).
 
     Returns:
         List of fields from the line
     """
-    if delimiter == " ":
-        cells = split_aligned_row(line)
+    if delimiter in (" ", "  ") and column_positions:
+        cells = split_by_positions(line, column_positions)
+    elif delimiter == " ":
+        max_fields = len([c for c in columns if not c.computed]) if columns else 0
+        cells = split_aligned_row(line, max_fields=max_fields)
     elif delimiter == "  ":
-        cells = split_aligned_row_preserve_single_spaces(line)
+        max_fields = len([c for c in columns if not c.computed]) if columns else 0
+        cells = split_aligned_row_preserve_single_spaces(line, max_fields=max_fields)
     elif delimiter == ",":
         cells = split_csv_row(line)
     elif delimiter == "raw":
@@ -221,29 +230,91 @@ def flatten_json_lines(lines: list[str]) -> list[str]:
 _MULTI_SPACE_RE = re.compile(r" {2,}")
 
 
-def split_aligned_row_preserve_single_spaces(line: str) -> list[str]:
+def split_aligned_row_preserve_single_spaces(
+    line: str, max_fields: int = 0
+) -> list[str]:
     """Split a space-aligned row into fields by collapsing multiple spaces, but preserving single spaces within fields.
 
     Args:
         line: The input line to split
+        max_fields: When > 0, cap the number of fields so the last field
+            may contain internal multi-space runs (e.g. ``"Mounted on"``).
 
     Returns:
         List of fields from the line
     """
+    if max_fields > 0:
+        return [
+            field
+            for field in _MULTI_SPACE_RE.split(line, maxsplit=max_fields - 1)
+            if field
+        ]
     return [field for field in _MULTI_SPACE_RE.split(line) if field]
 
 
-def split_aligned_row(line: str) -> list[str]:
+def split_aligned_row(line: str, max_fields: int = 0) -> list[str]:
     """Split a space-aligned row into fields by collapsing multiple spaces.
 
     Args:
         line: The input line to split
+        max_fields: When > 0, cap the number of fields so the last field
+            may contain internal whitespace (e.g. a COMMAND column).
 
     Returns:
         List of fields from the line
     """
-    # Split on multiple spaces and filter out empty strings
+    if max_fields > 0:
+        return [field for field in line.split(None, max_fields - 1) if field]
     return [field for field in line.split() if field]
+
+
+def detect_column_positions(sample_lines: list[str]) -> list[int]:
+    """Detect column start positions from space-aligned output.
+
+    Examines ALL sample lines (header + data) to find positions where a
+    column gap (all-space across every line) transitions to content
+    (non-space in at least one line).  This handles right-aligned numeric
+    columns and empty interior cells correctly (e.g. ``lsof`` TID column).
+    """
+    # Strip trailing whitespace — inconsistent padding (e.g. netstat
+    # pads data lines with spaces) creates false column boundaries.
+    non_empty = [ln.rstrip() for ln in sample_lines if ln.strip()]
+    if not non_empty:
+        return []
+    # Exclude preamble/outlier lines that are much shorter than the
+    # majority — they corrupt gap detection (e.g. netstat's
+    # "Active Internet connections (only servers)").
+    max_len = max(len(ln) for ln in non_empty)
+    non_empty = [ln for ln in non_empty if len(ln) >= max_len * 0.5]
+    if not non_empty:
+        return []
+    min_len = min(len(ln) for ln in non_empty)
+
+    positions: list[int] = []
+    for i in range(min_len):
+        has_content = any(ln[i] != " " for ln in non_empty)
+        if not has_content:
+            continue
+        if i == 0:
+            positions.append(0)
+        elif all(ln[i - 1] == " " for ln in non_empty):
+            positions.append(i)
+    return positions
+
+
+def split_by_positions(line: str, positions: list[int]) -> list[str]:
+    """Split a line using fixed character positions.
+
+    Each field spans from ``positions[i]`` to ``positions[i+1]``
+    (or end-of-line for the last field).  Fields are stripped of
+    surrounding whitespace.
+    """
+    fields: list[str] = []
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(line)
+        field = line[start:end].strip() if start < len(line) else ""
+        fields.append(field)
+    return fields
 
 
 def split_csv_row(line: str) -> list[str]:
@@ -266,19 +337,21 @@ def split_csv_row(line: str) -> list[str]:
         return stripped.split(",")
 
 
-def _field_count(line: str, delimiter: str) -> int:
+def _field_count(line: str, delimiter: str, max_fields: int = 0) -> int:
     """Count fields produced by splitting *line* with *delimiter*."""
     if delimiter == ",":
         return len(split_csv_row(line))
     elif delimiter == " ":
-        return len(split_aligned_row(line))
+        return len(split_aligned_row(line, max_fields=max_fields))
     elif delimiter == "  ":
-        return len(split_aligned_row_preserve_single_spaces(line))
+        return len(
+            split_aligned_row_preserve_single_spaces(line, max_fields=max_fields)
+        )
     else:
         return len(line.split(delimiter))
 
 
-def find_header_index(lines: list[str], delimiter: str) -> int:
+def find_header_index(lines: list[str], delimiter: str, max_fields: int = 0) -> int:
     """Return the index of the first line matching the consensus field count.
 
     For files with leading non-tabular lines (e.g. a JSON preamble before CSV
@@ -290,7 +363,7 @@ def find_header_index(lines: list[str], delimiter: str) -> int:
     for line in lines[:15]:
         if not line.strip():
             continue
-        c = _field_count(line, delimiter)
+        c = _field_count(line, delimiter, max_fields=max_fields)
         if c > 1:
             counts.append(c)
 
@@ -302,13 +375,13 @@ def find_header_index(lines: list[str], delimiter: str) -> int:
         return 0
 
     # First line already matches — no skip needed
-    if lines and _field_count(lines[0], delimiter) == consensus:
+    if lines and _field_count(lines[0], delimiter, max_fields=max_fields) == consensus:
         return 0
 
     for i, line in enumerate(lines):
         if not line.strip():
             continue
-        if _field_count(line, delimiter) == consensus:
+        if _field_count(line, delimiter, max_fields=max_fields) == consensus:
             return i
 
     return 0
@@ -363,7 +436,6 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
 
         for delimiter in common_delimiters:
             if delimiter == " ":
-                # Special handling for space-aligned tables
                 parts = split_aligned_row(line)
             elif delimiter == "  ":
                 parts = split_aligned_row_preserve_single_spaces(line)
@@ -415,6 +487,30 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
             if len(counts) >= 2:
                 most_common = max(set(counts), key=counts.count)
                 agreement = counts.count(most_common) / len(counts)
+
+                # For space delimiters, retry with adjustments before
+                # giving up: (a) exclude a preamble first-line whose
+                # count is far below consensus, (b) cap overflow lines
+                # (spaces in last column) to the consensus count.
+                if agreement < 0.8 and delimiter in (" ", "  ") and most_common > 2:
+                    adjusted = []
+                    for i, c in enumerate(counts):
+                        if i == 0 and c < most_common * 0.5:
+                            continue  # preamble line (e.g. "total 40")
+                        # Cap overflow from spaces in the last column
+                        # (e.g. ls -la filenames, ps aux COMMAND). Only
+                        # cap lines moderately above consensus — very
+                        # large overflows are structural (e.g. prose).
+                        if most_common < c <= most_common + 4:
+                            adjusted.append(most_common)
+                        else:
+                            adjusted.append(c)
+                    if adjusted:
+                        adj_agreement = adjusted.count(most_common) / len(adjusted)
+                        if adj_agreement >= 0.8:
+                            agreement = adj_agreement
+                            counts = adjusted
+
                 if agreement >= 0.8:
                     # Strong cross-line consistency — boost
                     delimiter_scores[delimiter] += len(counts) * 2
@@ -422,9 +518,83 @@ def infer_delimiter(sample_lines: list[str]) -> str | None:
                     # Inconsistent — zero out the score
                     delimiter_scores[delimiter] = 0
 
+    # Last resort: try position-based splitting for space-aligned output
+    # with empty cells (e.g. lsof, where TID/TASKCMD columns are blank).
+    # split() collapses empty cells, producing inconsistent field counts,
+    # but fixed-width position slicing gives perfect consistency.
+    if (
+        delimiter_scores.get(" ", 0) == 0
+        and first_line_splits.get(" ", False)
+        and non_empty_lines >= 2
+    ):
+        positions = detect_column_positions(sample_lines)
+        if len(positions) > 2:
+            pos_field_count = len(positions)
+            pos_consistent = all(
+                len(split_by_positions(ln, positions)) == pos_field_count
+                for ln in sample_lines
+                if ln.strip()
+            )
+            # Require positions to span a reasonable fraction of the line
+            # width — spurious positions from source code span very few chars.
+            max_line_len = max(
+                (len(ln.rstrip()) for ln in sample_lines if ln.strip()), default=0
+            )
+            pos_span = positions[-1] - positions[0] if positions else 0
+            if pos_consistent and pos_span >= max_line_len * 0.5:
+                delimiter_scores[" "] = pos_field_count * non_empty_lines * 3
+
     # Default to raw if no clear winner
     if not delimiter_scores or max(delimiter_scores.values()) <= 0:
         return "raw"
 
     # Return the delimiter with the highest score
     return max(delimiter_scores.items(), key=lambda x: x[1])[0]
+
+
+def detect_space_max_fields(sample_lines: list[str], delimiter: str) -> int:
+    """Detect the correct field count for space-delimited data.
+
+    Finds the consensus field count across all sample lines and returns
+    it as a cap when some lines overflow (spaces in last column) or when
+    the header has multi-word column names.
+
+    Handles preamble lines (e.g. ``netstat``'s "Active Internet
+    connections") by excluding outliers far below the consensus.
+
+    Returns 0 when no cap is needed.
+    """
+    if delimiter not in (" ", "  "):
+        return 0
+
+    split_fn = (
+        split_aligned_row
+        if delimiter == " "
+        else split_aligned_row_preserve_single_spaces
+    )
+
+    all_counts: list[int] = []
+    for line in sample_lines:
+        if not line.strip():
+            continue
+        n = len(split_fn(line))
+        if n > 1:
+            all_counts.append(n)
+
+    if len(all_counts) < 2:
+        return 0
+
+    consensus = max(set(all_counts), key=all_counts.count)
+    if consensus <= 2:
+        return 0
+
+    # Exclude preamble outliers (count far below consensus) and check
+    # whether any remaining lines differ from the consensus.
+    relevant = [c for c in all_counts if c >= consensus * 0.5]
+    has_overflow = any(c > consensus for c in relevant)
+    has_underflow = any(c < consensus for c in relevant)
+
+    if has_overflow or has_underflow:
+        return consensus
+
+    return 0

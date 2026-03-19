@@ -56,6 +56,7 @@ class ActionsMixin:
         """
         delimiter = self.delim.value
         columns = list(self.current_columns)
+        col_positions = self.delim.column_positions
         metadata = {mc.value for mc in MetadataColumn}
         expected = len([c for c in columns if c.name not in metadata])
         filters = list(self.query.filters)
@@ -66,7 +67,9 @@ class ActionsMixin:
             if parent and parent(line):
                 return True
             try:
-                cells = split_line(line, delimiter, columns)
+                cells = split_line(
+                    line, delimiter, columns, column_positions=col_positions
+                )
             except (json.JSONDecodeError, csv.Error, ValueError, StopIteration):
                 return False
             if len(cells) != expected:

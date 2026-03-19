@@ -57,3 +57,13 @@ def space_aligned_lines():
         "nginx      Running   0          5d",
         "redis      Running   1          3d",
     ]
+
+
+@pytest.fixture
+def ps_aux_lines():
+    return [
+        "USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND",
+        "root           1  0.0  0.0 169128 13120 ?        Ss   Mar14   0:02 /sbin/init",
+        "matt        1234  1.2  0.5 123456 56789 pts/0    Sl+  10:30   0:45 python /home/matt/app.py arg1 arg2",
+        "www-data    5678  0.3  0.2  98765 23456 ?        S    09:00   1:23 /usr/sbin/apache2 -k start",
+    ]
