@@ -222,6 +222,22 @@ class ActionsMixin:
                 if not c.hidden and pinned_count <= c.render_position < old_pos:
                     c.render_position += 1
         else:
+            col_width = (
+                data_table.column_widths[data_table.cursor_column]
+                + data_table.col_separator_width
+            )
+            current_pinned_width = sum(
+                data_table.column_widths[i] + data_table.col_separator_width
+                for i in range(data_table.fixed_columns)
+            )
+            viewport_width = self.app.size.width
+            if current_pinned_width + col_width > viewport_width // 2:
+                self.notify(
+                    "Cannot pin — pinned columns would exceed half the screen width",
+                    severity="warning",
+                )
+                return
+
             old_pos = selected_column.render_position
             pinned_count = sum(
                 1 for c in self.current_columns if c.pinned and not c.hidden
