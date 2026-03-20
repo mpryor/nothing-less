@@ -50,6 +50,7 @@ class NlessSelect(Static):
         self.highlight_index = 0
         self.filter = None
         self.prompt = prompt
+        self._tab_cycling = False
         super().__init__(*args, **kwargs)
 
     def _write_options(self, scroll: bool = True):
@@ -81,27 +82,45 @@ class NlessSelect(Static):
             attempts += 1
 
     def on_key(self, event):
-        if event.key == "down":
+        if event.key in ("down", "tab"):
+            event.stop()
+            event.prevent_default()
             if self.highlight_index < len(self.filtered_options) - 1:
                 self.highlight_index += 1
             else:
                 self.highlight_index = 0
             self._skip_separators(1)
             self._write_options()
-        elif event.key == "up":
+            if event.key == "tab":
+                self._preview_selection()
+        elif event.key in ("up", "shift+tab"):
+            event.stop()
+            event.prevent_default()
             if self.highlight_index > 0:
                 self.highlight_index -= 1
             else:
                 self.highlight_index = len(self.filtered_options) - 1
             self._skip_separators(-1)
             self._write_options()
+            if event.key == "shift+tab":
+                self._preview_selection()
         elif event.key == "escape":
             self.remove()
+
+    def _preview_selection(self) -> None:
+        """Fill the input with the highlighted option's label without re-filtering."""
+        if 0 <= self.highlight_index < len(self.filtered_options):
+            label = self.filtered_options[self.highlight_index][0]
+            self._tab_cycling = True
+            self.query_one(Input).value = label
 
     def on_mount(self):
         self.query_one(Input).focus()
 
     def on_input_changed(self, event: Input.Changed):
+        if self._tab_cycling:
+            self._tab_cycling = False
+            return
         self.highlight_index = 0
         self.filter = event.input.value.lower()
 

@@ -31,7 +31,7 @@ class _DropdownLog(RichLog):
             if 0 <= idx < len(parent._suggestions):
                 parent._highlight_index = idx
                 parent._accept_suggestion()
-                value = parent._input.value
+                value = parent._strip_prefix(parent._input.value)
                 if value != "":
                     if value in parent.history:
                         parent.on_remove(value)
@@ -82,6 +82,7 @@ class AutocompleteInput(Static):
         history: list[str] | None = None,
         provider: SuggestionProvider | None = None,
         placeholder: str = "",
+        prefix: str = "",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -90,17 +91,23 @@ class AutocompleteInput(Static):
         self.on_add = on_add or (lambda _: None)
         self.on_remove = on_remove or (lambda _: None)
         self.placeholder = placeholder
+        self.prefix = prefix
         self.provider = provider or HistorySuggestionProvider(self.history)
         self._suggestions: list[str] = []
         self._highlight_index = 0
         self._dropdown_visible = False
+        self._tab_cycling = False
 
     def compose(self):
         yield _DropdownLog(markup=True, auto_scroll=False)
-        yield Input(placeholder=self.placeholder)
+        inp = Input(placeholder=self.placeholder, value=self.prefix or "")
+        if self.prefix:
+            inp.select_on_focus = False
+        yield inp
 
     def on_mount(self):
-        self.query_one(Input).focus()
+        inp = self.query_one(Input)
+        inp.focus()
         suggestions = self.provider.get_suggestions("")
         if suggestions:
             self._show_dropdown(suggestions)
@@ -147,13 +154,22 @@ class AutocompleteInput(Static):
     def _accept_suggestion(self) -> None:
         """Fill the input with the highlighted suggestion."""
         if self._suggestions and 0 <= self._highlight_index < len(self._suggestions):
-            self._input.value = self._suggestions[self._highlight_index]
+            self._input.value = self.prefix + self._suggestions[self._highlight_index]
             self._input.cursor_position = len(self._input.value)
         self._hide_dropdown()
 
+    def _strip_prefix(self, value: str) -> str:
+        """Remove the prefix from a value if present."""
+        if self.prefix and value.startswith(self.prefix):
+            return value[len(self.prefix) :]
+        return value
+
     def on_input_changed(self, event: Input.Changed) -> None:
         event.stop()
-        suggestions = self.provider.get_suggestions(event.value)
+        if self._tab_cycling:
+            self._tab_cycling = False
+            return
+        suggestions = self.provider.get_suggestions(self._strip_prefix(event.value))
         if suggestions:
             self._show_dropdown(suggestions)
         else:
@@ -164,7 +180,7 @@ class AutocompleteInput(Static):
         if self._dropdown_visible and self._highlight_index >= 0:
             self._accept_suggestion()
         # History bookkeeping
-        value = self._input.value
+        value = self._strip_prefix(self._input.value)
         if value != "":
             if value in self.history:
                 self.on_remove(value)
@@ -172,6 +188,12 @@ class AutocompleteInput(Static):
         self.post_message(self.Submitted(self, value))
 
     def on_key(self, event) -> None:
+        # Prevent deleting past the prefix
+        if self.prefix and event.key == "backspace":
+            if len(self._input.value) <= len(self.prefix):
+                event.stop()
+                event.prevent_default()
+                return
         if self._dropdown_visible:
             if event.key == "down":
                 event.stop()
@@ -191,10 +213,27 @@ class AutocompleteInput(Static):
                 else:
                     self._highlight_index = -1
                 self._render_dropdown()
-            elif event.key == "tab":
+            elif event.key in ("tab", "shift+tab"):
                 event.stop()
                 event.prevent_default()
-                self._accept_suggestion()
+                if event.key == "tab":
+                    if self._highlight_index < len(self._suggestions) - 1:
+                        self._highlight_index += 1
+                    else:
+                        self._highlight_index = 0
+                else:
+                    if self._highlight_index <= 0:
+                        self._highlight_index = len(self._suggestions) - 1
+                    else:
+                        self._highlight_index -= 1
+                self._render_dropdown()
+                # Preview the highlighted suggestion in the input
+                if 0 <= self._highlight_index < len(self._suggestions):
+                    self._tab_cycling = True
+                    self._input.value = (
+                        self.prefix + self._suggestions[self._highlight_index]
+                    )
+                    self._input.cursor_position = len(self._input.value)
             elif event.key == "escape":
                 event.stop()
                 event.prevent_default()
@@ -206,9 +245,9 @@ class AutocompleteInput(Static):
                 if self.history_index < len(self.history):
                     self.history_index += 1
                 if self.history and self.history_index < len(self.history):
-                    self._input.value = self.history[self.history_index]
+                    self._input.value = self.prefix + self.history[self.history_index]
                 else:
-                    self._input.value = ""
+                    self._input.value = self.prefix
                 self._input.cursor_position = len(self._input.value)
             elif event.key == "up":
                 event.stop()
@@ -216,7 +255,7 @@ class AutocompleteInput(Static):
                 if self.history_index > -1:
                     self.history_index -= 1
                 if len(self.history) > 0 and self.history_index > -1:
-                    self._input.value = self.history[self.history_index]
+                    self._input.value = self.prefix + self.history[self.history_index]
                 else:
-                    self._input.value = ""
+                    self._input.value = self.prefix
                 self._input.cursor_position = len(self._input.value)

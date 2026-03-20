@@ -277,16 +277,16 @@ class TestExModeSuggestionProvider:
 
     def test_sort_suggests_columns(self, provider):
         suggestions = provider.get_suggestions("sort ")
-        assert "timestamp" in suggestions
-        assert "level" in suggestions
-        assert "message" in suggestions
+        assert "sort timestamp" in suggestions
+        assert "sort level" in suggestions
+        assert "sort message" in suggestions
         # Hidden columns excluded
-        assert "secret" not in suggestions
+        assert "sort secret" not in suggestions
 
     def test_sort_column_prefix(self, provider):
         suggestions = provider.get_suggestions("sort ti")
-        assert "timestamp" in suggestions
-        assert "level" not in suggestions
+        assert "sort timestamp" in suggestions
+        assert "sort level" not in suggestions
 
     def test_filter_suggests_columns(self, provider):
         suggestions = provider.get_suggestions("filter ")
