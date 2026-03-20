@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.11.0 (2026-03-19)
+
+### Feat
+
+- --format-timestamp CLI arg, :N% jump, and docs update
+- explicit column time windows and timestamp format conversion
+- eager column type inference with type-aware sort and aggregations
+- ex mode UX improvements
+- tab/shift-tab cycles through autocomplete and select suggestions
+- infer delimiter for unparsed buffer instead of hardcoding raw
+
+### Fix
+
+- bump load perf baseline to 0.35s to reduce CI flakiness
+- expand tabs in raw delimiter and use RawPager for unparsed buffer
+- prevent pinning columns beyond half the viewport width
+- pinned column scrolling, back pressure threshold, and rawpager cell-width trim
+- prefer space+ over space when it has better field count agreement
+- mark COUNT metadata column as computed to prevent split_line overflow
+- use correct split function in space+ delimiter strategy detection
+
 ## 1.10.4 (2026-03-19)
 
 ### Fix
