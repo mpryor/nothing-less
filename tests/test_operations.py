@@ -2553,10 +2553,10 @@ class TestViewExcludedLines:
             stream.notify(
                 [
                     '{"level":"error","msg":"timeout"}',
-                    "[INFO] server started",
+                    "--- server started at 08:01 on node-3 ---",
                     '{"level":"warn","msg":"slow"}',
-                    "[INFO] health check",
-                    "[WARN] disk high",
+                    "ERROR: health check failed",
+                    "WARN disk high",
                 ]
             )
             await _wait(pilot, app)
@@ -2566,10 +2566,10 @@ class TestViewExcludedLines:
             await _wait(pilot, app)
             assert len(app.buffers) == 2
 
-            # Filter unparsed buffer by [INFO, then close the unfiltered one
+            # Filter unparsed buffer by ERROR, then close the unfiltered one
             app._switch_to_buffer(1)
             await pilot.pause()
-            app._perform_filter(r"\[INFO", "log")
+            app._perform_filter(r"ERROR", "log")
             await _wait(pilot, app)
             app._switch_to_buffer(1)
             app.action_close_active_buffer()
@@ -2591,9 +2591,9 @@ class TestViewExcludedLines:
                     break
             await pilot.pause()
 
-            # ~ on the remaining raw unparsed buffer — should NOT say "all shown"
+            # ~ on the remaining unparsed buffer — should NOT say "all shown"
             for i, b in enumerate(app.buffers):
-                if b.delim.value == "raw" and not b.query.filters:
+                if b._source_parse_filter is not None and not b.query.filters:
                     app._switch_to_buffer(i)
                     break
             before = len(app.buffers)

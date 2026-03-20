@@ -463,15 +463,39 @@ class NlessBuffer(
     ) -> None:
         """Set up this buffer as a raw view of unparsed/excluded lines.
 
+        Tries to infer a delimiter from the rejected lines (they may share
+        a consistent format like JSON even though they didn't match the
+        parent's delimiter).  Falls back to raw mode when inference fails.
+
         Configures delimiter, columns, raw_rows, and optionally subscribes
         to ongoing stream updates so newly rejected lines appear automatically.
         """
-        self.delim.value = "raw"
-        self.delim.inferred = False
-        self.raw_mode = True
-        self.first_log_line = rows[0]
+        from .buffer_delimiter import _sample_lines
+        from .delimiter import infer_delimiter
+
+        sample = _sample_lines(rows, max_total=15)
+        inferred = infer_delimiter(sample)
+
+        if inferred and inferred != "raw":
+            self.delim.value = inferred
+            self.delim.inferred = True
+            self.first_log_line = rows[0]
+            parts = self._parse_first_line_columns(self.first_log_line)
+            self.current_columns = self._make_columns(parts)
+            # For non-raw/json/regex delimiters, first line is the header
+            header_consumed = (
+                not isinstance(inferred, re.Pattern) and inferred != "json"
+            )
+            if header_consumed:
+                rows = rows[1:]
+        else:
+            self.delim.value = "raw"
+            self.delim.inferred = False
+            self.raw_mode = True
+            self.first_log_line = rows[0]
+            self.current_columns = self._make_columns(["log"])
+
         self.first_row_parsed = True
-        self.current_columns = self._make_columns(["log"])
         self._ensure_arrival_column(self.current_columns)
         self._rebuild_column_caches()
         now = time.time()
