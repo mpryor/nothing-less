@@ -36,7 +36,7 @@ or
 brew install mpryor/tap/nless
 ```
 
-Requires Python 3.13+. You can also use `pip install nothing-less` if you prefer.
+Requires Python 3.13+ for pipx/pip installs. You can also use `pip install nothing-less` if you prefer. The Homebrew formula manages its own Python dependency.
 
 ## Usage
 
