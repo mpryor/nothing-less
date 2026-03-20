@@ -10,6 +10,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment: release-pipeline
+    outputs:
+      version: ${{ steps.cz.outputs.version }}
+      no_bump: ${{ steps.cz.outputs.no_bump }}
 
     permissions:
       contents: write
@@ -81,4 +84,50 @@ jobs:
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: release
+    if: needs.release.result == 'success' && needs.release.outputs.no_bump == 'false'
+    runs-on: macos-latest
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Tap and update formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          # Wait for PyPI to propagate
+          for i in $(seq 1 30); do
+            if curl -sf "https://pypi.org/pypi/nothing-less/$VERSION/json" > /dev/null 2>&1; then
+              echo "PyPI version $VERSION is available"
+              break
+            fi
+            echo "Waiting for PyPI to propagate... ($i/30)"
+            sleep 10
+          done
+
+          # Get the sdist URL and sha256 from PyPI
+          PYPI_JSON=$(curl -sf "https://pypi.org/pypi/nothing-less/$VERSION/json")
+          URL=$(echo "$PYPI_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print([u['url'] for u in d['urls'] if u['url'].endswith('.tar.gz')][0])")
+          SHA=$(echo "$PYPI_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print([u['digests']['sha256'] for u in d['urls'] if u['url'].endswith('.tar.gz')][0])")
+
+          # Clone homebrew-tap and update the nless URL + sha256
+          brew tap mpryor/tap
+          FORMULA="$(brew --repository mpryor/tap)/Formula/n/nless.rb"
+          sed -i '' "s|url \"https://files.pythonhosted.org/.*nothing_less-.*\.tar\.gz\"|url \"$URL\"|" "$FORMULA"
+          sed -i '' "0,/sha256 \"[a-f0-9]\{64\}\"/s|sha256 \"[a-f0-9]\{64\}\"|sha256 \"$SHA\"|" "$FORMULA"
+
+          # Regenerate all transitive dependency resources
+          brew update-python-resources mpryor/tap/nless
+
+          # Push updated formula to homebrew-tap
+          cd "$(brew --repository mpryor/tap)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mpryor/homebrew-tap.git"
+          git add Formula/n/nless.rb
+          git commit -m "nless $VERSION"
+          git push
 
