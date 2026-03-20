@@ -28,6 +28,7 @@ class SessionColumn:
     pinned: bool
     substitution_pattern: str | None = None
     substitution_replacement: str | None = None
+    type_override: str | None = None
 
 
 @dataclass
@@ -151,6 +152,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
     for col in buf.current_columns:
         sub_pat = col.substitution[0].pattern if col.substitution else None
         sub_repl = col.substitution[1] if col.substitution else None
+        type_ovr = col.type_override.value if col.type_override else None
         columns.append(
             SessionColumn(
                 name=col.name,
@@ -159,6 +161,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                 pinned=col.pinned,
                 substitution_pattern=sub_pat,
                 substitution_replacement=sub_repl,
+                type_override=type_ovr,
             )
         )
         if col.computed and (col.col_ref or col.json_ref):
@@ -399,6 +402,13 @@ def _apply_session_columns(
                     re.compile(saved.substitution_pattern),
                     saved.substitution_replacement or "",
                 )
+            if saved.type_override is not None:
+                from .types import ColumnType
+
+                try:
+                    col.type_override = ColumnType(saved.type_override)
+                except ValueError:
+                    pass
 
 
 def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
@@ -486,6 +496,7 @@ def _deserialize_buffer_state(b: dict) -> SessionBufferState:
                 pinned=c.get("pinned", False),
                 substitution_pattern=c.get("substitution_pattern"),
                 substitution_replacement=c.get("substitution_replacement"),
+                type_override=c.get("type_override"),
             )
             for c in b.get("columns", [])
         ],

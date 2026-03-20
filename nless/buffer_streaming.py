@@ -113,6 +113,17 @@ class StreamingMixin:
                     had_loading = self.loading_state.reason is not None
                     self.loading_state.reason = None
                     self._request_spinner_stop()
+                    types_changed = self._infer_column_types_from_displayed()
+                    if types_changed:
+                        try:
+                            new_labels = self._get_visible_column_labels()
+                            dt = self.query_one(".nless-view")
+                            dt.columns = new_labels
+                        except Exception:
+                            logger.debug(
+                                "Column header refresh after type inference failed",
+                                exc_info=True,
+                            )
                     try:
                         self._update_status_bar()
                         if had_loading:

@@ -695,6 +695,46 @@ class TestDeferredGeneration:
 
 
 # ---------------------------------------------------------------------------
+# Eager Column Type Inference
+# ---------------------------------------------------------------------------
+
+
+class TestEagerTypeInference:
+    @pytest.mark.asyncio
+    async def test_type_labels_appear_without_sorting(self, cli_args):
+        """Type labels (#, @) should appear after initial load — no sort needed."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "name,age,date",
+                    "Alice,30,2024-01-15",
+                    "Bob,25,2024-03-20",
+                    "Charlie,45,2024-02-10",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # No sort was triggered — labels should still be present
+            col_map = {strip_markup(c.name): c for c in buf.current_columns}
+            assert "#" in col_map["age"].labels
+            assert "@" in col_map["date"].labels
+            assert "#" not in col_map["name"].labels
+            assert "@" not in col_map["name"].labels
+
+            # DataTable column headers should also reflect the type labels
+            dt = buf.query_one(".nless-view")
+            assert any("#" in h for h in dt.columns), (
+                f"DataTable headers missing '#': {dt.columns}"
+            )
+            assert any("@" in h for h in dt.columns), (
+                f"DataTable headers missing '@': {dt.columns}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Delimiter Change (handle_delimiter_submitted)
 # ---------------------------------------------------------------------------
 
@@ -2502,6 +2542,76 @@ class TestColumnAggregations:
             buf.action_aggregations()
             await pilot.pause()
             # Verify it doesn't crash — notification content is tested above
+
+
+class TestDatetimeAggregations:
+    def test_datetime_column_shows_earliest_latest(self):
+        from nless.operations import compute_column_aggregations
+        from nless.types import Column, ColumnType
+
+        class FakeBuffer:
+            displayed_rows = [
+                ["Alice", "2024-01-15"],
+                ["Bob", "2024-03-20"],
+                ["Carol", "2024-02-10"],
+            ]
+
+        col = Column(
+            name="date",
+            labels=set(),
+            render_position=1,
+            data_position=1,
+            hidden=False,
+            detected_type=ColumnType.DATETIME,
+        )
+        result = compute_column_aggregations(FakeBuffer(), 1, column=col)
+        assert "Count: 3" in result
+        assert "Earliest: 2024-01-15" in result
+        assert "Latest: 2024-03-20" in result
+        assert "Sum" not in result
+        assert "Min" not in result
+
+    def test_datetime_with_override(self):
+        from nless.operations import compute_column_aggregations
+        from nless.types import Column, ColumnType
+
+        class FakeBuffer:
+            displayed_rows = [
+                ["Alice", "2024-01-15"],
+                ["Bob", "2024-03-20"],
+            ]
+
+        col = Column(
+            name="date",
+            labels=set(),
+            render_position=1,
+            data_position=1,
+            hidden=False,
+            type_override=ColumnType.DATETIME,
+        )
+        result = compute_column_aggregations(FakeBuffer(), 1, column=col)
+        assert "Earliest" in result
+        assert "Latest" in result
+
+    def test_numeric_column_no_earliest_latest(self):
+        from nless.operations import compute_column_aggregations
+        from nless.types import Column, ColumnType
+
+        class FakeBuffer:
+            displayed_rows = [["Alice", "30"], ["Bob", "25"], ["Carol", "45"]]
+
+        col = Column(
+            name="age",
+            labels=set(),
+            render_position=1,
+            data_position=1,
+            hidden=False,
+            detected_type=ColumnType.NUMERIC,
+        )
+        result = compute_column_aggregations(FakeBuffer(), 1, column=col)
+        assert "Min: 25" in result
+        assert "Max: 45" in result
+        assert "Earliest" not in result
 
 
 class TestViewExcludedLines:

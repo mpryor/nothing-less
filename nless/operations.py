@@ -187,12 +187,16 @@ def write_buffer(
 
 
 def compute_column_aggregations(
-    current_buffer: NlessBuffer, column_index: int
+    current_buffer: NlessBuffer, column_index: int, column: Column | None = None
 ) -> str | None:
     """Compute aggregations for a column and return a formatted summary string.
 
-    Returns None if the column has no data.
+    Returns None if the column has no data. If *column* is provided and its
+    effective type is DATETIME, shows Earliest/Latest instead of Min/Max.
     """
+    from .dataprocessing import _try_parse_datetime
+    from .types import ColumnType
+
     rows = current_buffer.displayed_rows
     if not rows:
         return None
@@ -208,34 +212,55 @@ def compute_column_aggregations(
     total = len(raw_values)
     distinct = len(set(raw_values))
 
-    numeric_values = []
-    for v in raw_values:
-        if _looks_numeric(v):
-            try:
-                numeric_values.append(float(v))
-            except (ValueError, TypeError):
-                pass
-
+    effective_type = column.effective_type if column else ColumnType.AUTO
     parts = [f"Count: {total:,}", f"Distinct: {distinct:,}"]
 
-    if numeric_values:
-        s = sum(numeric_values)
-        avg = s / len(numeric_values)
-        mn = min(numeric_values)
-        mx = max(numeric_values)
+    if effective_type == ColumnType.DATETIME:
+        parsed_dates = []
+        date_strs = []
+        for v in raw_values:
+            dt = _try_parse_datetime(v)
+            if dt is not None:
+                parsed_dates.append(dt)
+                date_strs.append(v)
+        if parsed_dates:
+            earliest_idx = parsed_dates.index(min(parsed_dates))
+            latest_idx = parsed_dates.index(max(parsed_dates))
+            parts.extend(
+                [
+                    f"Earliest: {date_strs[earliest_idx]}",
+                    f"Latest: {date_strs[latest_idx]}",
+                ]
+            )
+            if len(parsed_dates) < total:
+                parts.append(f"({total - len(parsed_dates):,} non-date skipped)")
+    else:
+        numeric_values = []
+        for v in raw_values:
+            if _looks_numeric(v):
+                try:
+                    numeric_values.append(float(v))
+                except (ValueError, TypeError):
+                    pass
 
-        def _fmt(n: float) -> str:
-            return f"{n:,.0f}" if n == int(n) else f"{n:,.4g}"
+        if numeric_values:
+            s = sum(numeric_values)
+            avg = s / len(numeric_values)
+            mn = min(numeric_values)
+            mx = max(numeric_values)
 
-        parts.extend(
-            [
-                f"Sum: {_fmt(s)}",
-                f"Avg: {_fmt(avg)}",
-                f"Min: {_fmt(mn)}",
-                f"Max: {_fmt(mx)}",
-            ]
-        )
-        if len(numeric_values) < total:
-            parts.append(f"({total - len(numeric_values):,} non-numeric skipped)")
+            def _fmt(n: float) -> str:
+                return f"{n:,.0f}" if n == int(n) else f"{n:,.4g}"
+
+            parts.extend(
+                [
+                    f"Sum: {_fmt(s)}",
+                    f"Avg: {_fmt(avg)}",
+                    f"Min: {_fmt(mn)}",
+                    f"Max: {_fmt(mx)}",
+                ]
+            )
+            if len(numeric_values) < total:
+                parts.append(f"({total - len(numeric_values):,} non-numeric skipped)")
 
     return " | ".join(parts)

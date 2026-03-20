@@ -37,6 +37,7 @@ _COMMAND_ALIASES: dict[str, str] = {
     "reset": "clear",
     "cols": "cols",
     "columns": "cols",
+    "type": "type",
 }
 
 
@@ -408,6 +409,57 @@ class ExModeMixin:
         else:
             self.notify(f"Unknown setting: {subcmd}", severity="error")
 
+    def _cmd_type(self: NlessApp, args: str) -> bool | None:
+        """Set column type: type <column> <numeric|date|string|auto>."""
+        from .types import ColumnType
+
+        col_name, type_str = self._split_col_args(args)
+        if not col_name:
+            self.notify(
+                "Usage: type <column> <numeric|date|string|auto>", severity="error"
+            )
+            return False
+
+        col = self._find_column(col_name)
+        if col is None:
+            self._notify_column_not_found(col_name)
+            return False
+
+        type_map = {
+            "numeric": ColumnType.NUMERIC,
+            "date": ColumnType.DATETIME,
+            "datetime": ColumnType.DATETIME,
+            "string": ColumnType.STRING,
+            "auto": None,
+        }
+
+        type_str_lower = type_str.lower() if type_str else ""
+        if type_str_lower not in type_map:
+            self.notify(
+                "Type must be: numeric, date, string, or auto",
+                severity="error",
+            )
+            return False
+
+        new_type = type_map[type_str_lower]
+        col.type_override = new_type
+        if new_type is None:
+            col.detected_type = ColumnType.AUTO
+
+        from .buffer import NlessBuffer
+
+        NlessBuffer._update_type_label(col)
+
+        curr_buffer = self._get_current_buffer()
+        type_name = new_type.value if new_type else "auto"
+        self.notify(f"Column '{strip_markup(col.name)}' type set to {type_name}")
+
+        if curr_buffer.query.sort_column == strip_markup(col.name):
+            curr_buffer.cache.reset_sort_keys()
+            curr_buffer._deferred_update_table(reason=UpdateReason.SORT)
+
+        return None
+
     def _cmd_help(self: NlessApp, args: str) -> None:
         """Show help screen."""
         self.action_help()
@@ -427,4 +479,5 @@ _COMMAND_HANDLERS: dict[str, callable] = {
     "help": ExModeMixin._cmd_help,
     "clear": ExModeMixin._cmd_clear,
     "cols": ExModeMixin._cmd_cols,
+    "type": ExModeMixin._cmd_type,
 }

@@ -329,6 +329,9 @@ class HelpScreen(ModalScreen):
             ("set keymap <name>", "", "Switch keymap"),
             ("delim <d>", "delimiter", "Change delimiter"),
             ("", "", ""),
+            ("Column Types", "", ""),
+            ("type <col> <type>", "", "Set column type (numeric/date/string/auto)"),
+            ("", "", ""),
             ("Other", "", ""),
             ("help", "", "Show this help screen"),
         ]

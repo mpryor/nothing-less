@@ -60,6 +60,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+class ColumnType(Enum):
+    AUTO = "auto"
+    STRING = "string"
+    NUMERIC = "numeric"
+    DATETIME = "datetime"
+
+
 class RowLengthMismatchError(Exception):
     pass
 
@@ -197,6 +204,12 @@ class Column:
     substitution: tuple[re.Pattern, str] | None = (
         None  # regex substitution (pattern, replacement)
     )
+    detected_type: "ColumnType" = ColumnType.AUTO
+    type_override: "ColumnType | None" = None
+
+    @property
+    def effective_type(self) -> "ColumnType":
+        return self.type_override if self.type_override else self.detected_type
 
 
 @dataclass

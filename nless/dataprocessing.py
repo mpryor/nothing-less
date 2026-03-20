@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import bisect
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from .types import Filter
+    from .types import ColumnType, Filter
 
 # Type aliases for callbacks passed from NlessBuffer
 ColLookupFn = Callable[[str, bool], int | None]
@@ -56,12 +57,95 @@ def coerce_to_numeric(value: Any) -> int | float | str:
     return value
 
 
-def coerce_sort_key(value: str) -> int | float | str:
-    """Coerce a string to numeric if possible, for sort comparison."""
+_DATETIME_FORMATS = [
+    "%Y-%m-%d %H:%M:%S",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%Y/%m/%d",
+    "%b %d, %Y",
+]
+
+
+def _try_parse_datetime(value: str) -> datetime | None:
+    """Try to parse a datetime string. Returns datetime or None."""
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        pass
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def infer_column_type(values: list[str], threshold: float = 0.8) -> ColumnType:
+    """Infer the column type from a sample of values.
+
+    Samples up to 100 non-empty values. Returns NUMERIC if >=threshold are
+    numeric, DATETIME if >=threshold parse as dates, otherwise STRING.
+    """
+    from .types import ColumnType
+
+    non_empty = [v for v in values if v.strip()][:100]
+    if len(non_empty) < 3:
+        return ColumnType.STRING
+
+    numeric_count = sum(1 for v in non_empty if _looks_numeric(v))
+    if numeric_count / len(non_empty) >= threshold:
+        return ColumnType.NUMERIC
+
+    datetime_count = sum(1 for v in non_empty if _try_parse_datetime(v) is not None)
+    if datetime_count / len(non_empty) >= threshold:
+        return ColumnType.DATETIME
+
+    return ColumnType.STRING
+
+
+def coerce_datetime_sort_key(value: str, fmt_hint: str | None = None) -> float | str:
+    """Coerce a datetime string to epoch float for sorting.
+
+    If fmt_hint is provided, tries that strptime format first.
+    Falls back to fromisoformat then other formats. Returns original
+    string on failure.
+    """
+    if not value or not value.strip():
+        return value
+    if fmt_hint is not None:
+        try:
+            return datetime.strptime(value, fmt_hint).timestamp()
+        except (ValueError, TypeError):
+            pass
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, TypeError):
+        pass
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).timestamp()
+        except (ValueError, TypeError):
+            continue
+    return value
+
+
+def coerce_sort_key(
+    value: str, column_type: ColumnType | None = None
+) -> int | float | str:
+    """Coerce a string to an appropriate sort key based on column type."""
     if not value:
         return value
-    # Fast first-char reject avoids int()/float() exception overhead
-    # on obviously non-numeric strings.
+    if column_type is not None:
+        from .types import ColumnType as CT
+
+        if column_type == CT.DATETIME:
+            result = coerce_datetime_sort_key(value)
+            if isinstance(result, float):
+                return result
+            return value
+        if column_type == CT.STRING:
+            return value
+    # Default/NUMERIC: existing behavior
     c = value[0]
     if c not in "0123456789+-.":
         return value
@@ -101,6 +185,7 @@ def find_sorted_insert_index(
     col_lookup_fn: ColLookupFn,
     strip_markup_fn: StripMarkupFn = strip_markup,
     num_displayed_rows: int = 0,
+    column_type: ColumnType | None = None,
 ) -> int:
     """Find the insertion index for a row based on current sort state."""
     if sort_column is None:
@@ -109,7 +194,7 @@ def find_sorted_insert_index(
     data_sort_col_idx = col_lookup_fn(sort_column, False)
 
     raw_key = strip_markup_fn(str(cells[data_sort_col_idx]))
-    sort_key = coerce_sort_key(raw_key)
+    sort_key = coerce_sort_key(raw_key, column_type)
 
     idx = bisect.bisect_left(sort_keys, sort_key)
     if sort_reverse:
@@ -143,6 +228,7 @@ def update_sort_keys_for_line(
     sort_keys: list,
     col_lookup_fn: ColLookupFn,
     strip_markup_fn: StripMarkupFn = strip_markup,
+    column_type: ColumnType | None = None,
 ) -> None:
     """Update the incremental sort keys list after insertion/removal.
 
@@ -153,6 +239,7 @@ def update_sort_keys_for_line(
         sort_keys: The maintained list of sort keys (ascending).
         col_lookup_fn: Function(col_name, render_position) → index.
         strip_markup_fn: Function(text) → plain text.
+        column_type: The detected type of the sort column, if known.
     """
     if sort_column is None:
         return
@@ -165,14 +252,14 @@ def update_sort_keys_for_line(
         render_sort_col_idx = col_lookup_fn(sort_column, True)
         if render_sort_col_idx is not None and render_sort_col_idx < len(old_row):
             old_raw = strip_markup_fn(str(old_row[render_sort_col_idx]))
-            old_key = coerce_sort_key(old_raw)
+            old_key = coerce_sort_key(old_raw, column_type)
             ki = bisect.bisect_left(sort_keys, old_key)
             if ki < len(sort_keys) and sort_keys[ki] == old_key:
                 sort_keys.pop(ki)
 
     # Insert new sort key from data-position cells
     new_raw = strip_markup_fn(str(data_cells[data_sort_col_idx]))
-    bisect.insort_left(sort_keys, coerce_sort_key(new_raw))
+    bisect.insort_left(sort_keys, coerce_sort_key(new_raw, column_type))
 
 
 def highlight_search_matches(

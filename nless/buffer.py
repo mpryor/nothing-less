@@ -745,15 +745,38 @@ class NlessBuffer(
         Returns the computed sort keys (always ascending order for bisect)
         when sorting succeeds, or ``None`` if no sort was performed.
         """
+        from .dataprocessing import infer_column_type
+        from .types import ColumnType
+
         if self.query.sort_column is None:
             return None
         sort_column_idx = self._get_col_idx_by_name(self.query.sort_column)
         if sort_column_idx is None:
             return None
+
+        # Lazy type inference for the sort column
+        sort_col = self._get_sort_column_obj()
+        col_type = None
+        if sort_col is not None:
+            if sort_col.effective_type == ColumnType.AUTO and rows:
+                sample = [
+                    strip_markup(r[sort_column_idx])
+                    for r in rows[:100]
+                    if sort_column_idx < len(r)
+                ]
+                sort_col.detected_type = infer_column_type(sample)
+                self._update_type_label(sort_col)
+            col_type = sort_col.effective_type
+            if col_type == ColumnType.AUTO:
+                col_type = None
+
         try:
             # Precompute sort keys in one O(N) pass to avoid calling
             # coerce_to_numeric O(N log N) times inside the sort comparator.
-            keys = [coerce_sort_key(strip_markup(r[sort_column_idx])) for r in rows]
+            keys = [
+                coerce_sort_key(strip_markup(r[sort_column_idx]), col_type)
+                for r in rows
+            ]
             indices = sorted(
                 range(len(rows)), key=keys.__getitem__, reverse=self.query.sort_reverse
             )
@@ -774,6 +797,78 @@ class NlessBuffer(
             except (TypeError, IndexError):
                 pass
             return None
+
+    def _get_sort_column_obj(self):
+        """Return the Column object for the current sort column, or None."""
+        if self.query.sort_column is None:
+            return None
+        for col in self.current_columns:
+            if strip_markup(col.name) == self.query.sort_column:
+                return col
+        return None
+
+    @staticmethod
+    def _update_type_label(col):
+        """Add/remove type indicator labels (#, @) on a column."""
+        from .types import ColumnType
+
+        col.labels.discard("#")
+        col.labels.discard("@")
+        effective = col.effective_type
+        if effective == ColumnType.NUMERIC:
+            col.labels.add("#")
+        elif effective == ColumnType.DATETIME:
+            col.labels.add("@")
+
+    def _infer_all_column_types(self, rows: list[list[str]]) -> None:
+        """Infer detected_type for all columns that are still AUTO.
+
+        Called during deferred rebuild with filtered rows (data-position order).
+        Skips metadata columns and columns with type_override set.
+        """
+        from .dataprocessing import infer_column_type
+        from .types import ColumnType
+
+        if not rows:
+            return
+        metadata_names = {mc.value for mc in MetadataColumn}
+        for col in self.current_columns:
+            if col.name in metadata_names:
+                continue
+            if col.effective_type != ColumnType.AUTO:
+                continue
+            idx = col.data_position
+            sample = [strip_markup(r[idx]) for r in rows[:100] if idx < len(r)]
+            col.detected_type = infer_column_type(sample)
+            self._update_type_label(col)
+
+    def _infer_column_types_from_displayed(self) -> bool:
+        """Infer types using displayed_rows (render-position order).
+
+        Used on the incremental-add path where _process_deferred_data
+        is not called. Returns True if any types were inferred.
+        """
+        from .dataprocessing import infer_column_type
+        from .types import ColumnType
+
+        if not self.displayed_rows:
+            return False
+        changed = False
+        metadata_names = {mc.value for mc in MetadataColumn}
+        for render_idx, col in enumerate(self.cache.sorted_visible_columns):
+            if col.name in metadata_names:
+                continue
+            if col.effective_type != ColumnType.AUTO:
+                continue
+            sample = [
+                strip_markup(r[render_idx])
+                for r in self.displayed_rows[:100]
+                if render_idx < len(r)
+            ]
+            col.detected_type = infer_column_type(sample)
+            self._update_type_label(col)
+            changed = True
+        return changed
 
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False
@@ -811,7 +906,6 @@ class NlessBuffer(
             }
             expected_cell_count = len(self.current_columns) - len(curr_metadata_columns)
             self._rebuild_column_caches()
-            column_labels = self._get_visible_column_labels()
             fixed_columns = len(
                 [c for c in self.current_columns if c.pinned and not c.hidden]
             )
@@ -827,7 +921,11 @@ class NlessBuffer(
             )
             filtered_rows = self._apply_time_window(filtered_rows)
             deduped_rows = self._dedup_rows(filtered_rows)
+            self._infer_all_column_types(deduped_rows)
             sort_keys = self._sort_rows(deduped_rows)
+
+            # Build column labels after type inference so #/@ labels are included
+            column_labels = self._get_visible_column_labels()
 
             # Rebuild dedup indices after sorting (sort reorders rows)
             if self.query.unique_column_names:
@@ -1390,6 +1488,12 @@ class NlessBuffer(
 
     def _find_sorted_insert_index(self, cells: list[str]) -> int:
         """Find the insertion index for a row based on the current sort."""
+        sort_col = self._get_sort_column_obj()
+        col_type = sort_col.effective_type if sort_col else None
+        from .types import ColumnType
+
+        if col_type == ColumnType.AUTO:
+            col_type = None
         return find_sorted_insert_index(
             cells,
             self.cache.sort_keys,
@@ -1397,6 +1501,7 @@ class NlessBuffer(
             self.query.sort_reverse,
             self._get_col_idx_by_name,
             num_displayed_rows=len(self.displayed_rows),
+            column_type=col_type,
         )
 
     def _update_dedup_indices_after_removal(self, old_index: int) -> None:
@@ -1417,10 +1522,17 @@ class NlessBuffer(
         old_row: list[str] | None,
     ) -> None:
         """Update the incremental sort keys list after insertion/removal."""
+        sort_col = self._get_sort_column_obj()
+        col_type = sort_col.effective_type if sort_col else None
+        from .types import ColumnType
+
+        if col_type == ColumnType.AUTO:
+            col_type = None
         update_sort_keys_for_line(
             data_cells,
             old_row,
             self.query.sort_column,
             self.cache.sort_keys,
             self._get_col_idx_by_name,
+            column_type=col_type,
         )

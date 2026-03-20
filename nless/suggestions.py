@@ -208,6 +208,7 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "exclude",
         "e",
         "s/",
+        "type",
         "clear",
         "cols",
         "w",
@@ -230,6 +231,7 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "exclude": "exclude matches from column",
         "e": "exclude (short alias)",
         "s/": "substitute in column(s)",
+        "type": "set column type (numeric/date/string/auto)",
         "clear": "reset sort, search, and columns",
         "cols": "show/hide columns",
         "w": "write buffer to file",
@@ -315,6 +317,28 @@ class ExModeSuggestionProvider(SuggestionProvider):
 
         # Command with args
         args = parts[1] if len(parts) > 1 else ""
+
+        if cmd in ("type",):
+            arg_parts = args.split(None, 1)
+            col_part = arg_parts[0] if arg_parts else ""
+            cols = self._column_names()
+            col_matched = col_part and any(c.lower() == col_part.lower() for c in cols)
+            if col_matched and (len(arg_parts) > 1 or args.endswith(" ")):
+                type_part = arg_parts[1].lower() if len(arg_parts) > 1 else ""
+                type_options = ["numeric", "date", "string", "auto"]
+                return [
+                    f"type {self._quote_col(col_part)} {t}"
+                    for t in type_options
+                    if t.startswith(type_part)
+                ]
+            if not args:
+                return [f"type {self._quote_col(c)}" for c in cols][: self.MAX_RESULTS]
+            lower = args.lower()
+            return [
+                f"type {self._quote_col(c)}"
+                for c in cols
+                if c.lower().startswith(lower)
+            ][: self.MAX_RESULTS]
 
         if cmd in ("sort",):
             arg_parts = args.split(None, 1)

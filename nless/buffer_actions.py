@@ -356,8 +356,24 @@ class ActionsMixin:
             return
 
         col_name = strip_markup(selected_column.name)
+
+        # Infer type if not yet detected so aggregations are type-aware
+        from .types import ColumnType
+
+        if selected_column.effective_type == ColumnType.AUTO:
+            from .dataprocessing import infer_column_type
+
+            render_idx_for_sample = data_table.cursor_column
+            sample = [
+                strip_markup(str(row[render_idx_for_sample]))
+                for row in self.displayed_rows[:100]
+                if render_idx_for_sample < len(row)
+            ]
+            selected_column.detected_type = infer_column_type(sample)
+            self._update_type_label(selected_column)
+
         render_idx = data_table.cursor_column
-        result = compute_column_aggregations(self, render_idx)
+        result = compute_column_aggregations(self, render_idx, column=selected_column)
         if result is None:
             self.notify(f"No data in column '{col_name}'", severity="warning")
             return

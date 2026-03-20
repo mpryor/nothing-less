@@ -359,6 +359,30 @@ class TestExModeSuggestionProvider:
         assert 'sort "multi word col"' in suggestions
         assert "sort simple" in suggestions
 
+    def test_type_in_commands_list(self, provider):
+        suggestions = provider.get_suggestions("")
+        assert "type" in suggestions
+
+    def test_type_description(self, provider):
+        assert provider.get_description("type") is not None
+
+    def test_type_suggests_columns(self, provider):
+        suggestions = provider.get_suggestions("type ")
+        assert "type timestamp" in suggestions
+        assert "type level" in suggestions
+
+    def test_type_column_suggests_types(self, provider):
+        suggestions = provider.get_suggestions("type timestamp ")
+        assert "type timestamp numeric" in suggestions
+        assert "type timestamp date" in suggestions
+        assert "type timestamp string" in suggestions
+        assert "type timestamp auto" in suggestions
+
+    def test_type_column_type_prefix(self, provider):
+        suggestions = provider.get_suggestions("type timestamp n")
+        assert "type timestamp numeric" in suggestions
+        assert "type timestamp date" not in suggestions
+
     def test_filter_quoted_column_suggestion(self):
         from nless.suggestions import ExModeSuggestionProvider
 
@@ -460,6 +484,9 @@ class TestNewCommandAliases:
     def test_cols_aliases(self):
         assert _COMMAND_ALIASES["cols"] == "cols"
         assert _COMMAND_ALIASES["columns"] == "cols"
+
+    def test_type_alias(self):
+        assert _COMMAND_ALIASES["type"] == "type"
 
 
 # ── Fuzzy command suggestions ───────────────────────────────────────
