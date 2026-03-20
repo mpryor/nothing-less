@@ -36,7 +36,21 @@ poetry run pytest -m "not perf"
 
 # Run only perf tests
 poetry run pytest -m perf
+
+# Run performance benchmarks (compare against tests/perf_history.json baselines)
+python -m tests.bench_all --json
 ```
+
+### Performance Bisect Workflow
+
+When investigating performance regressions:
+
+1. **Bench current**: `python -m tests.bench_all --json`
+2. **Compare**: Check results against `tests/perf_history.json` baselines to identify degraded benchmarks
+3. **Bisect**: Use git worktrees with coarse sweeps (~8 evenly spaced commits), then narrow down on suspect ranges
+4. **Profile**: Use cProfile on the hot paths to find root cause
+5. **Fix & verify**: Apply targeted fix, re-bench to confirm improvement
+6. **Update baseline**: Add new entry to `tests/perf_history.json` after significant milestones
 
 Test files cover CLI arg parsing, buffer operations, delimiter inference/splitting, input stream handling, and performance regression detection (`test_perf.py`).
 
