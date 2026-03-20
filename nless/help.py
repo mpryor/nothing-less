@@ -69,6 +69,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
             ("app.filter_columns", "C", "Show/hide columns"),
             ("app.toggle_arrival", "A", "Toggle arrival timestamps"),
             ("buffer.pin_column", "m", "Pin/unpin column"),
+            ("buffer.hide_column", "X", "Hide column"),
             ("buffer.move_column_right", ">", "Move column right"),
             ("buffer.move_column_left", "<", "Move column left"),
         ],

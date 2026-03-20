@@ -165,6 +165,12 @@ class NlessBuffer(
             id="buffer.pin_column",
         ),
         Binding(
+            "X",
+            "hide_column",
+            "Hide the current column",
+            id="buffer.hide_column",
+        ),
+        Binding(
             "a",
             "aggregations",
             "Show column aggregations",

@@ -1056,7 +1056,48 @@ The `_source` column can be hidden/shown like any other column using `C` (column
 
 ---
 
-## 20. Putting It All Together
+## 20. Ex Mode
+
+Ex mode gives you a command-line prompt inside nless for quick operations without remembering keybindings. Press `:` to open the prompt.
+
+Using `orders.csv` from earlier tutorials:
+
+```bash
+nless orders.csv
+```
+
+**Substitution — rewrite cell values:**
+
+1. Press `c` and select `status` to jump to that column
+2. Press `:` and type `s/shipped/delivered/` — all `shipped` values in the status column become `delivered`
+3. Press `:` and type `s/pending/in-progress/g` — the `g` flag applies the substitution across all columns, not just the current one
+
+**Filtering and sorting by name:**
+
+1. Press `:` and type `filter customer alice` — a new buffer opens with only Alice's rows
+2. Press `q` to close the filtered buffer
+3. Press `:` and type `sort price` — sorts by the price column (press again to reverse, again to clear)
+4. Press `:` and type `exclude status cancelled` — removes cancelled orders
+
+**File operations:**
+
+1. Press `:` and type `w filtered.csv` — writes the current buffer to `filtered.csv`
+2. Press `:` and type `o other-data.csv` — opens a file in a new buffer group
+3. Press `:` and type `q` — closes the current buffer (same as pressing `q`)
+
+**Settings:**
+
+1. Press `:` and type `set theme monokai` — switches to the monokai theme
+2. Press `:` and type `set keymap emacs` — switches to emacs keybindings
+3. Press `:` and type `delim ,` — changes the delimiter to comma
+
+**Autocomplete:**
+
+Ex mode supports autocomplete — start typing a command and press ++tab++ to see suggestions. Column names, theme names, and keymap names are all suggested contextually.
+
+---
+
+## 21. Putting It All Together
 
 This tutorial ties together regex parsing, filtering, pivoting, excluded lines, and export into a single investigation workflow. Create a file called `app.log`:
 

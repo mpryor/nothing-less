@@ -52,6 +52,7 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `m` | Pin or unpin the current column to the left side of the screen — pinned columns stay visible during horizontal scrolling |
 | `>` | Move the current column one to the right |
 | `<` | Move the current column one to the left |
+| `X` | Hide the current column from the view |
 | `A` | Toggle the `_arrival` metadata column showing when each row was received |
 
 ## Pivoting
@@ -152,6 +153,27 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `?` | Show the help screen with all keybindings |
+| `#` | Show the caption overlay — displays action descriptions inline as you press keys |
+
+## Ex Mode
+
+Press `:` to open the ex-mode command prompt. Ex mode supports the following commands:
+
+| Command | Alias | Action |
+|---------|-------|--------|
+| `s/pat/rep/` | | Substitute pattern in the current column |
+| `s/pat/rep/g` | | Substitute pattern in all columns |
+| `sort <col>` | | Sort by column name |
+| `filter <col> <pat>` | `f` | Filter column by pattern |
+| `exclude <col> <pat>` | `e` | Exclude matches from column |
+| `w [path]` | `write` | Write buffer to file (prompts if no path) |
+| `o <path>` | `open` | Open file in a new group |
+| `q` | `quit` | Close buffer or quit |
+| `q!` | `quit!` | Pipe to stdout and exit |
+| `set theme <name>` | | Switch theme |
+| `set keymap <name>` | | Switch keymap |
+| `delim <d>` | `delimiter` | Change delimiter |
+| `help` | | Show the help screen |
 
 ---
 
