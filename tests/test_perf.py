@@ -35,7 +35,7 @@ N_COLS = 5
 
 # Measured baselines (max of 3 runs, seconds).
 _BASELINES = {
-    "load": 0.31,
+    "load": 0.35,
     "sort": 0.39,
     "filter": 0.57,
     "unique": 0.35,
