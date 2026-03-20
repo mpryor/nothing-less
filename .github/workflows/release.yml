@@ -116,8 +116,28 @@ jobs:
           # Clone homebrew-tap and update the nless URL + sha256
           brew tap mpryor/tap
           FORMULA="$(brew --repository mpryor/tap)/Formula/n/nless.rb"
-          sed -i '' "s|url \"https://files.pythonhosted.org/.*nothing_less-.*\.tar\.gz\"|url \"$URL\"|" "$FORMULA"
-          sed -i '' "0,/sha256 \"[a-f0-9]\{64\}\"/s|sha256 \"[a-f0-9]\{64\}\"|sha256 \"$SHA\"|" "$FORMULA"
+          python3 << PYEOF
+          import re
+          formula = "$FORMULA"
+          url = "$URL"
+          sha = "$SHA"
+          text = open(formula).read()
+          # Replace the main package url line
+          text = re.sub(
+              r'url "https://files\.pythonhosted\.org/[^"]*nothing.less-[^"]*\.tar\.gz"',
+              f'url "{url}"',
+              text,
+              count=1,
+          )
+          # Replace the sha256 on the very next line after the url
+          text = re.sub(
+              r'(url "{}")\n(\s*)sha256 "[a-f0-9]{{64}}"'.format(re.escape(url)),
+              r'\1\n\2sha256 "{}"'.format(sha),
+              text,
+              count=1,
+          )
+          open(formula, "w").write(text)
+          PYEOF
 
           # Regenerate all transitive dependency resources
           brew update-python-resources mpryor/tap/nless
