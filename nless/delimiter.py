@@ -13,13 +13,19 @@ def _find_ref_column_cell(
     sorted_columns: list[Column],
     cells: list[str],
     count_metadata_columns: int,
+    computed_values: dict[str, str] | None = None,
 ) -> str | None:
     """Find the cell value from the referenced source column.
 
     Returns the cell string if found and in bounds, otherwise None.
+    When the referenced column is itself computed (e.g. from a prior
+    column split), its value is looked up from *computed_values* instead
+    of *cells*.
     """
     if lookup_column is None:
         return None
+    if computed_values and lookup_column in computed_values:
+        return computed_values[lookup_column]
     for c in sorted_columns:
         if c.name == lookup_column and c.data_position - count_metadata_columns < len(
             cells
@@ -112,13 +118,20 @@ def split_line(
 
     # Collect computed cells with their target positions, then merge in
     # one pass to avoid O(n²) repeated list insertions.
+    # computed_values tracks already-resolved computed column values so
+    # that nested splits (split-on-split) can look up their parent.
     computed = []  # list of (insert_position, value)
+    computed_values: dict[str, str] = {}
     for i, col in enumerate(sorted_columns):
         pos = col.data_position - count_metadata_columns
         if col.delimiter and col.delimiter == "json":
             json_path = col.json_ref.split(".")
             ref_cell = _find_ref_column_cell(
-                json_path[0], sorted_columns, cells, count_metadata_columns
+                json_path[0],
+                sorted_columns,
+                cells,
+                count_metadata_columns,
+                computed_values,
             )
             if ref_cell is None:
                 continue
@@ -141,10 +154,15 @@ def split_line(
                 if isinstance(json_data, (dict, list))
                 else str(json_data)
             ).replace("[", "\\[")
+            computed_values[col.name] = value
             computed.append((pos, value))
         elif isinstance(col.delimiter, re.Pattern):
             ref_cell = _find_ref_column_cell(
-                col.col_ref, sorted_columns, cells, count_metadata_columns
+                col.col_ref,
+                sorted_columns,
+                cells,
+                count_metadata_columns,
+                computed_values,
             )
             if ref_cell is None:
                 continue
@@ -156,10 +174,15 @@ def split_line(
                     if col.col_ref_index < len(subcells)
                     else ""
                 )
+                computed_values[col.name] = value
                 computed.append((pos, value))
         else:
             ref_cell = _find_ref_column_cell(
-                col.col_ref, sorted_columns, cells, count_metadata_columns
+                col.col_ref,
+                sorted_columns,
+                cells,
+                count_metadata_columns,
+                computed_values,
             )
             if ref_cell is None:
                 continue
@@ -170,6 +193,7 @@ def split_line(
             value = (
                 subcells[col.col_ref_index] if col.col_ref_index < len(subcells) else ""
             )
+            computed_values[col.name] = value
             computed.append((pos, value))
 
     # Merge computed cells into the base cells in one pass (O(n))

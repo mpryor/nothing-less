@@ -171,6 +171,10 @@ class ColumnOpsMixin:
             buffer: The NlessBuffer to add columns to.
             column_names: Iterable of candidate column names.
             make_column_fn: Callable(index, name, position) -> Column.
+
+        Returns:
+            Tuple of (base_position, added_count, added_names) where
+            base_position is the data/render position of the first new column.
         """
         existing = {c.name for c in buffer.current_columns}
         # Insert before trailing metadata (ARRIVAL) so it stays last
@@ -186,16 +190,19 @@ class ColumnOpsMixin:
             arrival_col.data_position if arrival_col else len(buffer.current_columns)
         )
         added = 0
+        added_names = []
         for i, name in enumerate(column_names):
             if name not in existing:
                 buffer.current_columns.append(make_column_fn(i, name, base_pos + added))
                 added += 1
+                added_names.append(name)
         # Push ARRIVAL to the end
         if arrival_col and added > 0:
             arrival_col.data_position = base_pos + added
             arrival_col.render_position = (
                 max(c.render_position for c in buffer.current_columns) + 1
             )
+        return base_pos, added, added_names
 
     def handle_column_delimiter_submitted(
         self: NlessApp, event: AutocompleteInput.Submitted
@@ -238,6 +245,9 @@ class ColumnOpsMixin:
                 )
                 return
 
+            split_result = None  # (base_pos, added_count, added_names)
+            selected_column_name = strip_markup(selected_column.name)
+
             if new_col_delimiter == "json":
                 try:
                     cell_json = json.loads(strip_markup(cell))
@@ -252,7 +262,7 @@ class ColumnOpsMixin:
                         if isinstance(cell_json, dict)
                         else list(range(len(cell_json)))
                     )
-                    self._add_computed_columns(
+                    split_result = self._add_computed_columns(
                         current_buffer,
                         [f"{selected_column.name}.{key}" for key in cell_json_keys],
                         lambda i, name, pos: Column(
@@ -266,7 +276,7 @@ class ColumnOpsMixin:
                             delimiter=new_col_delimiter,
                         ),
                     )
-                    should_update = True
+                    should_update = split_result[1] > 0
                 except json.JSONDecodeError:
                     current_buffer.notify(
                         "Selected cell does not contain a JSON object or array",
@@ -286,7 +296,7 @@ class ColumnOpsMixin:
                     if pattern.groups == 0:
                         raise re.error("no named groups")
                     group_names = list(pattern.groupindex.keys())
-                    self._add_computed_columns(
+                    split_result = self._add_computed_columns(
                         current_buffer,
                         group_names,
                         lambda i, name, pos, _pat=pattern, _sel=selected_column: Column(
@@ -301,7 +311,7 @@ class ColumnOpsMixin:
                             delimiter=_pat,
                         ),
                     )
-                    should_update = True
+                    should_update = split_result[1] > 0
                 except (re.error, ValueError):
                     pass
 
@@ -318,7 +328,7 @@ class ColumnOpsMixin:
                                 severity="error",
                             )
                             return
-                        self._add_computed_columns(
+                        split_result = self._add_computed_columns(
                             current_buffer,
                             [
                                 f"{selected_column.name}-{i + 1}"
@@ -340,7 +350,7 @@ class ColumnOpsMixin:
                                 delimiter=_delim,
                             ),
                         )
-                        should_update = True
+                        should_update = split_result[1] > 0
                     except (
                         json.JSONDecodeError,
                         csv.Error,
@@ -351,10 +361,56 @@ class ColumnOpsMixin:
                             f"Error splitting cell: {str(e)}", severity="error"
                         )
 
-        if should_update:
+            # Hide source column and adjust render positions
+            if should_update and split_result:
+                _, added_count, added_names = split_result
+                old_render_pos = selected_column.render_position
+                selected_column.hidden = True
+                selected_column.render_position = HIDDEN_COLUMN_SENTINEL_POSITION
+                # Close the gap left by hiding the source column
+                for c in current_buffer.current_columns:
+                    if (
+                        c.render_position > old_render_pos
+                        and c.render_position != HIDDEN_COLUMN_SENTINEL_POSITION
+                    ):
+                        c.render_position -= 1
+
+        if should_update and split_result:
             if current_buffer.raw_mode:
                 current_buffer.raw_mode = False
-            current_buffer._deferred_update_table(reason=UpdateReason.SPLITTING_COLUMN)
+            # Compute cursor target: first new column's render position
+            # (adjusted down by 1 because we hid the source column above)
+            first_new_col = next(
+                (
+                    c
+                    for c in current_buffer.current_columns
+                    if c.name in added_names and not c.hidden
+                ),
+                None,
+            )
+            target_col = first_new_col.render_position if first_new_col else 0
+            old_row = cursor_coordinate.row
+            # Build flash message
+            display_delim = (
+                repr(new_col_delimiter)
+                if new_col_delimiter in ("\t", " ", "  ")
+                else f'"{new_col_delimiter}"'
+            )
+            if len(added_names) <= 4:
+                col_list = ", ".join(added_names)
+            else:
+                col_list = f"{added_names[0]}, {added_names[1]}, \u2026 ({added_count} columns)"
+            flash_msg = (
+                f'Split "{selected_column_name}" on {display_delim} \u2192 {col_list}'
+            )
+            current_buffer._deferred_update_table(
+                restore_position=False,
+                callback=lambda: (
+                    data_table.move_cursor(column=target_col, row=old_row),
+                    current_buffer.notify(flash_msg),
+                ),
+                reason=UpdateReason.SPLITTING_COLUMN,
+            )
 
     def action_toggle_arrival(self: NlessApp) -> None:
         """Toggle visibility of the arrival timestamp column, pinned to the left."""

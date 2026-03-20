@@ -894,3 +894,82 @@ class TestSplitLineComputedColumns:
         ]
         result = split_line('{"name": "Alice"}', "json", columns)
         assert "" in result
+
+    def test_nested_literal_split(self):
+        """Splitting a column that was itself produced by a prior split.
+
+        Simulates: CSV with a 'msg' column → split on '.' → then split
+        one of the resulting sub-columns on ' | '.
+        """
+        # Base columns: id (pos 0), msg (pos 1)
+        # First split on '.': msg-1 (pos 2), msg-2 (pos 3)
+        # Second split on ' | ' on msg-2: msg-2-1 (pos 4), msg-2-2 (pos 5)
+        columns = [
+            Column(
+                name="id",
+                labels=set(),
+                render_position=0,
+                data_position=0,
+                hidden=False,
+            ),
+            Column(
+                name="msg",
+                labels=set(),
+                render_position=1,
+                data_position=1,
+                hidden=False,
+            ),
+            Column(
+                name="msg-1",
+                labels=set(),
+                render_position=2,
+                data_position=2,
+                hidden=False,
+                computed=True,
+                col_ref="msg",
+                col_ref_index=0,
+                delimiter=".",
+            ),
+            Column(
+                name="msg-2",
+                labels=set(),
+                render_position=3,
+                data_position=3,
+                hidden=False,
+                computed=True,
+                col_ref="msg",
+                col_ref_index=1,
+                delimiter=".",
+            ),
+            Column(
+                name="msg-2-1",
+                labels=set(),
+                render_position=4,
+                data_position=4,
+                hidden=False,
+                computed=True,
+                col_ref="msg-2",
+                col_ref_index=0,
+                delimiter=" | ",
+            ),
+            Column(
+                name="msg-2-2",
+                labels=set(),
+                render_position=5,
+                data_position=5,
+                hidden=False,
+                computed=True,
+                col_ref="msg-2",
+                col_ref_index=1,
+                delimiter=" | ",
+            ),
+        ]
+        result = split_line("001,logger.name | key=val | extra", ",", columns)
+        # msg-1 should be "logger" (first part of '.' split)
+        assert result[2] == "logger"
+        # msg-2 should be "name | key=val | extra"
+        assert result[3] == "name | key=val | extra"
+        # msg-2-1 should be "name" (first part of ' | ' split on msg-2)
+        assert result[4] == "name"
+        # msg-2-2 should be "key=val"
+        assert result[5] == "key=val"
