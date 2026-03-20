@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.0 (2026-03-20)
+
+### Feat
+
+- natural sort for string columns and recommend pipx in README
+
 ## 1.11.0 (2026-03-19)
 
 ### Feat
