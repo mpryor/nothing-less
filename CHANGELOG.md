@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0 (2026-03-20)
+
+### Feat
+
+- auto-update homebrew formula on release
+
 ## 1.12.0 (2026-03-20)
 
 ### Feat
