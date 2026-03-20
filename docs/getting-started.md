@@ -55,7 +55,8 @@ Once data is loaded, press `?` to view all keybindings.
 | `--theme` | `-t` | Color theme to use (e.g. `dracula`, `nord`, `monokai`) |
 | `--keymap` | `-k` | Keymap preset to use (e.g. `vim`, `less`, `emacs`) |
 | `--tail` | | Start in tail mode (cursor follows new data) |
-| `--time-window` | `-w` | Show only rows within a time window (e.g. `5m`, `1h`, `30s`). Append `+` for rolling (e.g. `5m+`) |
+| `--time-window` | `-w` | Show only rows within a time window (e.g. `5m`, `1h`, `30s`). Append `+` for rolling (e.g. `5m+`). Prefix with column name to filter by parsed timestamps (e.g. `timestamp 5m`) |
+| `--format-timestamp` | `-F` | Convert a timestamp column's format: `colname -> format` (e.g. `timestamp -> relative`, `ts -> epoch`, `ts -> UTC>US/Eastern %H:%M:%S`) |
 | `--columns` | `-c` | Regex to filter visible columns on startup (e.g. `name\|status`) |
 | `--raw` | | Start in raw pager mode (no delimiter parsing) |
 | `--no-tui` | | Skip the TUI — apply transforms and write to stdout |
@@ -106,6 +107,13 @@ Show only specific columns:
 
 ```bash
 nless -c 'name|status|age' pods.txt
+```
+
+Convert timestamps to a different format:
+
+```bash
+nless --no-tui -F 'timestamp -> epoch' events.csv
+cat events.csv | nless --no-tui -F 'timestamp -> relative' -o json
 ```
 
 View a file in raw mode (no column parsing):

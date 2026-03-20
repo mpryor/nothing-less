@@ -380,7 +380,7 @@ class NlessApp(
         Binding(
             "@",
             "time_window",
-            "Time Window (e.g. 5m, 1h, 30s)",
+            "Time window / timestamp conversion",
             id="app.time_window",
         ),
         Binding(

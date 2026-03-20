@@ -15,7 +15,7 @@
 
 ## Features
 
-- **Streaming support** — stay up-to-date as new data arrives on stdin, with arrival timestamps and time window filtering
+- **Streaming support** — stay up-to-date as new data arrives on stdin, with arrival timestamps, time window filtering, and timestamp parsing
 - **Delimiter inference** — no configuration needed; nless infers the delimiter from your data and auto-switches when it detects a mismatch
 - **Vi-like keybindings** — familiar to any Vim user, minimize keypresses to analyze a dataset
 - **Kubernetes-friendly** — built for K8s use-cases like parsing streams from kubectl
@@ -28,7 +28,8 @@
 - **Column pinning** — pin columns to the left with `m` so they stay visible during horizontal scrolling
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
 - **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
-- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`); append `+` for rolling windows; prefix with a column name (e.g. `timestamp 5m`) to filter by parsed timestamps
+- **Timestamp parsing & conversion** — auto-detects datetime columns (epoch, ISO 8601, syslog, etc.) for type-aware sorting; convert formats with `@colname -> target` (epoch, iso, relative, strftime, with optional timezone conversion)
 - **Excluded lines** — press `~` to see rows that failed to parse or were removed by filters, with chained accumulation
 - **Pipe mode** — use nless as a pipeline stage; `Q` quits immediately (piping output in pipe mode), batch mode with `--no-tui`, or `--tui` to force interactive mode
 - **Sessions** — save and restore your complete workspace state including filters, sort, highlights, delimiter, cursor position, and multiple buffer groups

@@ -185,6 +185,7 @@ class CliArgs:
     filenames: list[str] = field(default_factory=list)
     pipe_output: bool = False  # computed at runtime: stdout is a pipe
     output_format: str = "csv"  # csv, tsv, json, raw
+    format_timestamp: str | None = None  # "colname -> format" conversion
     demo: bool = False  # show keybinding captions on every action
 
 

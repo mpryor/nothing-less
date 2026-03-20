@@ -180,6 +180,30 @@ def _run_batch_inner(cli_args: CliArgs) -> None:
                 reverse=reverse,
             )
 
+    # Apply timestamp format conversion
+    if cli_args.format_timestamp and " -> " in cli_args.format_timestamp:
+        col_part, fmt_part = cli_args.format_timestamp.split(" -> ", 1)
+        fmt_col_name = col_part.strip()
+        target_fmt = fmt_part.strip()
+        fmt_col_idx = _col_lookup(columns, fmt_col_name)
+        if fmt_col_idx is not None and target_fmt and data_rows:
+            from .dataprocessing import (
+                _detect_datetime_format,
+                format_datetime_value,
+            )
+
+            sample = [
+                strip_markup(r[fmt_col_idx])
+                for r in data_rows[:100]
+                if fmt_col_idx < len(r)
+            ]
+            fmt_hint = _detect_datetime_format(sample)
+            for row in data_rows:
+                if fmt_col_idx < len(row):
+                    row[fmt_col_idx] = format_datetime_value(
+                        row[fmt_col_idx], fmt_hint, target_fmt
+                    )
+
     # Apply column filter
     visible_indices = list(range(len(columns)))
     visible_headers = [strip_markup(c.name) for c in columns]

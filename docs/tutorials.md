@@ -740,12 +740,66 @@ Time windows work alongside filters, sorts, and pivots:
 3. Press `c` and select `TYPE`, then press `f` and type `Warning` to narrow to warnings
 4. Press `c` and select `REASON`, then press `U` to pivot — you're now watching a live count of warning reasons in the last 5 minutes
 
+### Column-based time windows
+
+Instead of filtering by arrival time, you can filter by parsed timestamps in a column. This is useful for log files with a timestamp column where you want "the last 5 minutes of the log" rather than "rows that arrived in the last 5 minutes."
+
+Create a file called `server.log`:
+
+```csv
+timestamp,level,service,message
+2024-01-15 09:50:00,INFO,auth,User login
+2024-01-15 09:55:00,WARN,gateway,High latency detected
+2024-01-15 09:58:00,ERROR,billing,Payment timeout
+2024-01-15 10:00:00,INFO,auth,Token refreshed
+2024-01-15 10:02:00,INFO,gateway,Request completed
+2024-01-15 10:04:00,ERROR,auth,Invalid credentials
+```
+
+```bash
+nless server.log
+```
+
+1. nless auto-detects `timestamp` as a DATETIME column
+2. Press `@` and type `timestamp 5m` — only rows within the last 5 minutes of the log's timestamps are shown (relative to the max timestamp in the column, not wall clock)
+3. Press `@` and type `off` to clear
+
+The autocomplete suggests column-prefixed durations (e.g. `timestamp 5m`, `timestamp 15m+`) for any detected DATETIME column.
+
+### Timestamp format conversion
+
+You can convert a timestamp column to a different display format. This creates a new buffer with the converted values — sort, filter, and search all work on the converted output.
+
+Using the same `server.log`:
+
+1. Press `@` and type `timestamp -> relative` — timestamps become `2h ago`, `5m ago`, etc.
+2. Press `q` to close the converted buffer
+3. Press `@` and type `timestamp -> %H:%M:%S` — timestamps become `09:50:00`, `09:55:00`, etc.
+4. Press `q` to close
+
+**Convert to epoch:**
+
+1. Press `@` and type `timestamp -> epoch` — timestamps become Unix epoch seconds
+
+**With timezone conversion:**
+
+1. Press `@` and type `timestamp -> UTC>US/Eastern %H:%M:%S` — converts from UTC to Eastern time
+2. The autocomplete suggests common timezones when you type `>`
+
+The autocomplete after `->` shows format options with example output (e.g. `iso → 2024-01-15T10:30:00`, `relative → 2h ago`).
+
 ### From the command line
 
 You can also set a time window on startup:
 
 ```bash
 kubectl get events -w | nless --tail -w '5m+'
+```
+
+Column-based windows work from the CLI too:
+
+```bash
+nless server.log -w 'timestamp 5m'
 ```
 
 ---
@@ -814,7 +868,7 @@ nless can participate in Unix pipelines — not just as a data sink, but as a mi
 
 ### Batch mode with `--no-tui`
 
-Use `--no-tui` to skip the TUI entirely. nless reads the data, applies any CLI transforms (`-f`, `-s`, `-u`, `-c`), and writes the result to stdout:
+Use `--no-tui` to skip the TUI entirely. nless reads the data, applies any CLI transforms (`-f`, `-s`, `-u`, `-c`, `-F`), and writes the result to stdout:
 
 ```bash
 # Filter and sort a CSV, output as TSV
@@ -824,6 +878,16 @@ nless data.csv --no-tui -f 'status=shipped' -s 'date=desc' -o tsv
 ```bash
 # Extract specific columns from JSON lines
 cat events.jsonl | nless --no-tui -c 'timestamp|level|message' -o json
+```
+
+```bash
+# Convert timestamps to epoch and output as JSON
+nless events.csv --no-tui -F 'timestamp -> epoch' -o json
+```
+
+```bash
+# Convert timestamps to a short time format
+cat events.csv | nless --no-tui -F 'timestamp -> %H:%M'
 ```
 
 ### Interactive pipe mode

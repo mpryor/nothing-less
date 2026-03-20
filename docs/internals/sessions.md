@@ -21,6 +21,7 @@ Per-buffer state captured by `capture_buffer_state()`:
 | unique_column_names | `query.unique_column_names` | |
 | highlights | `regex_highlights` | Pattern string + color |
 | time_window / rolling | | |
+| datetime_display_fmt | `Column.datetime_display_fmt` | Per-column format conversion |
 | is_tailing | | |
 | search_term | `query.search_term.pattern` | |
 | cursor_row / cursor_column | DataTable widget | |

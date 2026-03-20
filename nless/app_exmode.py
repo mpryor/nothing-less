@@ -81,7 +81,16 @@ class ExModeMixin:
             event.input.remove()
             return
 
-        # Jump to line number
+        # Jump to line number or percentage
+        if input_value.endswith("%") and input_value[:-1].isdigit():
+            event.input.remove()
+            pct = int(input_value[:-1])
+            curr_buffer = self._get_current_buffer()
+            data_table = curr_buffer.query_one(".nless-view")
+            total = data_table.row_count
+            row = max(0, min(total - 1, round(total * pct / 100)))
+            data_table.move_cursor(row=row)
+            return
         if input_value.isdigit():
             event.input.remove()
             row = int(input_value) - 1

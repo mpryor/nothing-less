@@ -123,7 +123,8 @@ I frequently need to explore streaming tabular data: server logs, kubectl output
 - **Output** — write buffer contents to a file or stdout (`W`), copy cell values (`y`).
 - **Themes** — 10 built-in color themes (Dracula, Nord, Gruvbox, etc.) plus custom theme support, switch with `T`.
 - **Arrival timestamps** — every row records when it was received. Toggle the `_arrival` column with `A`.
-- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`). Append `+` for rolling windows.
+- **Time window filtering** — show only recent rows with `@` (e.g. `5m`, `1h`). Append `+` for rolling windows. Prefix with a column name to filter by parsed timestamps (e.g. `timestamp 5m`).
+- **Timestamp parsing & conversion** — auto-detects datetime columns (epoch, ISO 8601, syslog, etc.) for type-aware sorting. Convert formats with `@colname -> target` (epoch, iso, relative, strftime, with optional timezone conversion). Also available from the CLI with `--format-timestamp` / `-F` for batch pipelines.
 - **Raw pager mode** — `--raw` or auto-detected. A fast virtual-rendering pager for unstructured text, handling million-line files without columnar overhead.
 - **Excluded lines** — view lines that failed to parse or were removed by filters with `~`, with chained accumulation across buffers.
 - **Pipe mode** — use nless as a pipeline stage. Interactive exploration with `Q` to pipe and exit, batch mode with `--no-tui`, or `--tui` to force interactive mode.
@@ -184,7 +185,7 @@ I frequently need to explore streaming tabular data: server logs, kubectl output
 - `E` - exclude the current column by the highlighted cell
 - `|` - filter ALL columns and prompt for a filter
 - `&` - apply the current search as a filter across all columns
-- `@` - set a time window to show only recent rows (e.g. `5m`, `1h`); append `+` for rolling
+- `@` - set a time window to show only recent rows (e.g. `5m`, `1h`); append `+` for rolling; prefix with column name for column-based filtering (e.g. `timestamp 5m`); use `->` for format conversion (e.g. `timestamp -> relative`)
 
 **Searching & Highlighting**:
 - `/` - prompt for a search value and jump to the first match
@@ -268,7 +269,7 @@ If nless doesn't have what you need, check out these other great tools:
 | Themes | :white_check_mark: | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: |
 | SQL queries | :x: | :x: | :x: | :white_check_mark: | :x: |
 | Python expressions | :x: | :white_check_mark: | :x: | :x: | :x: |
-| Timestamp parsing | :x: | :x: | :x: | :white_check_mark: | :white_check_mark: |
+| Timestamp parsing | :white_check_mark: | :x: | :x: | :white_check_mark: | :white_check_mark: |
 | Multi-file merge | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: |
 
 :white_check_mark: full support · :heavy_minus_sign: partial · :x: not supported

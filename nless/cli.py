@@ -121,6 +121,12 @@ def parse_args(argv=None) -> CliArgs:
         default=None,
     )
     parser.add_argument(
+        "--format-timestamp",
+        "-F",
+        help="Convert a timestamp column's format: 'colname -> format' (e.g. 'timestamp -> relative', 'ts -> epoch', 'ts -> UTC>US/Eastern %%H:%%M:%%S')",
+        default=None,
+    )
+    parser.add_argument(
         "--demo",
         action="store_true",
         help="Demo mode: show a caption overlay for each keybinding action",
@@ -128,6 +134,13 @@ def parse_args(argv=None) -> CliArgs:
     )
 
     args = parser.parse_args(argv)
+
+    if args.format_timestamp and " -> " not in args.format_timestamp:
+        print(
+            f"Invalid --format-timestamp format: {args.format_timestamp}. "
+            "Expected format is 'colname -> format' (e.g. 'timestamp -> relative')"
+        )
+        sys.exit(1)
 
     if args.sort_by and len(args.sort_by.split("=")) != 2:
         print(
@@ -186,6 +199,7 @@ def parse_args(argv=None) -> CliArgs:
         tui=args.tui,
         session=args.session,
         output_format=args.output_format,
+        format_timestamp=args.format_timestamp,
         demo=args.demo,
     )
 
@@ -214,7 +228,11 @@ def main():
 
     stdout_is_pipe = not sys.stdout.isatty()
     has_transforms = bool(
-        cli_args.filters or cli_args.unique_keys or cli_args.sort_by or cli_args.columns
+        cli_args.filters
+        or cli_args.unique_keys
+        or cli_args.sort_by
+        or cli_args.columns
+        or cli_args.format_timestamp
     )
     batch_mode = cli_args.no_tui or (
         stdout_is_pipe and has_transforms and not cli_args.tui

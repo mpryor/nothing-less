@@ -247,6 +247,86 @@ class TestBatchDelimiters:
         assert lines[0] == "name,age"
         assert lines[1] == "Alice,30"
 
+    def test_format_timestamp_to_epoch(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text(
+            "timestamp,level,message\n"
+            "2024-01-15 10:00:00,INFO,hello\n"
+            "2024-01-15 10:05:00,WARN,world\n"
+        )
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            run_batch(
+                _cli_args(
+                    filename=str(f),
+                    format_timestamp="timestamp -> epoch",
+                )
+            )
+        finally:
+            sys.stdout = sys.__stdout__
+        lines = buf.getvalue().strip().replace("\r\n", "\n").split("\n")
+        assert lines[0] == "timestamp,level,message"
+        # Epoch timestamps should be numeric
+        ts1 = float(lines[1].split(",")[0])
+        ts2 = float(lines[2].split(",")[0])
+        assert ts2 > ts1
+        assert ts2 - ts1 == 300.0  # 5 minutes apart
+
+    def test_format_timestamp_to_iso(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("ts,msg\n1705312800,hello\n1705313100,world\n")
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            run_batch(
+                _cli_args(
+                    filename=str(f),
+                    format_timestamp="ts -> iso",
+                )
+            )
+        finally:
+            sys.stdout = sys.__stdout__
+        lines = buf.getvalue().strip().replace("\r\n", "\n").split("\n")
+        assert lines[0] == "ts,msg"
+        assert "T" in lines[1].split(",")[0]  # ISO format has T separator
+
+    def test_format_timestamp_with_strftime(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("timestamp,value\n2024-01-15 10:30:00,100\n")
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            run_batch(
+                _cli_args(
+                    filename=str(f),
+                    format_timestamp="timestamp -> %H:%M",
+                )
+            )
+        finally:
+            sys.stdout = sys.__stdout__
+        lines = buf.getvalue().strip().replace("\r\n", "\n").split("\n")
+        assert lines[1].split(",")[0] == "10:30"
+
+    def test_format_timestamp_nonexistent_column(self, tmp_path):
+        """--format-timestamp with a non-existent column should pass through unchanged."""
+        f = tmp_path / "data.csv"
+        f.write_text("name,age\nAlice,30\n")
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            run_batch(
+                _cli_args(
+                    filename=str(f),
+                    format_timestamp="timestamp -> epoch",
+                )
+            )
+        finally:
+            sys.stdout = sys.__stdout__
+        lines = buf.getvalue().strip().replace("\r\n", "\n").split("\n")
+        assert lines[0] == "name,age"
+        assert lines[1] == "Alice,30"
+
     def test_json_input(self, tmp_path):
         f = tmp_path / "data.jsonl"
         f.write_text('{"name":"Alice","age":30}\n{"name":"Bob","age":25}\n')

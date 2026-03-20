@@ -943,6 +943,24 @@ class NlessBuffer(
 
         return changed
 
+    def _apply_cli_format_timestamp(self) -> None:
+        """Apply --format-timestamp CLI arg to the matching column (once)."""
+        if self._cli_args is None or self._cli_args.format_timestamp is None:
+            return
+        spec = self._cli_args.format_timestamp
+        if " -> " not in spec:
+            return
+        col_part, fmt_part = spec.split(" -> ", 1)
+        col_name = col_part.strip()
+        target_fmt = fmt_part.strip()
+        if not target_fmt:
+            return
+        for c in self.current_columns:
+            if strip_markup(c.name) == col_name and c.datetime_display_fmt is None:
+                c.datetime_display_fmt = target_fmt
+                self._rebuild_column_caches()
+                break
+
     def _matches_all_filters(
         self, cells: list[str], adjust_for_count: bool = False
     ) -> bool:
@@ -995,6 +1013,7 @@ class NlessBuffer(
             filtered_rows = self._apply_time_window(filtered_rows)
             deduped_rows = self._dedup_rows(filtered_rows)
             self._infer_all_column_types(deduped_rows)
+            self._apply_cli_format_timestamp()
             sort_keys = self._sort_rows(deduped_rows)
 
             # Build column labels after type inference so #/@ labels are included

@@ -90,7 +90,7 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
             ("app.exclude_filter_cursor_word", "E", "Exclude by cursor word"),
             ("app.filter_any", "|", "Filter all columns"),
             ("app.search_to_filter", "&", "Search to filter"),
-            ("app.time_window", "@", "Time window (+ for rolling)"),
+            ("app.time_window", "@", "Time window / timestamp conversion"),
         ],
     ),
     (
@@ -317,6 +317,7 @@ class HelpScreen(ModalScreen):
             ("", "", ""),
             ("Navigation", "", ""),
             (":<number>", "", "Jump to line number"),
+            (":<number>%", "", "Jump to percentage of file"),
             ("", "", ""),
             ("Files & Buffers", "", ""),
             ("w [path]", "write", "Write buffer to file (prompts if no path)"),

@@ -145,6 +145,24 @@ class TestExcludeFilterArgs:
         assert cli_args.filters[1].exclude is True
 
 
+class TestFormatTimestampFlag:
+    def test_format_timestamp_flag(self):
+        cli_args = parse_args(["--format-timestamp", "timestamp -> relative"])
+        assert cli_args.format_timestamp == "timestamp -> relative"
+
+    def test_format_timestamp_short_flag(self):
+        cli_args = parse_args(["-F", "ts -> epoch"])
+        assert cli_args.format_timestamp == "ts -> epoch"
+
+    def test_format_timestamp_default_none(self):
+        cli_args = parse_args([])
+        assert cli_args.format_timestamp is None
+
+    def test_format_timestamp_invalid_format_exits(self):
+        with pytest.raises(SystemExit):
+            parse_args(["-F", "no-arrow-here"])
+
+
 class TestTuiFlag:
     def test_tui_flag(self):
         cli_args = parse_args(["--tui"])

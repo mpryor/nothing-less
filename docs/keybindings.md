@@ -74,7 +74,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | `E` | Exclude the current column by the highlighted cell |
 | `\|` | Filter ALL columns and prompt for a filter |
 | `&` | Apply the current search as a filter across all columns |
-| `@` | Set a time window to show only recent rows (e.g. `5m`, `1h`, `30s`). Append `+` for rolling mode (e.g. `5m+`) |
+| `@` | Set a time window to show only recent rows (e.g. `5m`, `1h`, `30s`). Append `+` for rolling mode (e.g. `5m+`). Prefix with a column name to filter by parsed timestamps (e.g. `timestamp 5m`). Use `->` to convert a column's format (e.g. `timestamp -> relative`, `ts -> UTC>US/Eastern %H:%M`) |
 
 ## Searching & Highlighting
 
@@ -173,6 +173,8 @@ Press `:` to open the ex-mode command prompt. Ex mode supports the following com
 | `set theme <name>` | | Switch theme |
 | `set keymap <name>` | | Switch keymap |
 | `delim <d>` | `delimiter` | Change delimiter |
+| `:<number>` | | Jump to line number |
+| `:<number>%` | | Jump to percentage of file (e.g. `:50%` jumps to the middle) |
 | `help` | | Show the help screen |
 
 ---
