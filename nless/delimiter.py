@@ -59,7 +59,7 @@ def split_line(
     elif delimiter == ",":
         cells = split_csv_row(line)
     elif delimiter == "raw":
-        stripped = line.rstrip("\n\r")
+        stripped = line.rstrip("\n\r").expandtabs()
         cells = [rich_escape(stripped) if "[" in stripped else stripped]
     elif delimiter == "json":
         cells = [

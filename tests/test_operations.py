@@ -2106,7 +2106,7 @@ class TestRawPagerMode:
             # Each row is a single-element list containing the raw line
             assert pager.rows[0][0] == "Hello world"
             assert pager.rows[1][0] == "  indented line"
-            assert pager.rows[2][0] == "\ttab line"
+            assert pager.rows[2][0] == "        tab line"
 
     @pytest.mark.asyncio
     async def test_raw_mode_auto_detection(self):

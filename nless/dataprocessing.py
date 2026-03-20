@@ -302,7 +302,7 @@ def choose_parse_strategy(delimiter, has_nested, columns, column_positions=None)
         from rich.markup import escape as _rich_escape
 
         def parse_raw(line):
-            s = line.rstrip("\n\r")
+            s = line.rstrip("\n\r").expandtabs()
             return [_rich_escape(s) if "[" in s else s]
 
         return parse_raw, False

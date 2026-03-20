@@ -468,6 +468,7 @@ class NlessBuffer(
         """
         self.delim.value = "raw"
         self.delim.inferred = False
+        self.raw_mode = True
         self.first_log_line = rows[0]
         self.first_row_parsed = True
         self.current_columns = self._make_columns(["log"])
