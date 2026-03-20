@@ -176,6 +176,12 @@ class NlessBuffer(
             "Show column aggregations",
             id="buffer.aggregations",
         ),
+        Binding(
+            "u",
+            "undo_columns",
+            "Undo last column split",
+            id="buffer.undo_columns",
+        ),
     ]
 
     def __init__(
@@ -206,6 +212,7 @@ class NlessBuffer(
         self._initial_load_done = False
 
         self.current_columns: list[Column] = []
+        self._column_history: list[list[Column]] = []
         if cli_args and cli_args.delimiter:
             pattern = re.compile(cli_args.delimiter)
             if pattern.groups > 0 and pattern.groupindex:
@@ -890,6 +897,62 @@ class NlessBuffer(
             if col.detected_type == ColumnType.DATETIME:
                 col.datetime_fmt_hint = _detect_datetime_format(sample)
 
+        self._detect_splittable_columns(rows)
+
+    def _detect_splittable_columns(self, rows: list[list[str]]) -> None:
+        """Add ⑃ label to STRING columns whose values consistently contain a delimiter."""
+        from .types import ColumnType
+
+        metadata_names = {mc.value for mc in MetadataColumn}
+        buf_delim = self.delim.value if hasattr(self, "delim") else self.delimiter
+        # Delimiters to probe (skip the buffer's own delimiter)
+        probe_delims = ["|", ";", "="]
+        if isinstance(buf_delim, str):
+            probe_delims = [d for d in probe_delims if d != buf_delim]
+
+        for col in self.current_columns:
+            if col.name in metadata_names or col.computed:
+                continue
+            if col.effective_type not in (ColumnType.STRING, ColumnType.AUTO):
+                continue
+            idx = col.data_position
+            sample = [strip_markup(r[idx]) for r in rows[:100] if idx < len(r)]
+            non_empty = [s for s in sample if s.strip()]
+            if len(non_empty) < 3:
+                continue
+            for delim in probe_delims:
+                splits = sum(1 for v in non_empty if len(v.split(delim)) >= 2)
+                if splits / len(non_empty) >= 0.8:
+                    col.labels.add("⑃")
+                    break
+
+    def _detect_splittable_columns_from_displayed(self, rows: list[list[str]]) -> None:
+        """Add ⑃ label using displayed_rows (render-position indexed)."""
+        from .types import ColumnType
+
+        metadata_names = {mc.value for mc in MetadataColumn}
+        buf_delim = self.delim.value if hasattr(self, "delim") else self.delimiter
+        probe_delims = ["|", ";", "="]
+        if isinstance(buf_delim, str):
+            probe_delims = [d for d in probe_delims if d != buf_delim]
+
+        for render_idx, col in enumerate(self.cache.sorted_visible_columns):
+            if col.name in metadata_names or col.computed:
+                continue
+            if col.effective_type not in (ColumnType.STRING, ColumnType.AUTO):
+                continue
+            sample = [
+                strip_markup(r[render_idx]) for r in rows[:100] if render_idx < len(r)
+            ]
+            non_empty = [s for s in sample if s.strip()]
+            if len(non_empty) < 3:
+                continue
+            for delim in probe_delims:
+                splits = sum(1 for v in non_empty if len(v.split(delim)) >= 2)
+                if splits / len(non_empty) >= 0.8:
+                    col.labels.add("⑃")
+                    break
+
     def _infer_column_types_from_displayed(self) -> bool:
         """Infer types using displayed_rows (render-position order).
 
@@ -940,6 +1003,10 @@ class NlessBuffer(
             if col.detected_type == ColumnType.DATETIME:
                 col.datetime_fmt_hint = _detect_datetime_format(sample)
             changed = True
+
+        # Detect splittable columns on the incremental path too
+        if self.displayed_rows:
+            self._detect_splittable_columns_from_displayed(self.displayed_rows)
 
         return changed
 
