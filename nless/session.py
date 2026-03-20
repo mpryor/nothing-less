@@ -29,6 +29,8 @@ class SessionColumn:
     substitution_pattern: str | None = None
     substitution_replacement: str | None = None
     type_override: str | None = None
+    datetime_fmt_hint: str | None = None
+    datetime_display_fmt: str | None = None
 
 
 @dataclass
@@ -162,6 +164,8 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                 substitution_pattern=sub_pat,
                 substitution_replacement=sub_repl,
                 type_override=type_ovr,
+                datetime_fmt_hint=col.datetime_fmt_hint,
+                datetime_display_fmt=col.datetime_display_fmt,
             )
         )
         if col.computed and (col.col_ref or col.json_ref):
@@ -409,6 +413,10 @@ def _apply_session_columns(
                     col.type_override = ColumnType(saved.type_override)
                 except ValueError:
                     pass
+            if saved.datetime_fmt_hint is not None:
+                col.datetime_fmt_hint = saved.datetime_fmt_hint
+            if saved.datetime_display_fmt is not None:
+                col.datetime_display_fmt = saved.datetime_display_fmt
 
 
 def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]:
@@ -497,6 +505,8 @@ def _deserialize_buffer_state(b: dict) -> SessionBufferState:
                 substitution_pattern=c.get("substitution_pattern"),
                 substitution_replacement=c.get("substitution_replacement"),
                 type_override=c.get("type_override"),
+                datetime_fmt_hint=c.get("datetime_fmt_hint"),
+                datetime_display_fmt=c.get("datetime_display_fmt"),
             )
             for c in b.get("columns", [])
         ],

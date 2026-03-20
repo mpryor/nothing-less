@@ -59,25 +59,240 @@ def coerce_to_numeric(value: Any) -> int | float | str:
 
 _DATETIME_FORMATS = [
     "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S,%f",  # Python logging (comma millis)
+    "%Y-%m-%d %H:%M:%S.%f",  # Python/Java (dot micros)
+    "%d/%b/%Y:%H:%M:%S %z",  # Apache CLF
+    "%b %d %H:%M:%S",  # Syslog BSD (no year)
+    "%Y/%m/%d %H:%M:%S",  # Go/NGINX
     "%m/%d/%Y",
     "%d/%m/%Y",
     "%Y/%m/%d",
     "%b %d, %Y",
 ]
 
+_EPOCH_RE = re.compile(r"^\d{10,13}(?:\.\d+)?$")
+
 
 def _try_parse_datetime(value: str) -> datetime | None:
     """Try to parse a datetime string. Returns datetime or None."""
+    stripped = value.strip()
+    if not stripped:
+        return None
+    # Epoch seconds (10 digits) or milliseconds (13 digits)
+    if _EPOCH_RE.match(stripped):
+        try:
+            f = float(stripped)
+            if 1e9 <= f < 1e10:
+                return datetime.fromtimestamp(f)
+            if 1e12 <= f < 1e13:
+                return datetime.fromtimestamp(f / 1000)
+        except (ValueError, OSError):
+            pass
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(stripped)
     except (ValueError, TypeError):
         pass
     for fmt in _DATETIME_FORMATS:
         try:
-            return datetime.strptime(value, fmt)
+            dt = datetime.strptime(stripped, fmt)
+            # Syslog BSD format has no year — patch with current year
+            if fmt == "%b %d %H:%M:%S" and dt.year == 1900:
+                dt = dt.replace(year=datetime.now().year)
+            return dt
         except (ValueError, TypeError):
             continue
     return None
+
+
+def _detect_datetime_format(values: list[str], threshold: float = 0.7) -> str | None:
+    """Detect the dominant datetime format in a sample of values.
+
+    Returns:
+        None if fromisoformat handles >threshold (fast path, no hint needed),
+        "epoch" if epoch timestamps dominate,
+        a strptime format string if one format dominates,
+        None if nothing matches.
+    """
+    non_empty = [v.strip() for v in values if v.strip()][:100]
+    if len(non_empty) < 3:
+        return None
+
+    n = len(non_empty)
+
+    # Check fromisoformat first — it's fast enough to not need a hint
+    iso_count = 0
+    for v in non_empty:
+        try:
+            datetime.fromisoformat(v)
+            iso_count += 1
+        except (ValueError, TypeError):
+            pass
+    if iso_count / n >= threshold:
+        return None  # no hint needed
+
+    # Check epoch
+    epoch_count = sum(1 for v in non_empty if _EPOCH_RE.match(v))
+    if epoch_count / n >= threshold:
+        return "epoch"
+
+    # Try each strptime format
+    for fmt in _DATETIME_FORMATS:
+        match_count = 0
+        for v in non_empty:
+            try:
+                datetime.strptime(v, fmt)
+                match_count += 1
+            except (ValueError, TypeError):
+                pass
+        if match_count / n >= threshold:
+            return fmt
+
+    return None
+
+
+def _format_relative_time(dt: datetime) -> str:
+    """Format a datetime as a relative time string like '2m ago'."""
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    delta = now - dt
+    secs = delta.total_seconds()
+    if secs < 0:
+        return "in the future"
+    if secs < 60:
+        return f"{int(secs)}s ago"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        h = int(secs // 3600)
+        m = int((secs % 3600) // 60)
+        return f"{h}h{m}m ago" if m else f"{h}h ago"
+    if secs < 86400 * 365:
+        d = int(secs // 86400)
+        return f"{d}d ago"
+    y = int(secs // (86400 * 365))
+    return f"{y}y ago"
+
+
+def _resolve_tz(name: str):
+    """Resolve a timezone name to a ZoneInfo, or None if invalid."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if not name:
+        return None
+    # Support common abbreviations
+    _ALIASES = {
+        "EST": "US/Eastern",
+        "PST": "US/Pacific",
+        "CST": "US/Central",
+        "MST": "US/Mountain",
+    }
+    name = _ALIASES.get(name.upper(), name)
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ZoneInfoNotFoundError):
+        return None
+
+
+def parse_tz_and_format(target_fmt: str) -> tuple[str | None, str | None, str]:
+    """Parse optional timezone spec from a format string.
+
+    If the first token contains '>', it's treated as a timezone spec:
+        'UTC>US/Eastern %H:%M:%S' → ('UTC', 'US/Eastern', '%H:%M:%S')
+        '>UTC epoch'              → (None, 'UTC', 'epoch')
+        'UTC> iso'                → ('UTC', None, 'iso')
+        '%H:%M:%S'               → (None, None, '%H:%M:%S')
+    """
+    parts = target_fmt.strip().split(None, 1)
+    if len(parts) >= 2 and ">" in parts[0]:
+        src, dst = parts[0].split(">", 1)
+        return (src or None, dst or None, parts[1])
+    return (None, None, target_fmt)
+
+
+def format_datetime_value(
+    value: str,
+    source_fmt_hint: str | None,
+    target_fmt: str,
+) -> str:
+    """Convert a datetime string from its source format to a target format.
+
+    Target format may include an optional timezone spec prefix:
+        "UTC>US/Eastern %H:%M:%S" — source=UTC, target=Eastern
+        ">UTC epoch"              — source=local, target=UTC
+        "epoch"                   — no timezone conversion
+
+    Built-in target formats:
+        - "epoch": epoch seconds
+        - "epoch_ms": epoch milliseconds
+        - "iso": ISO 8601
+        - "relative": relative time like "2m ago"
+        - Any strftime pattern (e.g. "%Y-%m-%d %H:%M:%S")
+
+    Returns the original value if parsing fails.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return value
+
+    # Parse timezone spec from target format
+    src_tz_name, dst_tz_name, fmt = parse_tz_and_format(target_fmt)
+    src_tz = _resolve_tz(src_tz_name) if src_tz_name else None
+    dst_tz = _resolve_tz(dst_tz_name) if dst_tz_name else None
+
+    # Parse source value to datetime
+    dt = None
+    if source_fmt_hint == "epoch":
+        if _EPOCH_RE.match(stripped):
+            try:
+                f = float(stripped)
+                if 1e9 <= f < 1e10:
+                    dt = datetime.fromtimestamp(f)
+                elif 1e12 <= f < 1e13:
+                    dt = datetime.fromtimestamp(f / 1000)
+            except (ValueError, OSError):
+                pass
+    elif source_fmt_hint is not None:
+        try:
+            dt = datetime.strptime(stripped, source_fmt_hint)
+            if source_fmt_hint == "%b %d %H:%M:%S" and dt.year == 1900:
+                dt = dt.replace(year=datetime.now().year)
+        except (ValueError, TypeError):
+            pass
+
+    if dt is None:
+        dt = _try_parse_datetime(stripped)
+    if dt is None:
+        return value
+
+    # Apply timezone conversions
+    if src_tz and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=src_tz)
+    if dst_tz:
+        dt = dt.astimezone(dst_tz)
+
+    # Format to target
+    try:
+        if fmt == "epoch":
+            return str(int(dt.timestamp()))
+        if fmt == "epoch_ms":
+            return str(int(dt.timestamp() * 1000))
+        if fmt == "iso":
+            return dt.isoformat()
+        if fmt == "relative":
+            return _format_relative_time(dt)
+        return dt.strftime(fmt)
+    except (ValueError, OSError):
+        return value
+
+
+def _looks_like_epoch(value: str) -> bool:
+    """Check if a numeric string is in the epoch timestamp range."""
+    if not _EPOCH_RE.match(value.strip()):
+        return False
+    try:
+        f = float(value)
+        return (1e9 <= f < 1e10) or (1e12 <= f < 1e13)
+    except (ValueError, TypeError):
+        return False
 
 
 def infer_column_type(values: list[str], threshold: float = 0.8) -> ColumnType:
@@ -85,6 +300,7 @@ def infer_column_type(values: list[str], threshold: float = 0.8) -> ColumnType:
 
     Samples up to 100 non-empty values. Returns NUMERIC if >=threshold are
     numeric, DATETIME if >=threshold parse as dates, otherwise STRING.
+    Epoch timestamps (10/13-digit numbers) are classified as DATETIME.
     """
     from .types import ColumnType
 
@@ -94,6 +310,10 @@ def infer_column_type(values: list[str], threshold: float = 0.8) -> ColumnType:
 
     numeric_count = sum(1 for v in non_empty if _looks_numeric(v))
     if numeric_count / len(non_empty) >= threshold:
+        # Check if these are actually epoch timestamps
+        epoch_count = sum(1 for v in non_empty if _looks_like_epoch(v))
+        if epoch_count / len(non_empty) >= threshold:
+            return ColumnType.DATETIME
         return ColumnType.NUMERIC
 
     datetime_count = sum(1 for v in non_empty if _try_parse_datetime(v) is not None)
@@ -112,25 +332,54 @@ def coerce_datetime_sort_key(value: str, fmt_hint: str | None = None) -> float |
     """
     if not value or not value.strip():
         return value
-    if fmt_hint is not None:
+    stripped = value.strip()
+    if fmt_hint == "epoch":
+        if _EPOCH_RE.match(stripped):
+            try:
+                f = float(stripped)
+                if 1e9 <= f < 1e10:
+                    return f
+                if 1e12 <= f < 1e13:
+                    return f / 1000
+            except (ValueError, OSError):
+                pass
+    elif fmt_hint is not None:
         try:
-            return datetime.strptime(value, fmt_hint).timestamp()
+            dt = datetime.strptime(stripped, fmt_hint)
+            if fmt_hint == "%b %d %H:%M:%S" and dt.year == 1900:
+                dt = dt.replace(year=datetime.now().year)
+            return dt.timestamp()
         except (ValueError, TypeError):
             pass
+    # Epoch detection (when no hint or hint failed)
+    if _EPOCH_RE.match(stripped):
+        try:
+            f = float(stripped)
+            if 1e9 <= f < 1e10:
+                return f
+            if 1e12 <= f < 1e13:
+                return f / 1000
+        except (ValueError, OSError):
+            pass
     try:
-        return datetime.fromisoformat(value).timestamp()
+        return datetime.fromisoformat(stripped).timestamp()
     except (ValueError, TypeError):
         pass
     for fmt in _DATETIME_FORMATS:
         try:
-            return datetime.strptime(value, fmt).timestamp()
+            dt = datetime.strptime(stripped, fmt)
+            if fmt == "%b %d %H:%M:%S" and dt.year == 1900:
+                dt = dt.replace(year=datetime.now().year)
+            return dt.timestamp()
         except (ValueError, TypeError):
             continue
     return value
 
 
 def coerce_sort_key(
-    value: str, column_type: ColumnType | None = None
+    value: str,
+    column_type: ColumnType | None = None,
+    fmt_hint: str | None = None,
 ) -> int | float | str:
     """Coerce a string to an appropriate sort key based on column type."""
     if not value:
@@ -139,7 +388,7 @@ def coerce_sort_key(
         from .types import ColumnType as CT
 
         if column_type == CT.DATETIME:
-            result = coerce_datetime_sort_key(value)
+            result = coerce_datetime_sort_key(value, fmt_hint)
             if isinstance(result, float):
                 return result
             return value
@@ -186,6 +435,7 @@ def find_sorted_insert_index(
     strip_markup_fn: StripMarkupFn = strip_markup,
     num_displayed_rows: int = 0,
     column_type: ColumnType | None = None,
+    fmt_hint: str | None = None,
 ) -> int:
     """Find the insertion index for a row based on current sort state."""
     if sort_column is None:
@@ -194,7 +444,7 @@ def find_sorted_insert_index(
     data_sort_col_idx = col_lookup_fn(sort_column, False)
 
     raw_key = strip_markup_fn(str(cells[data_sort_col_idx]))
-    sort_key = coerce_sort_key(raw_key, column_type)
+    sort_key = coerce_sort_key(raw_key, column_type, fmt_hint)
 
     idx = bisect.bisect_left(sort_keys, sort_key)
     if sort_reverse:
@@ -229,6 +479,7 @@ def update_sort_keys_for_line(
     col_lookup_fn: ColLookupFn,
     strip_markup_fn: StripMarkupFn = strip_markup,
     column_type: ColumnType | None = None,
+    fmt_hint: str | None = None,
 ) -> None:
     """Update the incremental sort keys list after insertion/removal.
 
@@ -240,6 +491,7 @@ def update_sort_keys_for_line(
         col_lookup_fn: Function(col_name, render_position) → index.
         strip_markup_fn: Function(text) → plain text.
         column_type: The detected type of the sort column, if known.
+        fmt_hint: Cached datetime format hint for the sort column.
     """
     if sort_column is None:
         return
@@ -252,14 +504,14 @@ def update_sort_keys_for_line(
         render_sort_col_idx = col_lookup_fn(sort_column, True)
         if render_sort_col_idx is not None and render_sort_col_idx < len(old_row):
             old_raw = strip_markup_fn(str(old_row[render_sort_col_idx]))
-            old_key = coerce_sort_key(old_raw, column_type)
+            old_key = coerce_sort_key(old_raw, column_type, fmt_hint)
             ki = bisect.bisect_left(sort_keys, old_key)
             if ki < len(sort_keys) and sort_keys[ki] == old_key:
                 sort_keys.pop(ki)
 
     # Insert new sort key from data-position cells
     new_raw = strip_markup_fn(str(data_cells[data_sort_col_idx]))
-    bisect.insort_left(sort_keys, coerce_sort_key(new_raw, column_type))
+    bisect.insort_left(sort_keys, coerce_sort_key(new_raw, column_type, fmt_hint))
 
 
 def highlight_search_matches(

@@ -133,7 +133,11 @@ class ColumnMixin:
             key=lambda c: c.render_position,
         )
         self._has_nested_delimiters = any(
-            c.delimiter or c.json_ref or c.col_ref or c.substitution
+            c.delimiter
+            or c.json_ref
+            or c.col_ref
+            or c.substitution
+            or c.datetime_display_fmt
             for c in self.current_columns
         )
         self._has_source_column = any(

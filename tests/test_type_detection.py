@@ -4,6 +4,7 @@ from nless.dataprocessing import (
     coerce_datetime_sort_key,
     coerce_sort_key,
     infer_column_type,
+    _detect_datetime_format,
     _try_parse_datetime,
 )
 from nless.types import ColumnType
@@ -215,3 +216,256 @@ class TestUpdateTypeLabel:
         NlessBuffer._update_type_label(col)
         assert "@" in col.labels
         assert "#" not in col.labels
+
+
+class TestNewDatetimeFormats:
+    """Tests for expanded datetime format support."""
+
+    def test_epoch_seconds(self):
+        assert _try_parse_datetime("1705312981") is not None
+
+    def test_epoch_millis(self):
+        assert _try_parse_datetime("1705312981000") is not None
+
+    def test_epoch_not_valid_range(self):
+        # Too small for epoch seconds
+        assert _try_parse_datetime("123456") is None
+
+    def test_python_logging_comma_millis(self):
+        assert _try_parse_datetime("2024-01-15 10:30:00,123") is not None
+
+    def test_python_logging_dot_micros(self):
+        assert _try_parse_datetime("2024-01-15 10:30:00.123456") is not None
+
+    def test_apache_clf(self):
+        assert _try_parse_datetime("15/Jan/2024:10:30:00 +0000") is not None
+
+    def test_syslog_bsd(self):
+        from datetime import datetime
+
+        result = _try_parse_datetime("Jan 15 14:23:01")
+        assert result is not None
+        assert result.year == datetime.now().year
+
+    def test_go_nginx_format(self):
+        assert _try_parse_datetime("2024/01/15 10:30:00") is not None
+
+    def test_infer_epoch_column(self):
+        values = [
+            "1705312981",
+            "1705312990",
+            "1705313050",
+            "1705313100",
+        ]
+        assert infer_column_type(values) == ColumnType.DATETIME
+
+    def test_infer_syslog_column(self):
+        values = [
+            "Jan 15 14:23:01",
+            "Jan 15 14:24:15",
+            "Jan 15 14:25:30",
+            "Jan 15 14:26:00",
+        ]
+        assert infer_column_type(values) == ColumnType.DATETIME
+
+    def test_infer_apache_clf_column(self):
+        values = [
+            "15/Jan/2024:10:30:00 +0000",
+            "16/Jan/2024:11:00:00 +0000",
+            "17/Jan/2024:12:30:00 +0000",
+            "18/Jan/2024:09:15:00 +0000",
+        ]
+        assert infer_column_type(values) == ColumnType.DATETIME
+
+
+class TestDetectDatetimeFormat:
+    """Tests for _detect_datetime_format()."""
+
+    def test_iso_returns_none(self):
+        """fromisoformat handles ISO — no hint needed."""
+        values = [
+            "2024-01-15",
+            "2024-02-20",
+            "2024-03-10",
+            "2024-04-05",
+        ]
+        assert _detect_datetime_format(values) is None
+
+    def test_epoch_detected(self):
+        values = [
+            "1705312981",
+            "1705312990",
+            "1705313050",
+            "1705313100",
+        ]
+        assert _detect_datetime_format(values) == "epoch"
+
+    def test_strptime_format_detected(self):
+        values = [
+            "01/15/2024",
+            "02/20/2024",
+            "03/10/2024",
+            "04/05/2024",
+        ]
+        assert _detect_datetime_format(values) == "%m/%d/%Y"
+
+    def test_syslog_format_detected(self):
+        values = [
+            "Jan 15 14:23:01",
+            "Jan 15 14:24:15",
+            "Jan 15 14:25:30",
+            "Jan 15 14:26:00",
+        ]
+        assert _detect_datetime_format(values) == "%b %d %H:%M:%S"
+
+    def test_too_few_values(self):
+        values = ["2024-01-15"]
+        assert _detect_datetime_format(values) is None
+
+    def test_mixed_returns_none(self):
+        values = ["hello", "world", "foo", "bar"]
+        assert _detect_datetime_format(values) is None
+
+
+class TestCoerceDatetimeSortKeyEpoch:
+    """Tests for epoch handling in coerce_datetime_sort_key."""
+
+    def test_epoch_seconds(self):
+        result = coerce_datetime_sort_key("1705312981")
+        assert isinstance(result, float)
+        assert abs(result - 1705312981.0) < 1
+
+    def test_epoch_millis(self):
+        result = coerce_datetime_sort_key("1705312981000")
+        assert isinstance(result, float)
+        assert abs(result - 1705312981.0) < 1
+
+    def test_epoch_hint(self):
+        result = coerce_datetime_sort_key("1705312981", fmt_hint="epoch")
+        assert isinstance(result, float)
+        assert abs(result - 1705312981.0) < 1
+
+    def test_epoch_millis_hint(self):
+        result = coerce_datetime_sort_key("1705312981000", fmt_hint="epoch")
+        assert isinstance(result, float)
+        assert abs(result - 1705312981.0) < 1
+
+    def test_syslog_hint(self):
+        result = coerce_datetime_sort_key("Jan 15 14:23:01", fmt_hint="%b %d %H:%M:%S")
+        assert isinstance(result, float)
+
+    def test_coerce_sort_key_with_fmt_hint(self):
+        result = coerce_sort_key("1705312981", ColumnType.DATETIME, fmt_hint="epoch")
+        assert isinstance(result, float)
+
+
+class TestFormatDatetimeValue:
+    """Tests for format_datetime_value() conversion function."""
+
+    def test_iso_to_epoch(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2024-01-15 10:30:00", None, "epoch")
+        assert result.isdigit()
+
+    def test_epoch_to_iso(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("1705312981", "epoch", "iso")
+        assert "2024-01-15" in result
+
+    def test_iso_to_strftime(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2024-01-15 10:30:00", None, "%H:%M:%S")
+        assert result == "10:30:00"
+
+    def test_iso_to_date_only(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2024-01-15 10:30:00", None, "%Y-%m-%d")
+        assert result == "2024-01-15"
+
+    def test_epoch_to_strftime(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("1705312981", "epoch", "%Y-%m-%d")
+        assert result == "2024-01-15"
+
+    def test_to_relative(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2020-01-01 00:00:00", None, "relative")
+        assert "ago" in result
+
+    def test_to_epoch_ms(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2024-01-15 10:30:00", None, "epoch_ms")
+        assert len(result) == 13  # milliseconds
+
+    def test_invalid_value_returns_original(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("not a date", None, "epoch")
+        assert result == "not a date"
+
+    def test_empty_value_returns_original(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("", None, "epoch")
+        assert result == ""
+
+    def test_syslog_to_iso(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("Jan 15 14:23:01", "%b %d %H:%M:%S", "iso")
+        assert "14:23:01" in result
+
+    def test_tz_utc_to_eastern(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value(
+            "2024-01-15 15:00:00", None, "UTC>US/Eastern %H:%M:%S"
+        )
+        assert result == "10:00:00"
+
+    def test_tz_source_only(self):
+        from nless.dataprocessing import format_datetime_value
+
+        # Source=UTC, target=local — result depends on local tz but should not fail
+        result = format_datetime_value("2024-01-15 12:00:00", None, "UTC> iso")
+        assert "2024-01-15" in result
+
+    def test_tz_target_only(self):
+        from nless.dataprocessing import format_datetime_value
+
+        # Source=local (naive), target=UTC
+        result = format_datetime_value("2024-01-15 12:00:00", None, ">UTC iso")
+        assert "+00:00" in result
+
+    def test_tz_no_conversion(self):
+        from nless.dataprocessing import format_datetime_value
+
+        # No timezone spec — same as before
+        result = format_datetime_value("2024-01-15 10:30:00", None, "%H:%M:%S")
+        assert result == "10:30:00"
+
+    def test_tz_abbreviation(self):
+        from nless.dataprocessing import format_datetime_value
+
+        result = format_datetime_value("2024-01-15 15:00:00", None, "UTC>PST %H:%M:%S")
+        assert result == "07:00:00"
+
+    def test_parse_tz_and_format(self):
+        from nless.dataprocessing import parse_tz_and_format
+
+        assert parse_tz_and_format("UTC>US/Eastern %H:%M:%S") == (
+            "UTC",
+            "US/Eastern",
+            "%H:%M:%S",
+        )
+        assert parse_tz_and_format(">UTC epoch") == (None, "UTC", "epoch")
+        assert parse_tz_and_format("UTC> iso") == ("UTC", None, "iso")
+        assert parse_tz_and_format("%H:%M:%S") == (None, None, "%H:%M:%S")
+        assert parse_tz_and_format("epoch") == (None, None, "epoch")

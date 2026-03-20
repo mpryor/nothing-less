@@ -48,6 +48,7 @@ def build_status_text(
     keymap_name: str = "vim",
     theme_name: str = "default",
     time_window: str | None = None,
+    time_window_column: str | None = None,
     delimiter: str | None = None,
     skipped_rows: int = 0,
     behind: bool = False,
@@ -111,7 +112,12 @@ def build_status_text(
 
     time_window_text = ""
     if time_window:
-        time_window_text = f"[bold]Window[/bold]: {time_window} "
+        if time_window_column:
+            time_window_text = (
+                f"[bold]Window[/bold]: {time_window} ({time_window_column}) "
+            )
+        else:
+            time_window_text = f"[bold]Window[/bold]: {time_window} "
 
     delimiter_text = ""
     if delimiter:

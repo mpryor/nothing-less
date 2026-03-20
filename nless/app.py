@@ -35,6 +35,7 @@ from nless.suggestions import (
     HistorySuggestionProvider,
     ShellCommandSuggestionProvider,
     StaticSuggestionProvider,
+    TimeWindowSuggestionProvider,
 )
 
 from .config import NlessConfig, load_config, load_input_history, save_config
@@ -1048,16 +1049,23 @@ class NlessApp(
         """Set a time window to only show rows from the last N minutes/hours/seconds."""
         curr = self._get_current_buffer()
         current = self._format_window(curr.time_window, curr.rolling_time_window)
-        hint = f"e.g. 5m, 1h, 30s — append + for rolling (current: {current})"
-        history = [
-            h["val"] for h in self.input_history if h["id"] == "time_window_input"
-        ]
+
+        options = list(self._TIME_WINDOW_OPTIONS)
+        dt_cols = curr.datetime_column_names
+        durations = ["5m", "5m+", "15m", "15m+", "1h", "1h+"]
+        for col in dt_cols:
+            for dur in durations:
+                options.append(f"{col} {dur}")
+
+        col_hint = ""
+        if dt_cols:
+            col_hint = f" — use '{dt_cols[0]} 5m' to filter by column"
+        hint = f"e.g. 5m, 1h, 30s — append + for rolling{col_hint} (current: {current})"
+
         self._create_prompt(
             f"Enter time window — {hint}",
             "time_window_input",
-            provider=StaticSuggestionProvider(
-                self._TIME_WINDOW_OPTIONS, history=history
-            ),
+            provider=TimeWindowSuggestionProvider(options, dt_cols),
         )
 
     @staticmethod
@@ -1088,7 +1096,49 @@ class NlessApp(
 
     def handle_time_window_submitted(self, event: AutocompleteInput.Submitted) -> None:
         event.input.remove()
-        self._get_current_buffer().apply_time_window_setting(event.value)
+        value = event.value
+        if " -> " in value:
+            self._apply_datetime_format(value)
+            return
+        self._get_current_buffer().apply_time_window_setting(value)
+
+    def _apply_datetime_format(self, value: str) -> None:
+        """Apply a datetime format conversion: 'colname -> format'."""
+        col_part, fmt_part = value.split(" -> ", 1)
+        col_name = col_part.strip()
+        target_fmt = fmt_part.strip()
+        if not target_fmt:
+            self.notify("No target format specified", severity="error")
+            return
+
+        curr = self._get_current_buffer()
+        dt_cols = curr.datetime_column_names
+        if col_name not in dt_cols:
+            self.notify(f"'{col_name}' is not a datetime column", severity="error")
+            return
+
+        target_names = set()
+        source_hint = None
+        for c in curr.current_columns:
+            if strip_markup(c.name) == col_name:
+                target_names.add(c.name)
+                source_hint = c.datetime_fmt_hint
+                break
+
+        def setup(new_buffer):
+            for c in new_buffer.current_columns:
+                if c.name in target_names:
+                    c.datetime_display_fmt = target_fmt
+                    if source_hint is not None:
+                        c.datetime_fmt_hint = source_hint
+            new_buffer._rebuild_column_caches()
+
+        self._copy_buffer_async(
+            setup,
+            f"@{col_name}->{target_fmt}",
+            reason=UpdateReason.SUBSTITUTION,
+            done_reason="Formatted",
+        )
 
     def handle_delimiter_submitted(self, event: AutocompleteInput.Submitted) -> None:
         event.input.remove()

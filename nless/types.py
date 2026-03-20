@@ -206,6 +206,10 @@ class Column:
     )
     detected_type: "ColumnType" = ColumnType.AUTO
     type_override: "ColumnType | None" = None
+    datetime_fmt_hint: str | None = None  # cached strptime format for DATETIME columns
+    datetime_display_fmt: str | None = (
+        None  # target display format for converted DATETIME columns
+    )
 
     @property
     def effective_type(self) -> "ColumnType":

@@ -235,6 +235,7 @@ class NlessBuffer(
         self.rolling_time_window: bool = False
         self._time_window_ceiling: float | None = None
         self._rolling_timer = None
+        self._time_window_column: str | None = None
 
         self.cache = CacheState()
         self.loading_state = LoadingState()
@@ -745,7 +746,7 @@ class NlessBuffer(
         Returns the computed sort keys (always ascending order for bisect)
         when sorting succeeds, or ``None`` if no sort was performed.
         """
-        from .dataprocessing import infer_column_type
+        from .dataprocessing import _detect_datetime_format, infer_column_type
         from .types import ColumnType
 
         if self.query.sort_column is None:
@@ -757,6 +758,7 @@ class NlessBuffer(
         # Lazy type inference for the sort column
         sort_col = self._get_sort_column_obj()
         col_type = None
+        fmt_hint = None
         if sort_col is not None:
             if sort_col.effective_type == ColumnType.AUTO and rows:
                 sample = [
@@ -766,15 +768,18 @@ class NlessBuffer(
                 ]
                 sort_col.detected_type = infer_column_type(sample)
                 self._update_type_label(sort_col)
+                if sort_col.detected_type == ColumnType.DATETIME:
+                    sort_col.datetime_fmt_hint = _detect_datetime_format(sample)
             col_type = sort_col.effective_type
             if col_type == ColumnType.AUTO:
                 col_type = None
+            fmt_hint = sort_col.datetime_fmt_hint
 
         try:
             # Precompute sort keys in one O(N) pass to avoid calling
             # coerce_to_numeric O(N log N) times inside the sort comparator.
             keys = [
-                coerce_sort_key(strip_markup(r[sort_column_idx]), col_type)
+                coerce_sort_key(strip_markup(r[sort_column_idx]), col_type, fmt_hint)
                 for r in rows
             ]
             indices = sorted(
@@ -820,27 +825,70 @@ class NlessBuffer(
         elif effective == ColumnType.DATETIME:
             col.labels.add("@")
 
+    _DATETIME_COLUMN_NAMES = frozenset(
+        {
+            "timestamp",
+            "time",
+            "date",
+            "datetime",
+            "ts",
+            "created_at",
+            "updated_at",
+        }
+    )
+
+    @property
+    def datetime_column_names(self) -> list[str]:
+        """Return names of columns detected as DATETIME (for time window suggestions)."""
+        from .types import ColumnType
+
+        return [
+            strip_markup(c.name)
+            for c in self.current_columns
+            if c.effective_type == ColumnType.DATETIME
+        ]
+
     def _infer_all_column_types(self, rows: list[list[str]]) -> None:
         """Infer detected_type for all columns that are still AUTO.
 
         Called during deferred rebuild with filtered rows (data-position order).
         Skips metadata columns and columns with type_override set.
         """
-        from .dataprocessing import infer_column_type
+        from .dataprocessing import _detect_datetime_format, infer_column_type
         from .types import ColumnType
 
         if not rows:
             return
         metadata_names = {mc.value for mc in MetadataColumn}
+
+        # Pre-set columns with well-known datetime names
+        for col in self.current_columns:
+            if col.name in metadata_names:
+                continue
+            if col.effective_type == ColumnType.AUTO:
+                if strip_markup(col.name).lower() in self._DATETIME_COLUMN_NAMES:
+                    col.detected_type = ColumnType.DATETIME
+                    self._update_type_label(col)
+
         for col in self.current_columns:
             if col.name in metadata_names:
                 continue
             if col.effective_type != ColumnType.AUTO:
+                # Detect format hint for DATETIME columns (including pre-set ones)
+                if (
+                    col.effective_type == ColumnType.DATETIME
+                    and col.datetime_fmt_hint is None
+                ):
+                    idx = col.data_position
+                    sample = [strip_markup(r[idx]) for r in rows[:100] if idx < len(r)]
+                    col.datetime_fmt_hint = _detect_datetime_format(sample)
                 continue
             idx = col.data_position
             sample = [strip_markup(r[idx]) for r in rows[:100] if idx < len(r)]
             col.detected_type = infer_column_type(sample)
             self._update_type_label(col)
+            if col.detected_type == ColumnType.DATETIME:
+                col.datetime_fmt_hint = _detect_datetime_format(sample)
 
     def _infer_column_types_from_displayed(self) -> bool:
         """Infer types using displayed_rows (render-position order).
@@ -848,17 +896,39 @@ class NlessBuffer(
         Used on the incremental-add path where _process_deferred_data
         is not called. Returns True if any types were inferred.
         """
-        from .dataprocessing import infer_column_type
+        from .dataprocessing import _detect_datetime_format, infer_column_type
         from .types import ColumnType
 
         if not self.displayed_rows:
             return False
         changed = False
         metadata_names = {mc.value for mc in MetadataColumn}
+
+        # Pre-set well-known datetime column names
+        for col in self.cache.sorted_visible_columns:
+            if col.name in metadata_names:
+                continue
+            if col.effective_type == ColumnType.AUTO:
+                if strip_markup(col.name).lower() in self._DATETIME_COLUMN_NAMES:
+                    col.detected_type = ColumnType.DATETIME
+                    self._update_type_label(col)
+                    changed = True
+
         for render_idx, col in enumerate(self.cache.sorted_visible_columns):
             if col.name in metadata_names:
                 continue
             if col.effective_type != ColumnType.AUTO:
+                # Detect format hint for DATETIME columns
+                if (
+                    col.effective_type == ColumnType.DATETIME
+                    and col.datetime_fmt_hint is None
+                ):
+                    sample = [
+                        strip_markup(r[render_idx])
+                        for r in self.displayed_rows[:100]
+                        if render_idx < len(r)
+                    ]
+                    col.datetime_fmt_hint = _detect_datetime_format(sample)
                 continue
             sample = [
                 strip_markup(r[render_idx])
@@ -867,7 +937,10 @@ class NlessBuffer(
             ]
             col.detected_type = infer_column_type(sample)
             self._update_type_label(col)
+            if col.detected_type == ColumnType.DATETIME:
+                col.datetime_fmt_hint = _detect_datetime_format(sample)
             changed = True
+
         return changed
 
     def _matches_all_filters(
@@ -1326,6 +1399,7 @@ class NlessBuffer(
             time_window=ctx.format_window(self.time_window, self.rolling_time_window)
             if self.time_window and ctx.format_window
             else None,
+            time_window_column=self._time_window_column if self.time_window else None,
             delimiter=self._format_delimiter(),
             skipped_rows=self.delim.total_skipped,
             behind=self._bp_behind,
@@ -1490,6 +1564,7 @@ class NlessBuffer(
         """Find the insertion index for a row based on the current sort."""
         sort_col = self._get_sort_column_obj()
         col_type = sort_col.effective_type if sort_col else None
+        fmt_hint = sort_col.datetime_fmt_hint if sort_col else None
         from .types import ColumnType
 
         if col_type == ColumnType.AUTO:
@@ -1502,6 +1577,7 @@ class NlessBuffer(
             self._get_col_idx_by_name,
             num_displayed_rows=len(self.displayed_rows),
             column_type=col_type,
+            fmt_hint=fmt_hint,
         )
 
     def _update_dedup_indices_after_removal(self, old_index: int) -> None:
@@ -1524,6 +1600,7 @@ class NlessBuffer(
         """Update the incremental sort keys list after insertion/removal."""
         sort_col = self._get_sort_column_obj()
         col_type = sort_col.effective_type if sort_col else None
+        fmt_hint = sort_col.datetime_fmt_hint if sort_col else None
         from .types import ColumnType
 
         if col_type == ColumnType.AUTO:
@@ -1535,4 +1612,5 @@ class NlessBuffer(
             self.cache.sort_keys,
             self._get_col_idx_by_name,
             column_type=col_type,
+            fmt_hint=fmt_hint,
         )

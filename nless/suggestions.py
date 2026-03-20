@@ -70,6 +70,208 @@ class StaticSuggestionProvider(SuggestionProvider):
         return (prefix + substring)[: self.MAX_RESULTS]
 
 
+class TimeWindowSuggestionProvider(SuggestionProvider):
+    """Context-aware suggestions for the @ time window prompt.
+
+    Modes based on input state:
+    - No '->': time window durations and column combos
+    - After '->': format options, or timezone completions when typing a tz spec
+    """
+
+    MAX_RESULTS = 20
+
+    FORMAT_OPTIONS = [
+        "iso",
+        "epoch",
+        "epoch_ms",
+        "relative",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%b %d, %Y",
+        "%d/%m/%Y",
+        "%Y/%m/%d %H:%M:%S",
+        "%b %d %H:%M:%S",
+    ]
+
+    FORMAT_DESCRIPTIONS: dict[str, str] = {
+        "iso": "2024-01-15T10:30:00",
+        "epoch": "1705312200",
+        "epoch_ms": "1705312200000",
+        "relative": "2m ago, 1h ago, 3d ago",
+        "%Y-%m-%d %H:%M:%S": "2024-01-15 10:30:00",
+        "%Y-%m-%d": "2024-01-15",
+        "%H:%M:%S": "10:30:00",
+        "%m/%d/%Y %H:%M": "01/15/2024 10:30",
+        "%b %d, %Y": "Jan 15, 2024",
+        "%d/%m/%Y": "15/01/2024",
+        "%Y/%m/%d %H:%M:%S": "2024/01/15 10:30:00",
+        "%b %d %H:%M:%S": "Jan 15 10:30:00",
+    }
+
+    DURATION_DESCRIPTIONS: dict[str, str] = {
+        "off": "clear time window",
+        "30s": "last 30 seconds",
+        "1m": "last 1 minute",
+        "5m": "last 5 minutes",
+        "5m+": "last 5 minutes (rolling)",
+        "15m": "last 15 minutes",
+        "15m+": "last 15 minutes (rolling)",
+        "1h": "last 1 hour",
+        "1h+": "last 1 hour (rolling)",
+    }
+
+    # Common timezones shown first, before the full IANA list
+    COMMON_TZ = [
+        "UTC",
+        "US/Eastern",
+        "US/Central",
+        "US/Mountain",
+        "US/Pacific",
+        "Europe/London",
+        "Europe/Paris",
+        "Europe/Berlin",
+        "Asia/Tokyo",
+        "Asia/Shanghai",
+        "Asia/Kolkata",
+        "Australia/Sydney",
+        "EST",
+        "CST",
+        "MST",
+        "PST",
+    ]
+
+    _all_tz: list[str] | None = None  # lazily populated
+
+    def __init__(
+        self,
+        options: list[str],
+        dt_col_names: list[str],
+    ) -> None:
+        self._static = StaticSuggestionProvider(options)
+        self._dt_col_names = dt_col_names
+
+    @classmethod
+    def _get_all_tz(cls) -> list[str]:
+        if cls._all_tz is None:
+            from zoneinfo import available_timezones
+
+            common_set = set(cls.COMMON_TZ)
+            rest = sorted(tz for tz in available_timezones() if tz not in common_set)
+            cls._all_tz = list(cls.COMMON_TZ) + rest
+        return cls._all_tz
+
+    def _match_tz(self, partial: str) -> list[str]:
+        """Match timezone names by prefix (case-insensitive)."""
+        lower = partial.lower()
+        all_tz = self._get_all_tz()
+        prefix = [tz for tz in all_tz if tz.lower().startswith(lower)]
+        # Also match on the last component (e.g. "Eastern" matches "US/Eastern")
+        if "/" not in partial:
+            substring = [
+                tz for tz in all_tz if tz not in prefix and lower in tz.lower()
+            ]
+            return (prefix + substring)[: self.MAX_RESULTS]
+        return prefix[: self.MAX_RESULTS]
+
+    def _suggest_after_arrow(self, col_name: str, fmt_part: str) -> list[str]:
+        """Suggest formats or timezones for the portion after '->'."""
+        # Use untrimmed fmt_part to detect trailing spaces
+        raw = fmt_part.lstrip()
+
+        # Typing a timezone spec: contains '>'
+        if ">" in raw:
+            src, rest = raw.split(">", 1)
+            parts = rest.strip().split(None, 1)
+            if len(parts) == 2:
+                # "src>dst format_partial" — suggest formats
+                dst, fmt_partial = parts
+                prefix = f"{src}>{dst}"
+                fl = fmt_partial.lower()
+                fmts = [f for f in self.FORMAT_OPTIONS if f.lower().startswith(fl)]
+                return [f"{col_name} -> {prefix} {f}" for f in fmts][: self.MAX_RESULTS]
+            if rest.strip() and rest.rstrip() != rest:
+                # "src>dst " (trailing space) — dst is complete, suggest formats
+                dst = rest.strip()
+                prefix = f"{src}>{dst}"
+                return [f"{col_name} -> {prefix} {f}" for f in self.FORMAT_OPTIONS][
+                    : self.MAX_RESULTS
+                ]
+            # Typing target timezone after '>'
+            matches = self._match_tz(rest.strip())
+            return [f"{col_name} -> {src}>{tz}" for tz in matches][: self.MAX_RESULTS]
+
+        trimmed = raw.strip()
+        if not trimmed:
+            return [f"{col_name} -> {f}" for f in self.FORMAT_OPTIONS][
+                : self.MAX_RESULTS
+            ]
+
+        # Check if partial matches any format option
+        fl = trimmed.lower()
+        fmt_matches = [f for f in self.FORMAT_OPTIONS if f.lower().startswith(fl)]
+
+        # Also check if it looks like the start of a timezone name (for src>dst syntax)
+        tz_matches = self._match_tz(trimmed)
+        tz_suggestions = [f"{col_name} -> {tz}>" for tz in tz_matches]
+
+        fmt_suggestions = [f"{col_name} -> {f}" for f in fmt_matches]
+        return (fmt_suggestions + tz_suggestions)[: self.MAX_RESULTS]
+
+    def get_suggestions(self, value: str) -> list[str]:
+        if " -> " in value:
+            col_part, fmt_part = value.split(" -> ", 1)
+            return self._suggest_after_arrow(col_part.strip(), fmt_part)
+
+        base = self._static.get_suggestions(value)
+
+        # Inject "colname -> " suggestions for matching datetime columns
+        stripped = value.strip()
+        if stripped and self._dt_col_names:
+            lower = stripped.lower()
+            arrow_items = [
+                f"{col} -> "
+                for col in self._dt_col_names
+                if col.lower().startswith(lower)
+            ]
+            if arrow_items:
+                # If user typed exact column name + space, put arrow first
+                if stripped in self._dt_col_names and value.endswith(" "):
+                    return (arrow_items + base)[: self.MAX_RESULTS]
+                # Otherwise append after duration matches
+                return (base + arrow_items)[: self.MAX_RESULTS]
+
+        return base
+
+    def get_description(self, item: str) -> str | None:
+        """Return a description for a suggestion item."""
+        if " -> " in item:
+            # Format conversion suggestion — extract the format part
+            _, fmt_part = item.split(" -> ", 1)
+            fmt = fmt_part.strip()
+            # Strip timezone prefix to find the base format
+            if ">" in fmt:
+                parts = fmt.split(None, 1)
+                if len(parts) == 2:
+                    fmt = parts[1]
+                else:
+                    return "select target timezone"
+            return self.FORMAT_DESCRIPTIONS.get(fmt, "convert timestamp format")
+
+        # Duration/time window suggestion — extract the duration
+        stripped = item.strip()
+        # Could be "colname duration" or just "duration"
+        parts = stripped.rsplit(None, 1)
+        dur = parts[-1] if parts else stripped
+        desc = self.DURATION_DESCRIPTIONS.get(dur)
+        if desc:
+            return f"filter by column: {desc}" if len(parts) > 1 else desc
+        if stripped.endswith(" -> "):
+            return "convert timestamp format"
+        return None
+
+
 class PipeSeparatedSuggestionProvider(SuggestionProvider):
     """Provides suggestions for pipe-separated multi-value input.
 

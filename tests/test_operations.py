@@ -2093,6 +2093,133 @@ class TestTimeWindow:
             assert buf.rolling_time_window is False
             assert buf._rolling_timer is None
 
+    @pytest.mark.asyncio
+    async def test_time_window_uses_parsed_datetime_column(self, cli_args):
+        """Time window should filter by parsed datetime column values, not arrival time."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            # Load data with a timestamp column — all rows arrive at same wall-clock time
+            _load(
+                buf,
+                [
+                    "timestamp,level,message",
+                    "2024-01-15 10:00:00,INFO,old event",
+                    "2024-01-15 10:58:00,WARN,recent event",
+                    "2024-01-15 10:59:00,ERROR,newest event",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # Explicitly select the timestamp column for time windowing
+            buf._time_window_column = "timestamp"
+            buf.time_window = 300.0  # 5 minutes
+            buf._time_window_ceiling = None  # let it use max parsed ts
+            buf.cache.parsed_rows = None
+            buf.cache.col_widths = None
+            buf._deferred_update_table(reason="test")
+            await _wait(pilot, app)
+
+            # Only the 2 recent rows should remain (10:58 and 10:59, within 5m of 10:59)
+            assert len(buf.displayed_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_datetime_column_names_property(self, cli_args):
+        """datetime_column_names should return detected DATETIME column names."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "ts,value",
+                    "2024-01-15,100",
+                    "2024-02-20,200",
+                    "2024-03-10,300",
+                    "2024-04-05,400",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # 'ts' is in _DATETIME_COLUMN_NAMES and should be detected as DATETIME
+            assert "ts" in buf.datetime_column_names
+            # No auto-detection of _time_window_column
+            assert buf._time_window_column is None
+
+    @pytest.mark.asyncio
+    async def test_epoch_timestamp_column_detection(self, cli_args):
+        """Epoch timestamp columns should be detected and usable for time windowing."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "ts,event",
+                    "1705312981,login",
+                    "1705312990,click",
+                    "1705313050,logout",
+                    "1705313100,exit",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # 'ts' column should be detected as DATETIME
+            ts_col = next(c for c in buf.current_columns if c.name == "ts")
+            assert ts_col.effective_type.value == "datetime"
+            assert ts_col.datetime_fmt_hint == "epoch"
+
+    @pytest.mark.asyncio
+    async def test_time_window_column_syntax(self, cli_args):
+        """apply_time_window_setting should parse 'colname duration' syntax."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "timestamp,level,message",
+                    "2024-01-15 10:00:00,INFO,old event",
+                    "2024-01-15 10:58:00,WARN,recent event",
+                    "2024-01-15 10:59:00,ERROR,newest event",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # Column-based syntax sets _time_window_column
+            buf.apply_time_window_setting("timestamp 5m")
+            assert buf._time_window_column == "timestamp"
+            assert buf.time_window == 300.0
+
+            # Plain duration leaves _time_window_column as None
+            buf.apply_time_window_setting("5m")
+            assert buf._time_window_column is None
+            assert buf.time_window == 300.0
+
+    @pytest.mark.asyncio
+    async def test_time_window_off_clears_column(self, cli_args):
+        """apply_time_window_setting('off') should clear _time_window_column."""
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(
+                buf,
+                [
+                    "timestamp,level,message",
+                    "2024-01-15 10:00:00,INFO,old event",
+                    "2024-01-15 10:59:00,ERROR,newest event",
+                ],
+            )
+            await _wait(pilot, app)
+
+            # Set column-based window, then clear it
+            buf.apply_time_window_setting("timestamp 5m")
+            assert buf._time_window_column == "timestamp"
+
+            buf.apply_time_window_setting("off")
+            assert buf._time_window_column is None
+            assert buf.time_window is None
+
 
 # ---------------------------------------------------------------------------
 # Raw Pager Mode

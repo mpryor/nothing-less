@@ -88,7 +88,11 @@ def split_line(
         has_computed = bool(
             columns
             and any(
-                c.delimiter or c.json_ref or c.col_ref or c.substitution
+                c.delimiter
+                or c.json_ref
+                or c.col_ref
+                or c.substitution
+                or c.datetime_display_fmt
                 for c in columns
             )
         )
@@ -190,6 +194,17 @@ def split_line(
             idx = col.data_position - count_metadata_columns
             if 0 <= idx < len(cells):
                 cells[idx] = pat.sub(repl, cells[idx], count=1)
+
+    # Apply datetime format conversions
+    for col in sorted_columns:
+        if col.datetime_display_fmt is not None:
+            idx = col.data_position - count_metadata_columns
+            if 0 <= idx < len(cells):
+                from .dataprocessing import format_datetime_value
+
+                cells[idx] = format_datetime_value(
+                    cells[idx], col.datetime_fmt_hint, col.datetime_display_fmt
+                )
 
     return cells
 
