@@ -20,6 +20,7 @@ StripMarkupFn = Callable[[str], str]
 
 _MARKUP_TAG_RE = re.compile(r"\[/?[^\]]*\]")
 _NUMERIC_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
+_NATURAL_SORT_RE = re.compile(r"(\d+)")
 
 
 def strip_markup(cell_value: str) -> str:
@@ -38,6 +39,12 @@ def _looks_numeric(value: str) -> bool:
     if c not in "0123456789+-.":
         return False
     return _NUMERIC_RE.match(value) is not None
+
+
+def natural_sort_key(value: str) -> tuple:
+    """Split a string into (text, int, text, int, ...) for natural ordering."""
+    parts = _NATURAL_SORT_RE.split(value.lower())
+    return tuple(int(p) if i % 2 else p for i, p in enumerate(parts))
 
 
 def coerce_to_numeric(value: Any) -> int | float | str:
@@ -380,7 +387,7 @@ def coerce_sort_key(
     value: str,
     column_type: ColumnType | None = None,
     fmt_hint: str | None = None,
-) -> int | float | str:
+) -> int | float | str | tuple:
     """Coerce a string to an appropriate sort key based on column type."""
     if not value:
         return value
@@ -393,7 +400,7 @@ def coerce_sort_key(
                 return result
             return value
         if column_type == CT.STRING:
-            return value
+            return natural_sort_key(value)
     # Default/NUMERIC: existing behavior
     c = value[0]
     if c not in "0123456789+-.":

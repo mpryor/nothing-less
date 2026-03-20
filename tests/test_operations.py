@@ -117,6 +117,18 @@ class TestSort:
 
             assert not buf.loading_state.reason
 
+    @pytest.mark.asyncio
+    async def test_sort_natural_order(self, cli_args):
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,v", "file1,a", "file10,b", "file2,c"])
+
+            buf.action_sort()
+            await _wait(pilot, app)
+
+            assert [r[0] for r in buf.displayed_rows] == ["file1", "file2", "file10"]
+
 
 # ---------------------------------------------------------------------------
 # Filtering (async via _copy_buffer_async)

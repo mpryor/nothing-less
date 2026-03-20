@@ -27,7 +27,7 @@
 ## Installation
 
 ```bash
-pip install nothing-less
+pipx install nothing-less
 ```
 
 or
@@ -36,7 +36,7 @@ or
 brew install mpryor/tap/nless
 ```
 
-Requires Python 3.13+.
+Requires Python 3.13+. You can also use `pip install nothing-less` if you prefer.
 
 ## Usage
 

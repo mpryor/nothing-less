@@ -4,6 +4,7 @@ from nless.dataprocessing import (
     coerce_datetime_sort_key,
     coerce_sort_key,
     infer_column_type,
+    natural_sort_key,
     _detect_datetime_format,
     _try_parse_datetime,
 )
@@ -147,8 +148,8 @@ class TestCoerceSortKeyWithType:
         assert coerce_sort_key("42") == 42
         assert coerce_sort_key("3.14") == 3.14
 
-    def test_string_type_skips_numeric(self):
-        assert coerce_sort_key("42", ColumnType.STRING) == "42"
+    def test_string_type_returns_natural_key(self):
+        assert coerce_sort_key("42", ColumnType.STRING) == ("", 42, "")
 
     def test_datetime_type(self):
         result = coerce_sort_key("2024-01-15", ColumnType.DATETIME)
@@ -164,6 +165,32 @@ class TestCoerceSortKeyWithType:
     def test_none_type_same_as_default(self):
         assert coerce_sort_key("42", None) == 42
         assert coerce_sort_key("hello", None) == "hello"
+
+
+class TestNaturalSortKey:
+    def test_basic(self):
+        assert natural_sort_key("file2") == ("file", 2, "")
+
+    def test_file2_before_file10(self):
+        assert natural_sort_key("file2") < natural_sort_key("file10")
+
+    def test_pod_names(self):
+        assert natural_sort_key("pod-9") < natural_sort_key("pod-10")
+
+    def test_empty_string(self):
+        assert natural_sort_key("") == ("",)
+
+    def test_pure_alpha(self):
+        assert natural_sort_key("hello") == ("hello",)
+
+    def test_leading_digits(self):
+        assert natural_sort_key("42abc") == ("", 42, "abc")
+
+    def test_multiple_numbers(self):
+        assert natural_sort_key("a1b2c3") == ("a", 1, "b", 2, "c", 3, "")
+
+    def test_case_insensitive(self):
+        assert natural_sort_key("File2") == natural_sort_key("file2")
 
 
 class TestUpdateTypeLabel:
