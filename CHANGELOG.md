@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.0 (2026-03-20)
+
+### Feat
+
+- replace BSD sed with Python for homebrew sha256 replacement
+
 ## 1.13.0 (2026-03-20)
 
 ### Feat
