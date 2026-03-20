@@ -1,10 +1,11 @@
 """Tests for ex-mode command parsing and dispatching."""
 
+import difflib
 import re
 
 import pytest
 
-from nless.app_exmode import _COMMAND_ALIASES, _is_substitution
+from nless.app_exmode import ExModeMixin, _COMMAND_ALIASES, _is_substitution
 from nless.app_substitute import _parse_substitution
 from nless.delimiter import split_line
 from nless.types import Column
@@ -318,3 +319,169 @@ class TestExModeSuggestionProvider:
     def test_unknown_command_no_suggestions(self, provider):
         suggestions = provider.get_suggestions("foobar ")
         assert suggestions == []
+
+    def test_empty_input_shows_new_commands(self, provider):
+        suggestions = provider.get_suggestions("")
+        assert "clear" in suggestions
+        assert "cols" in suggestions
+
+    def test_descriptions_for_commands(self, provider):
+        assert provider.get_description("sort") == "sort by column"
+        assert provider.get_description("clear") == "reset sort, search, and columns"
+        assert provider.get_description("cols") == "show/hide columns"
+        assert provider.get_description("nonexistent") is None
+
+    def test_cols_suggests_all_and_columns(self, provider):
+        suggestions = provider.get_suggestions("cols ")
+        assert "cols all" in suggestions
+        assert any("timestamp" in s for s in suggestions)
+
+    def test_quoted_column_in_sort_suggestion(self):
+        """Columns with spaces should be auto-quoted in suggestions."""
+        from nless.suggestions import ExModeSuggestionProvider
+
+        class FakeBuffer:
+            def __init__(self):
+                self.current_columns = [
+                    type("Col", (), {"name": "multi word col", "hidden": False})(),
+                    type("Col", (), {"name": "simple", "hidden": False})(),
+                ]
+
+        class FakeApp:
+            def __init__(self):
+                self.input_history = []
+
+            def _get_current_buffer(self):
+                return FakeBuffer()
+
+        p = ExModeSuggestionProvider(FakeApp())
+        suggestions = p.get_suggestions("sort ")
+        assert 'sort "multi word col"' in suggestions
+        assert "sort simple" in suggestions
+
+    def test_filter_quoted_column_suggestion(self):
+        from nless.suggestions import ExModeSuggestionProvider
+
+        class FakeBuffer:
+            def __init__(self):
+                self.current_columns = [
+                    type("Col", (), {"name": "col name", "hidden": False})(),
+                ]
+
+        class FakeApp:
+            def __init__(self):
+                self.input_history = []
+
+            def _get_current_buffer(self):
+                return FakeBuffer()
+
+        p = ExModeSuggestionProvider(FakeApp())
+        suggestions = p.get_suggestions("filter ")
+        assert 'filter "col name"' in suggestions
+
+
+# ── Case-insensitive substitution flag ───────────────────────────────
+
+
+class TestSubstitutionIgnoreCase:
+    """Tests for the 'i' flag in substitution."""
+
+    def test_case_insensitive_flag(self):
+        result = _parse_substitution("s/foo/bar/i")
+        assert result is not None
+        pat, repl, all_cols = result
+        assert pat.flags & re.IGNORECASE
+        assert repl == "bar"
+        assert all_cols is False
+
+    def test_case_insensitive_with_global(self):
+        result = _parse_substitution("s/foo/bar/gi")
+        assert result is not None
+        pat, repl, all_cols = result
+        assert pat.flags & re.IGNORECASE
+        assert all_cols is True
+
+    def test_case_insensitive_ig_order(self):
+        result = _parse_substitution("s/foo/bar/ig")
+        assert result is not None
+        pat, repl, all_cols = result
+        assert pat.flags & re.IGNORECASE
+        assert all_cols is True
+
+    def test_no_flags_not_case_insensitive(self):
+        result = _parse_substitution("s/foo/bar/")
+        assert result is not None
+        pat, _, _ = result
+        assert not (pat.flags & re.IGNORECASE)
+
+
+# ── _split_col_args ─────────────────────────────────────────────────
+
+
+class TestSplitColArgs:
+    """Tests for _split_col_args helper."""
+
+    def test_simple_args(self):
+        col, rest = ExModeMixin._split_col_args("name pattern")
+        assert col == "name"
+        assert rest == "pattern"
+
+    def test_quoted_column(self):
+        col, rest = ExModeMixin._split_col_args('"multi word" pattern')
+        assert col == "multi word"
+        assert rest == "pattern"
+
+    def test_quoted_column_no_rest(self):
+        col, rest = ExModeMixin._split_col_args('"multi word"')
+        assert col == "multi word"
+        assert rest == ""
+
+    def test_empty_input(self):
+        col, rest = ExModeMixin._split_col_args("")
+        assert col == ""
+        assert rest == ""
+
+    def test_single_word(self):
+        col, rest = ExModeMixin._split_col_args("name")
+        assert col == "name"
+        assert rest == ""
+
+
+# ── Command alias map (new commands) ────────────────────────────────
+
+
+class TestNewCommandAliases:
+    """Tests for new command alias entries."""
+
+    def test_clear_aliases(self):
+        assert _COMMAND_ALIASES["clear"] == "clear"
+        assert _COMMAND_ALIASES["reset"] == "clear"
+
+    def test_cols_aliases(self):
+        assert _COMMAND_ALIASES["cols"] == "cols"
+        assert _COMMAND_ALIASES["columns"] == "cols"
+
+
+# ── Fuzzy command suggestions ───────────────────────────────────────
+
+
+class TestFuzzyCommandSuggestions:
+    """Tests for fuzzy matching on unknown commands."""
+
+    def test_close_match_for_sort(self):
+        matches = difflib.get_close_matches(
+            "srot", _COMMAND_ALIASES.keys(), n=2, cutoff=0.6
+        )
+        assert "sort" in matches
+
+    def test_close_match_for_filter(self):
+        matches = difflib.get_close_matches(
+            "filtre", _COMMAND_ALIASES.keys(), n=2, cutoff=0.6
+        )
+        assert "filter" in matches
+
+    def test_no_match_for_gibberish(self):
+        matches = difflib.get_close_matches(
+            "xyzzy", _COMMAND_ALIASES.keys(), n=2, cutoff=0.6
+        )
+        assert len(matches) == 0

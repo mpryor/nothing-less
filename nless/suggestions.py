@@ -208,6 +208,8 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "exclude",
         "e",
         "s/",
+        "clear",
+        "cols",
         "w",
         "write",
         "o",
@@ -221,9 +223,40 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "help",
     ]
 
+    DESCRIPTIONS: dict[str, str] = {
+        "sort": "sort by column",
+        "filter": "filter column by pattern",
+        "f": "filter (short alias)",
+        "exclude": "exclude matches from column",
+        "e": "exclude (short alias)",
+        "s/": "substitute in column(s)",
+        "clear": "reset sort, search, and columns",
+        "cols": "show/hide columns",
+        "w": "write buffer to file",
+        "write": "write buffer to file",
+        "o": "open file in new group",
+        "open": "open file in new group",
+        "q": "close buffer or quit",
+        "q!": "pipe to stdout and exit",
+        "delim": "change delimiter",
+        "delimiter": "change delimiter",
+        "set theme": "switch theme",
+        "set keymap": "switch keymap",
+        "help": "show help screen",
+    }
+
+    def get_description(self, item: str) -> str | None:
+        """Return a short description for a command, or None."""
+        return self.DESCRIPTIONS.get(item)
+
     def __init__(self, app) -> None:
         self._app = app
         self._file_provider = FilePathSuggestionProvider()
+
+    @staticmethod
+    def _quote_col(name: str) -> str:
+        """Quote a column name if it contains spaces."""
+        return f'"{name}"' if " " in name else name
 
     def _column_names(self) -> list[str]:
         from .dataprocessing import strip_markup
@@ -231,6 +264,29 @@ class ExModeSuggestionProvider(SuggestionProvider):
         try:
             buf = self._app._get_current_buffer()
             return [strip_markup(c.name) for c in buf.current_columns if not c.hidden]
+        except Exception:
+            return []
+
+    def _column_values(self, col_name: str) -> list[str]:
+        """Return sorted distinct values for a column from the current buffer."""
+        from .dataprocessing import strip_markup
+
+        try:
+            buf = self._app._get_current_buffer()
+            col_idx = None
+            for i, c in enumerate(buf.current_columns):
+                if strip_markup(c.name).lower() == col_name.lower():
+                    col_idx = i
+                    break
+            if col_idx is None:
+                return []
+            seen: set[str] = set()
+            for row in buf.displayed_rows:
+                if col_idx < len(row):
+                    val = strip_markup(str(row[col_idx])).strip()
+                    if val:
+                        seen.add(val)
+            return sorted(seen)
         except Exception:
             return []
 
@@ -245,18 +301,8 @@ class ExModeSuggestionProvider(SuggestionProvider):
         return sorted(get_all_keymaps().keys())
 
     def get_suggestions(self, value: str) -> list[str]:
-        if not value:
-            # Show command list + history
-            history = [
-                h["val"] for h in self._app.input_history if h["id"] == "exmode_input"
-            ]
-            seen = set()
-            result = []
-            for item in reversed(history):
-                if item not in seen:
-                    seen.add(item)
-                    result.append(item)
-            return result[: self.MAX_RESULTS] if result else self.COMMANDS
+        if not value or not value.strip():
+            return list(self.COMMANDS)
 
         # Check if we're completing a command or its arguments
         parts = value.split(None, 1)
@@ -271,11 +317,27 @@ class ExModeSuggestionProvider(SuggestionProvider):
         args = parts[1] if len(parts) > 1 else ""
 
         if cmd in ("sort",):
+            arg_parts = args.split(None, 1)
+            col_part = arg_parts[0] if arg_parts else ""
             cols = self._column_names()
+            # Check if the first token matches a column name exactly
+            col_matched = col_part and any(c.lower() == col_part.lower() for c in cols)
+            if col_matched and (len(arg_parts) > 1 or args.endswith(" ")):
+                # Column selected, suggest direction
+                dir_part = arg_parts[1].lower() if len(arg_parts) > 1 else ""
+                return [
+                    f"sort {self._quote_col(col_part)} {d}"
+                    for d in ("asc", "desc")
+                    if d.startswith(dir_part)
+                ]
             if not args:
-                return cols[: self.MAX_RESULTS]
+                return [f"sort {self._quote_col(c)}" for c in cols][: self.MAX_RESULTS]
             lower = args.lower()
-            return [c for c in cols if c.lower().startswith(lower)][: self.MAX_RESULTS]
+            return [
+                f"sort {self._quote_col(c)}"
+                for c in cols
+                if c.lower().startswith(lower)
+            ][: self.MAX_RESULTS]
 
         if cmd in ("filter", "f", "exclude", "e"):
             arg_parts = args.split(None, 1)
@@ -284,12 +346,33 @@ class ExModeSuggestionProvider(SuggestionProvider):
                 cols = self._column_names()
                 partial = args.lower()
                 if not partial:
-                    return [f"{cmd} {c}" for c in cols][: self.MAX_RESULTS]
-                return [f"{cmd} {c}" for c in cols if c.lower().startswith(partial)][
-                    : self.MAX_RESULTS
-                ]
-            # After column name, no suggestions (user types pattern)
-            return []
+                    return [f"{cmd} {self._quote_col(c)}" for c in cols][
+                        : self.MAX_RESULTS
+                    ]
+                return [
+                    f"{cmd} {self._quote_col(c)}"
+                    for c in cols
+                    if c.lower().startswith(partial)
+                ][: self.MAX_RESULTS]
+            # After column name, suggest distinct values from that column
+            col_name = arg_parts[0]
+            pattern = arg_parts[1] if len(arg_parts) > 1 else ""
+            values = self._column_values(col_name)
+            if pattern:
+                lower = pattern.lower()
+                values = [v for v in values if v.lower().startswith(lower)]
+            return [f"{cmd} {self._quote_col(col_name)} {v}" for v in values][
+                : self.MAX_RESULTS
+            ]
+
+        if cmd in ("cols", "columns"):
+            cols = self._column_names()
+            if not args:
+                return [f"{cmd} {c}" for c in ["all"] + cols][: self.MAX_RESULTS]
+            # Use pipe-separated provider logic
+            provider = PipeSeparatedSuggestionProvider(cols)
+            raw = provider.get_suggestions(args)
+            return [f"{cmd} {r}" for r in raw][: self.MAX_RESULTS]
 
         if cmd == "set":
             set_parts = args.split(None, 1)

@@ -1076,8 +1076,9 @@ nless orders.csv
 
 1. Press `:` and type `filter customer alice` — a new buffer opens with only Alice's rows
 2. Press `q` to close the filtered buffer
-3. Press `:` and type `sort price` — sorts by the price column (press again to reverse, again to clear)
-4. Press `:` and type `exclude status cancelled` — removes cancelled orders
+3. Press `:` and type `sort price` — sorts by the price column (cycles asc → desc → none)
+4. Press `:` and type `sort price desc` — sorts descending directly
+5. Press `:` and type `exclude status cancelled` — removes cancelled orders
 
 **File operations:**
 

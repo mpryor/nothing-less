@@ -143,11 +143,19 @@ class AutocompleteInput(Static):
             muted = self.app.nless_theme.muted
         except AttributeError:
             muted = "#888888"
+        has_descriptions = hasattr(self.provider, "get_description")
         for i, item in enumerate(self._suggestions):
-            if i == self._highlight_index:
-                rich_log.write(f"[reverse]{item}[/reverse]")
+            desc = None
+            if has_descriptions:
+                desc = self.provider.get_description(item)
+            if desc:
+                line = f"{item}  [{muted}]— {desc}[/{muted}]"
             else:
-                rich_log.write(f"[{muted}]{item}[/{muted}]")
+                line = item
+            if i == self._highlight_index:
+                rich_log.write(f"[reverse]{line}[/reverse]")
+            else:
+                rich_log.write(f"[{muted}]{line}[/{muted}]")
         if scroll and self._suggestions and self._highlight_index >= 0:
             rich_log.scroll_to(y=self._highlight_index)
 

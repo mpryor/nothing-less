@@ -163,7 +163,7 @@ Press `:` to open the ex-mode command prompt. Ex mode supports the following com
 |---------|-------|--------|
 | `s/pat/rep/` | | Substitute pattern in the current column |
 | `s/pat/rep/g` | | Substitute pattern in all columns |
-| `sort <col>` | | Sort by column name |
+| `sort <col> [asc\|desc]` | | Sort by column name (cycles if no direction given) |
 | `filter <col> <pat>` | `f` | Filter column by pattern |
 | `exclude <col> <pat>` | `e` | Exclude matches from column |
 | `w [path]` | `write` | Write buffer to file (prompts if no path) |

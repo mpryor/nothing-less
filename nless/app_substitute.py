@@ -54,9 +54,11 @@ def _parse_substitution(
         return None
 
     all_columns = "g" in flags_str
+    ignore_case = "i" in flags_str
 
     try:
-        compiled = re.compile(pattern_str)
+        flags = re.IGNORECASE if ignore_case else 0
+        compiled = re.compile(pattern_str, flags)
     except re.error:
         return None
 

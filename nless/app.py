@@ -800,7 +800,9 @@ class NlessApp(
         """Bring up search input to highlight matching text."""
         self._create_prompt("Type search term and press Enter", "search_input")
 
-    def _create_prompt(self, placeholder, id, provider=None, save_history=True):
+    def _create_prompt(
+        self, placeholder, id, provider=None, save_history=True, prefix=""
+    ):
         history = [h["val"] for h in self.input_history if h["id"] == id]
         if provider is None:
             if id in ("write_to_file_input", "open_file_input"):
@@ -817,6 +819,7 @@ class NlessApp(
             classes="bottom-input",
             history=history,
             provider=provider,
+            prefix=prefix,
             on_add=lambda val: self.input_history.append({"id": id, "val": val})
             if save_history
             else None,
@@ -832,6 +835,9 @@ class NlessApp(
         active_tab = tabbed_content.active
         for tab_pane in tabbed_content.query(TabPane):
             if tab_pane.id == active_tab:
+                existing = tab_pane.query(f"#{id}")
+                if existing:
+                    return
                 tab_pane.mount(input)
                 self.call_after_refresh(lambda: input.focus())
                 break
