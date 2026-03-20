@@ -44,7 +44,7 @@ Within a group, buffers work as described above — filter, pivot, and create ne
 | Term | Meaning |
 |------|---------|
 | **Delimiter** | The character or pattern used to split each line into columns. Auto-detected for CSV, TSV, JSON, and space-aligned formats. Change with `D`. |
-| **Column delimiter** | A secondary delimiter applied to a single column to split it into sub-columns (`d`). |
+| **Column delimiter** | A secondary delimiter applied to a single column to split it into sub-columns (`d`). Columns that look splittable show a `⑃` label in the header. |
 | **Pivot / Unique key** | Mark columns with `U` to group rows by their values, adding a `count` column. Multiple `U` presses create composite keys. |
 | **Filter** | A regex applied to a column (or all columns) to show only matching rows. |
 | **Exclude filter** | The inverse — hides rows matching the pattern. |

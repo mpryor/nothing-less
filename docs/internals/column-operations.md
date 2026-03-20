@@ -1,5 +1,12 @@
 # Column Operations
 
+## Splittable column detection
+
+`_detect_splittable_columns()` scans STRING/AUTO columns for values that
+consistently contain `|`, `;`, or `=` delimiters (≥80% of sampled rows).
+Columns that pass get a `⑃` label in the header, hinting the user can
+press `d` to split them.
+
 ## Column splitting (`_apply_column_delimiter`)
 
 When the user presses `d` on a column, nless splits that column's values
