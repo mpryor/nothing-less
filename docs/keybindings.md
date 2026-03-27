@@ -44,6 +44,14 @@ nless uses vi-like keybindings. Press `?` inside the app to view this reference.
 | `ctrl+d` | Page down |
 | `c` | Select a column to jump the cursor to |
 
+## Marks
+
+| Key | Action |
+|-----|--------|
+| `:mark a`–`z` | Set a mark at the current row |
+| `'` + `a`–`z` | Jump to a mark |
+| `''` | Jump to the previous cursor position |
+
 ## Column Visibility
 
 | Key | Action |
@@ -112,7 +120,7 @@ When a pivot is active, the view focuses on just the key columns and `count`. If
 | Key | Action |
 |-----|--------|
 | `D` | Swap the delimiter on the fly (common delimiters, regex with named capture groups, `raw`, `json`, or `  ` for double-space aligned output like kubectl) |
-| `d` | Split a column into more columns using a columnar delimiter (`json`, regex with named capture groups, or any string) |
+| `d` | Split a column into more columns using a columnar delimiter (`json`, `kv` for key=value pairs, regex with named capture groups, or any string). After splitting, a naming wizard prompts you to rename each new column. |
 | `P` | Auto-detect a known log format (syslog, Apache, Spring Boot, etc.) and apply it as a regex delimiter |
 
 ## JSON
@@ -175,6 +183,10 @@ Press `:` to open the ex-mode command prompt. Ex mode supports the following com
 | `delim <d>` | `delimiter` | Change delimiter |
 | `:<number>` | | Jump to line number |
 | `:<number>%` | | Jump to percentage of file (e.g. `:50%` jumps to the middle) |
+| `mark <a-z>` | | Set a mark at the current row |
+| `marks` | | List all marks in the current buffer |
+| `delmark <a-z>` | `delmarks` | Delete mark(s) (e.g. `:delmark a` or `:delmark abc`) |
+| `delmarks!` | | Delete all marks |
 | `help` | | Show the help screen |
 
 ---
@@ -290,6 +302,7 @@ The menu bar provides mouse-driven access to all major actions. Click a menu lab
 |------|
 | Change delimiter |
 | Split column |
+| Undo column split |
 | Extract JSON key |
 | Auto-detect log format |
 | Time window |

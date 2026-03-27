@@ -2436,22 +2436,25 @@ class TestRawPagerMode:
             )
             await _wait(pilot, app)
 
+            # Dismiss the column naming wizard
+            await pilot.press("escape")
+            await _wait(pilot, app)
+
             # Should have switched out of raw mode
             assert buf.raw_mode is False
             widget = buf.query_one(".nless-view")
             assert not isinstance(widget, RawPager), "Should have swapped to DataTable"
 
-            # Computed columns should exist and source column should be hidden
+            # Computed columns should exist and source column should remain visible
             col_names = [c.name for c in buf.current_columns if not c.hidden]
             assert "log-1" in col_names, f"log-1 missing: {col_names}"
             assert "log-2" in col_names, f"log-2 missing: {col_names}"
             assert "log-3" in col_names, f"log-3 missing: {col_names}"
-            assert "log" not in col_names, "source column should be hidden"
+            assert "log" in col_names, "source column should remain visible"
 
-            # Rows should contain split data (source column hidden,
-            # so displayed_rows only has the split columns)
+            # Rows should contain split data (source column still visible)
             assert len(buf.displayed_rows) == 3
-            assert buf.displayed_rows[0][0] == "hello"
+            assert buf.displayed_rows[0][0] == "hello world foo"
 
 
 # ---------------------------------------------------------------------------

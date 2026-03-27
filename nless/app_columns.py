@@ -5,18 +5,34 @@ from __future__ import annotations
 import csv
 import json
 import re
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .buffer_columns import HIDDEN_COLUMN_SENTINEL_POSITION
 from .dataprocessing import strip_markup
 from .delimiter import split_line
 from .nlessselect import NlessSelect
-from .suggestions import PipeSeparatedSuggestionProvider, StaticSuggestionProvider
+from .suggestions import (
+    ColumnDelimiterSuggestionProvider,
+    PipeSeparatedSuggestionProvider,
+)
 from .types import Column, MetadataColumn, UpdateReason
 
 if TYPE_CHECKING:
     from .app import NlessApp
     from .autocomplete import AutocompleteInput
+
+
+@dataclass
+class ColumnNamingState:
+    column_refs: list[Column]
+    sample_values: list[str]
+    first_new_col_position: int
+    split_source_name: str = ""
+    split_delim_display: str = ""
+    current_index: int = 0
+    any_renamed: bool = False
 
 
 class ColumnOpsMixin:
@@ -38,6 +54,7 @@ class ColumnOpsMixin:
                     "No column selected to add JSON key to", severity="error"
                 )
                 return
+            curr_buffer._column_history.append(deepcopy(curr_buffer.current_columns))
             curr_column_name = strip_markup(curr_column.name)
 
             col_ref = col_ref_value
@@ -147,10 +164,19 @@ class ColumnOpsMixin:
         history = [
             h["val"] for h in self.input_history if h["id"] == "column_delimiter_input"
         ]
+        # Try to get cell value at cursor for context-aware suggestions
+        cell_value = ""
+        try:
+            curr_buffer = self._get_current_buffer()
+            data_table = curr_buffer.query_one(".nless-view")
+            coordinate = data_table.cursor_coordinate
+            cell_value = strip_markup(str(data_table.get_cell_at(coordinate)))
+        except Exception:
+            pass
         self._create_prompt(
             "Type column delimiter (e.g. , or \\t or 'space' or 'raw')",
             "column_delimiter_input",
-            provider=StaticSuggestionProvider(self._DELIMITER_OPTIONS, history=history),
+            provider=ColumnDelimiterSuggestionProvider(cell_value, history),
         )
 
     def action_filter_columns(self: NlessApp) -> None:
@@ -209,7 +235,7 @@ class ColumnOpsMixin:
     ) -> None:
         event.input.remove()
         value = event.value
-        if value and value not in ("json", "\\t", "space", "space+"):
+        if value and value not in ("json", "kv", "\\t", "space", "space+"):
             try:
                 pattern = re.compile(rf"{value}")
                 if pattern.groups > len(pattern.groupindex):
@@ -245,7 +271,11 @@ class ColumnOpsMixin:
                 )
                 return
 
+            column_snapshot = deepcopy(current_buffer.current_columns)
+
             split_result = None  # (base_pos, added_count, added_names)
+            is_literal_split = False
+            literal_cell_parts: list[str] = []
             selected_column_name = strip_markup(selected_column.name)
 
             if new_col_delimiter == "json":
@@ -283,6 +313,46 @@ class ColumnOpsMixin:
                         severity="error",
                     )
                     return
+            elif new_col_delimiter == "kv":
+                kv_re = re.compile(r"""(\w[\w.-]*)=([^,|;\s]+|"[^"]*"|'[^']*')""")
+                plain_cell = strip_markup(cell)
+                kv_matches = kv_re.findall(plain_cell)
+                if len(kv_matches) < 2:
+                    current_buffer.notify(
+                        "Cell does not contain key=value pairs",
+                        severity="error",
+                    )
+                    return
+                keys = [m[0] for m in kv_matches]
+                # Detect the separator between kv pairs
+                kv_separator = " "
+                for sep in [" | ", ", ", "; ", " "]:
+                    # Count how many pairs are preceded by this separator
+                    count = sum(1 for k in keys[1:] if f"{sep}{k}=" in plain_cell)
+                    if count == len(keys) - 1:
+                        kv_separator = sep
+                        break
+                split_result = self._add_computed_columns(
+                    current_buffer,
+                    keys,
+                    lambda i,
+                    name,
+                    pos,
+                    _sel=selected_column,
+                    _sep=kv_separator: Column(
+                        name=name,
+                        labels=set(),
+                        render_position=pos,
+                        data_position=pos,
+                        hidden=False,
+                        computed=True,
+                        col_ref=f"{_sel.name}",
+                        kv_key=name,
+                        kv_separator=_sep,
+                        delimiter="kv",
+                    ),
+                )
+                should_update = split_result[1] > 0
             else:
                 if new_col_delimiter == "\\t":
                     new_col_delimiter = "\t"
@@ -328,6 +398,8 @@ class ColumnOpsMixin:
                                 severity="error",
                             )
                             return
+                        is_literal_split = True
+                        literal_cell_parts = cell_parts
                         split_result = self._add_computed_columns(
                             current_buffer,
                             [
@@ -361,25 +433,14 @@ class ColumnOpsMixin:
                             f"Error splitting cell: {str(e)}", severity="error"
                         )
 
-            # Hide source column and adjust render positions
             if should_update and split_result:
+                current_buffer._column_history.append(column_snapshot)
                 _, added_count, added_names = split_result
-                old_render_pos = selected_column.render_position
-                selected_column.hidden = True
-                selected_column.render_position = HIDDEN_COLUMN_SENTINEL_POSITION
-                # Close the gap left by hiding the source column
-                for c in current_buffer.current_columns:
-                    if (
-                        c.render_position > old_render_pos
-                        and c.render_position != HIDDEN_COLUMN_SENTINEL_POSITION
-                    ):
-                        c.render_position -= 1
 
         if should_update and split_result:
             if current_buffer.raw_mode:
                 current_buffer.raw_mode = False
             # Compute cursor target: first new column's render position
-            # (adjusted down by 1 because we hid the source column above)
             first_new_col = next(
                 (
                     c
@@ -403,14 +464,155 @@ class ColumnOpsMixin:
             flash_msg = (
                 f'Split "{selected_column_name}" on {display_delim} \u2192 {col_list}'
             )
+            # Capture columns for wizard before the lambda closes over them
+            _wizard_columns = (
+                [
+                    c
+                    for c in current_buffer.current_columns
+                    if c.name in added_names and not c.hidden
+                ]
+                if is_literal_split
+                else []
+            )
+            _wizard_samples = literal_cell_parts
+
+            def _after_split():
+                data_table.move_cursor(column=target_col, row=old_row)
+                if _wizard_columns:
+                    self._start_column_naming_wizard(
+                        _wizard_columns,
+                        _wizard_samples,
+                        split_source_name=selected_column_name,
+                        split_delim_display=display_delim,
+                    )
+                else:
+                    current_buffer.notify(flash_msg)
+
             current_buffer._deferred_update_table(
                 restore_position=False,
-                callback=lambda: (
-                    data_table.move_cursor(column=target_col, row=old_row),
-                    current_buffer.notify(flash_msg),
-                ),
+                callback=_after_split,
                 reason=UpdateReason.SPLITTING_COLUMN,
             )
+
+    @staticmethod
+    def _build_wizard_flash_msg(state: ColumnNamingState) -> str:
+        """Build the split flash message using final column names."""
+        if not state.split_source_name:
+            return ""
+        names = [c.name for c in state.column_refs]
+        if len(names) <= 4:
+            col_list = ", ".join(names)
+        else:
+            col_list = f"{names[0]}, {names[1]}, \u2026 ({len(names)} columns)"
+        return f'Split "{state.split_source_name}" on {state.split_delim_display} \u2192 {col_list}'
+
+    def _start_column_naming_wizard(
+        self: NlessApp,
+        columns: list[Column],
+        sample_values: list[str],
+        split_source_name: str = "",
+        split_delim_display: str = "",
+    ) -> None:
+        first_pos = columns[0].render_position if columns else 0
+        self._column_naming_state = ColumnNamingState(
+            column_refs=columns,
+            sample_values=sample_values,
+            first_new_col_position=first_pos,
+            split_source_name=split_source_name,
+            split_delim_display=split_delim_display,
+        )
+        self._prompt_next_column_name()
+
+    def _prompt_next_column_name(self: NlessApp) -> None:
+        state = self._column_naming_state
+        if state is None:
+            return
+        idx = state.current_index
+        sample = state.sample_values[idx] if idx < len(state.sample_values) else ""
+        col = state.column_refs[idx]
+        total = len(state.column_refs)
+        placeholder = f'Column {idx + 1}/{total} — Enter: keep "{col.name}", or type new name (sample: "{sample}"):'
+        self._create_prompt(
+            placeholder,
+            "column_naming_input",
+            save_history=False,
+        )
+        data_table = self._get_current_buffer().query_one(".nless-view")
+        data_table.move_cursor(column=col.render_position)
+        data_table.highlighted_column = col.render_position
+
+    def _reprompt_column_name(self: NlessApp, widget: AutocompleteInput) -> None:
+        state = self._column_naming_state
+        if state is None:
+            return
+        idx = state.current_index
+        sample = state.sample_values[idx] if idx < len(state.sample_values) else ""
+        col = state.column_refs[idx]
+        total = len(state.column_refs)
+        placeholder = f'Column {idx + 1}/{total} — Enter: keep "{col.name}", or type new name (sample: "{sample}"):'
+        widget.placeholder = placeholder
+        inner_input = widget.query_one("Input")
+        inner_input.placeholder = placeholder
+        inner_input.value = ""
+        inner_input.focus()
+        data_table = self._get_current_buffer().query_one(".nless-view")
+        data_table.move_cursor(column=col.render_position)
+        data_table.highlighted_column = col.render_position
+
+    def _handle_column_naming_submitted(
+        self: NlessApp, event: AutocompleteInput.Submitted
+    ) -> None:
+        state = self._column_naming_state
+        if state is None:
+            event.input.remove()
+            return
+        name = event.value.strip()
+        if not name:
+            # Empty submit (Enter with no text) → accept the default prefix name
+            # The prefix is the current default name, so just advance
+            pass
+        else:
+            # Rename the column
+            state.column_refs[state.current_index].name = name
+            state.any_renamed = True
+        state.current_index += 1
+        if state.current_index < len(state.column_refs):
+            self._reprompt_column_name(event.input)
+        else:
+            event.input.remove()
+            any_renamed = state.any_renamed
+            first_col_pos = state.first_new_col_position
+            flash_msg = self._build_wizard_flash_msg(state)
+            self._column_naming_state = None
+            current_buffer = self._get_current_buffer()
+            data_table = current_buffer.query_one(".nless-view")
+            data_table.highlighted_column = -1
+
+            def _after_wizard():
+                data_table.move_cursor(column=first_col_pos)
+                if flash_msg:
+                    current_buffer.notify(flash_msg)
+
+            if any_renamed:
+                current_buffer._deferred_update_table(
+                    reason=UpdateReason.SPLITTING_COLUMN,
+                    callback=_after_wizard,
+                )
+            else:
+                _after_wizard()
+
+    def _handle_column_naming_cancelled(self: NlessApp) -> None:
+        """Called when Escape is pressed during column naming."""
+        state = self._column_naming_state
+        self._column_naming_state = None
+        if state is not None:
+            current_buffer = self._get_current_buffer()
+            data_table = current_buffer.query_one(".nless-view")
+            data_table.highlighted_column = -1
+            data_table.move_cursor(column=state.first_new_col_position)
+            flash_msg = self._build_wizard_flash_msg(state)
+            if flash_msg:
+                current_buffer.notify(flash_msg)
 
     def action_toggle_arrival(self: NlessApp) -> None:
         """Toggle visibility of the arrival timestamp column, pinned to the left."""

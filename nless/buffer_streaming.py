@@ -119,6 +119,14 @@ class StreamingMixin:
                             new_labels = self._get_visible_column_labels()
                             dt = self.query_one(".nless-view")
                             dt.columns = new_labels
+                            # Expand column widths to fit new labels
+                            for i, label in enumerate(new_labels):
+                                if (
+                                    i < len(dt.column_widths)
+                                    and len(label) > dt.column_widths[i]
+                                ):
+                                    dt.column_widths[i] = len(label)
+                            dt.refresh()
                         except Exception:
                             logger.debug(
                                 "Column header refresh after type inference failed",

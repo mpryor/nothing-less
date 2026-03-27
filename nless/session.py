@@ -42,6 +42,8 @@ class SessionComputedColumn:
     delimiter: str | None = None  # string delimiter
     delimiter_regex: str | None = None  # regex pattern string
     delimiter_regex_flags: int = 0  # re flags for regex delimiter
+    kv_key: str = ""  # key name for kv delimiter mode
+    kv_separator: str = ""  # separator between kv pairs
 
 
 @dataclass
@@ -79,6 +81,7 @@ class SessionBufferState:
     cursor_row: int = 0
     cursor_column: int = 0
     source_labels: list[str] = field(default_factory=list)
+    marks: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -187,6 +190,8 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
                     delimiter=cc_delim,
                     delimiter_regex=cc_delim_regex,
                     delimiter_regex_flags=cc_delim_regex_flags,
+                    kv_key=col.kv_key,
+                    kv_separator=col.kv_separator,
                 )
             )
 
@@ -224,6 +229,7 @@ def capture_buffer_state(buf: NlessBuffer) -> SessionBufferState:
         cursor_row=cursor_row,
         cursor_column=cursor_column,
         source_labels=list(buf.stream.source_labels),
+        marks=dict(buf.marks),
     )
 
 
@@ -292,6 +298,8 @@ def _apply_session_computed_columns(
                 col_ref=sc.col_ref,
                 col_ref_index=sc.col_ref_index,
                 json_ref=sc.json_ref,
+                kv_key=sc.kv_key,
+                kv_separator=sc.kv_separator,
             )
         )
         existing_names.add(sc.name)
@@ -465,6 +473,10 @@ def apply_buffer_state(buf: NlessBuffer, state: SessionBufferState) -> list[str]
     if state.source_labels:
         buf.stream.set_source_labels(list(state.source_labels))
 
+    # Marks
+    if state.marks:
+        buf.marks = dict(state.marks)
+
     # Cursor position — deferred until _deferred_update_table runs
     if state.cursor_row or state.cursor_column:
         buf._pending_cursor_position = (state.cursor_row, state.cursor_column)
@@ -526,6 +538,7 @@ def _deserialize_buffer_state(b: dict) -> SessionBufferState:
         cursor_row=b.get("cursor_row", 0),
         cursor_column=b.get("cursor_column", 0),
         source_labels=b.get("source_labels", []),
+        marks=b.get("marks", {}),
     )
 
 

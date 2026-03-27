@@ -24,7 +24,7 @@
 - **Buffers** — mutating actions create a new buffer, letting you jump up and down your analysis history
 - **Buffer groups** — open additional files or run shell commands into separate buffer groups, switch between them with `{`/`}`
 - **Delimiter swapping** — swap between CSV, TSV, space-aligned, JSON, regex with named capture groups, and raw mode on the fly
-- **Column delimiters** — split a column into more columns using JSON, regex, or string delimiters
+- **Column delimiters** — split a column into more columns using JSON, key=value pairs, regex, or string delimiters; undo splits to restore previous columns
 - **Column pinning** — pin columns to the left with `m` so they stay visible during horizontal scrolling
 - **Pivoting** — group records by composite key with a focused summary view, dive into grouped data
 - **Arrival timestamps** — every row records when it was received; toggle the `_arrival` column with `A`
@@ -34,6 +34,7 @@
 - **Pipe mode** — use nless as a pipeline stage; `Q` quits immediately (piping output in pipe mode), batch mode with `--no-tui`, or `--tui` to force interactive mode
 - **Sessions** — save and restore your complete workspace state including filters, sort, highlights, delimiter, cursor position, and multiple buffer groups
 - **Views** — save reusable analysis patterns (filters, sort, columns) and apply them to any dataset; undo to restore your previous state
+- **Marks** — set named marks at rows with `:mark a`–`z`, jump with `'a`–`z`, and `''` to return to the previous position
 - **Themes & keymaps** — 10 built-in color themes (Dracula, Nord, Gruvbox, and more) plus custom theme support; configurable keymap presets
 
 ## Demos

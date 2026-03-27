@@ -379,3 +379,17 @@ class ActionsMixin:
             return
 
         self.notify(f"[bold]{col_name}[/bold]: {result}", timeout=10)
+
+    def action_undo_columns(self: NlessBuffer) -> None:
+        """Undo the last column split operation."""
+        if not self._column_history:
+            self.notify("Nothing to undo", severity="warning")
+            return
+        with self._try_lock(
+            "undo columns", deferred=self.action_undo_columns
+        ) as acquired:
+            if not acquired:
+                return
+            self.current_columns = self._column_history.pop()
+            self.invalidate_caches()
+        self._deferred_update_table(reason=UpdateReason.SPLITTING_COLUMN)

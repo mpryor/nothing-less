@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import stat
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -68,6 +70,139 @@ class StaticSuggestionProvider(SuggestionProvider):
             elif lower in item_lower:
                 substring.append(item)
         return (prefix + substring)[: self.MAX_RESULTS]
+
+
+class ColumnDelimiterSuggestionProvider(SuggestionProvider):
+    """Context-aware suggestions for the column delimiter prompt.
+
+    Analyzes the cell under the cursor to detect likely delimiters,
+    shows them first with previews, then falls back to static options.
+    """
+
+    MAX_RESULTS = 20
+
+    # Delimiters to probe, in priority order
+    _PROBE_DELIMITERS = ["|", ";", ",", ":", ".", "\t"]
+
+    # Static fallback options (shown after detected delimiters)
+    _STATIC_OPTIONS = [",", "\\t", "space", "space+", "|", ";", ":", "raw"]
+
+    # Regex for key=value pairs
+    _KV_RE = re.compile(r"""(\w[\w.-]*)=([^,|;\s]+|"[^"]*"|'[^']*')""")
+
+    # Separators to try between kv pairs, ordered by specificity
+    _KV_SEPARATORS = [" | ", ", ", "; ", " "]
+
+    def __init__(self, cell_value: str, history: list[str]) -> None:
+        self._cell = cell_value
+        self._history = list(dict.fromkeys(reversed(history)))
+        self._detected = self._detect_delimiters(cell_value)
+
+    @classmethod
+    def _detect_delimiters(cls, cell: str) -> list[tuple[str, list[str]]]:
+        """Detect delimiters that split the cell into 2+ non-empty parts.
+
+        Returns list of (delimiter_display, parts) sorted by part count desc.
+        """
+        if not cell:
+            return []
+        results: list[tuple[str, list[str]]] = []
+
+        # Check for JSON
+        stripped = cell.replace("\\[", "[")
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                keys = list(parsed.keys())
+                if keys:
+                    results.append(("json", keys))
+            elif isinstance(parsed, list) and len(parsed) > 1:
+                results.append(("json", [str(i) for i in range(len(parsed))]))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Check for key=value patterns
+        kv_matches = cls._KV_RE.findall(cell)
+        if len(kv_matches) >= 2:
+            keys = [m[0] for m in kv_matches]
+            results.append(("kv", keys))
+
+        # Check literal delimiters
+        for delim in cls._PROBE_DELIMITERS:
+            parts = [p.strip() for p in cell.split(delim)]
+            parts = [p for p in parts if p]
+            if len(parts) >= 2:
+                display = "\\t" if delim == "\t" else delim
+                results.append((display, parts))
+
+        # Sort by part count (most useful first), but keep json/kv at top
+        def sort_key(item):
+            d, parts = item
+            if d == "json":
+                return (0, -len(parts))
+            if d == "kv":
+                return (1, -len(parts))
+            return (2, -len(parts))
+
+        results.sort(key=sort_key)
+        return results
+
+    def get_suggestions(self, value: str) -> list[str]:
+        # Build ordered list: detected → history → static fallbacks
+        items: list[str] = []
+
+        # Detected delimiters first (highest value)
+        for d, _ in self._detected:
+            if len(items) < self.MAX_RESULTS:
+                items.append(d)
+
+        # History items not already in detected
+        seen = set(items)
+        for h in self._history:
+            if h not in seen and len(items) < self.MAX_RESULTS:
+                items.append(h)
+                seen.add(h)
+
+        # Static fallbacks
+        for opt in self._STATIC_OPTIONS:
+            if opt not in seen and len(items) < self.MAX_RESULTS:
+                items.append(opt)
+                seen.add(opt)
+
+        if not value:
+            return items[: self.MAX_RESULTS]
+
+        lower = value.lower()
+        prefix = []
+        substring = []
+        for item in items:
+            item_lower = item.lower()
+            if item_lower.startswith(lower):
+                prefix.append(item)
+            elif lower in item_lower:
+                substring.append(item)
+        return (prefix + substring)[: self.MAX_RESULTS]
+
+    def get_description(self, item: str) -> str | None:
+        """Return a preview description for a delimiter option."""
+        for d, parts in self._detected:
+            if d == item:
+                if d == "json":
+                    keys_str = ", ".join(parts[:5])
+                    if len(parts) > 5:
+                        keys_str += f", \u2026 ({len(parts)} keys)"
+                    return f"JSON keys: {keys_str}"
+                if d == "kv":
+                    keys_str = ", ".join(parts[:5])
+                    if len(parts) > 5:
+                        keys_str += f", \u2026 ({len(parts)} keys)"
+                    return f"key=value: {keys_str}"
+                # Literal delimiter
+                preview = ", ".join(parts[:4])
+                if len(parts) > 4:
+                    preview += ", \u2026"
+                return f"{len(parts)} parts: {preview}"
+        return None
 
 
 class TimeWindowSuggestionProvider(SuggestionProvider):
@@ -423,6 +558,10 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "delimiter",
         "set theme",
         "set keymap",
+        "mark",
+        "marks",
+        "delmark",
+        "delmarks!",
         "help",
     ]
 
@@ -446,6 +585,10 @@ class ExModeSuggestionProvider(SuggestionProvider):
         "delimiter": "change delimiter",
         "set theme": "switch theme",
         "set keymap": "switch keymap",
+        "mark": "set mark at current row (e.g. :mark a)",
+        "marks": "list all marks in current buffer",
+        "delmark": "delete mark(s) (e.g. :delmark a or :delmark abc)",
+        "delmarks!": "delete all marks",
         "help": "show help screen",
     }
 

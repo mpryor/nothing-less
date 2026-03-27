@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 # Command alias map: alias → canonical name
 _COMMAND_ALIASES: dict[str, str] = {
     "sort": "sort",
+    "mark": "mark",
+    "marks": "marks",
+    "delmark": "delmark",
+    "delmarks": "delmark",
+    "delmarks!": "delmarks!",
     "filter": "filter",
     "f": "filter",
     "exclude": "exclude",
@@ -473,6 +478,79 @@ class ExModeMixin:
         """Show help screen."""
         self.action_help()
 
+    def _cmd_mark(self: NlessApp, args: str) -> None:
+        """Set a mark at the current row: :mark a"""
+        letter = args.strip().lower()
+        if len(letter) != 1 or not letter.isalpha():
+            self.notify("Usage: :mark <a-z>", severity="error")
+            return False
+        buf = self._get_current_buffer()
+        try:
+            dt = buf.query_one(".nless-view")
+            buf.marks[letter] = dt.cursor_row
+            dt.marked_rows = {
+                row: ltr for ltr, row in buf.marks.items() if row < dt.row_count
+            }
+            dt.refresh()
+            self.notify(f"mark '{letter}' set")
+        except Exception:
+            self.notify("Could not set mark", severity="error")
+
+    def _cmd_delmark(self: NlessApp, args: str) -> None:
+        """Delete one or more marks: :delmark a or :delmark abc"""
+        letters = args.strip().lower()
+        if not letters or not all(c.isalpha() for c in letters):
+            self.notify(
+                "Usage: :delmark <a-z> (e.g. :delmark a or :delmark abc)",
+                severity="error",
+            )
+            return False
+        buf = self._get_current_buffer()
+        removed = []
+        for letter in letters:
+            if letter in buf.marks:
+                del buf.marks[letter]
+                removed.append(letter)
+        if removed:
+            try:
+                dt = buf.query_one(".nless-view")
+                dt.marked_rows = {
+                    row: ltr for ltr, row in buf.marks.items() if row < dt.row_count
+                }
+                dt.refresh()
+            except Exception:
+                pass
+            self.notify(f"deleted mark(s): {', '.join(removed)}")
+        else:
+            self.notify("no matching marks found", severity="warning")
+
+    def _cmd_delmarks_all(self: NlessApp, args: str) -> None:
+        """Delete all marks: :delmarks!"""
+        buf = self._get_current_buffer()
+        if not buf.marks:
+            self.notify("No marks set")
+            return
+        count = len(buf.marks)
+        buf.marks.clear()
+        try:
+            dt = buf.query_one(".nless-view")
+            dt.marked_rows = {}
+            dt.refresh()
+        except Exception:
+            pass
+        self.notify(f"deleted all {count} mark(s)")
+
+    def _cmd_marks(self: NlessApp, args: str) -> None:
+        """List all marks in the current buffer."""
+        buf = self._get_current_buffer()
+        if not buf.marks:
+            self.notify("No marks set")
+            return
+        lines = [
+            f"  '{letter}' → row {row + 1}" for letter, row in sorted(buf.marks.items())
+        ]
+        self.notify("Marks:\n" + "\n".join(lines))
+
 
 # Map canonical command names to handler methods
 _COMMAND_HANDLERS: dict[str, callable] = {
@@ -486,6 +564,10 @@ _COMMAND_HANDLERS: dict[str, callable] = {
     "delim": ExModeMixin._cmd_delim,
     "set": ExModeMixin._cmd_set,
     "help": ExModeMixin._cmd_help,
+    "mark": ExModeMixin._cmd_mark,
+    "marks": ExModeMixin._cmd_marks,
+    "delmark": ExModeMixin._cmd_delmark,
+    "delmarks!": ExModeMixin._cmd_delmarks_all,
     "clear": ExModeMixin._cmd_clear,
     "cols": ExModeMixin._cmd_cols,
     "type": ExModeMixin._cmd_type,

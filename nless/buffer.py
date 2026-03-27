@@ -256,6 +256,8 @@ class NlessBuffer(
         self._bp_timer = None
         self._bp_behind: bool = False
         self.regex_highlights: list[tuple[re.Pattern, str]] = []
+        self.marks: dict[str, int] = {}  # letter → display row index
+        self._previous_cursor_row: int | None = None  # for '' jump-back
 
         self._pre_view_state = None
         self._pre_view_raw_rows: list[str] | None = None
@@ -1184,6 +1186,13 @@ class NlessBuffer(
 
         self.displayed_rows = result["styled_rows"]
         dt.add_rows_precomputed(result["styled_rows"])
+
+        # Sync marks to datatable
+        dt.marked_rows = {
+            row: letter
+            for letter, row in self.marks.items()
+            if row < len(self.displayed_rows)
+        }
 
         bad_lines = result["inconsistent_rows"]
         if bad_lines:

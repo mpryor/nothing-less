@@ -79,6 +79,8 @@ class Datatable(ScrollView):
         self._hover_header_col: int = -1
         self._last_click_time: float = 0.0
         self._last_click_row: int = -1
+        self.highlighted_column: int = -1
+        self.marked_rows: dict[int, str] = {}  # row index → mark letter
 
         self._init_styles(theme)
 
@@ -102,6 +104,8 @@ class Datatable(ScrollView):
         self._style_zebra_even_col = Style(color=theme.col_even_fg)
 
         self._style_hover = Style(bgcolor=theme.search_match_bg)
+        self._style_highlighted_column = Style(bgcolor=theme.header_bg)
+        self._style_mark = Style(bgcolor=theme.mark_bg)
 
         self._cell_styles: dict[tuple[bool, bool, bool], Style] = {}
         self._sep_styles: dict[tuple[bool, bool], Style] = {}
@@ -458,13 +462,21 @@ class Datatable(ScrollView):
 
     def _render_column_headers(self, x: int) -> Strip:
         hover = self._hover_header_col
+        highlight = self.highlighted_column
         header_style = self._style_header
         hover_style = header_style + Style(reverse=True)
+        highlight_style = header_style + Style(reverse=True, bold=True)
         segments: list[Segment] = []
 
         # Fixed columns
         for i in range(self.fixed_columns):
-            style = hover_style if i == hover else header_style
+            style = (
+                hover_style
+                if i == hover
+                else highlight_style
+                if i == highlight
+                else header_style
+            )
             text = self.columns[i].ljust(self.column_widths[i]) + self.col_separator
             segments.append(Segment(text, style))
 
@@ -473,7 +485,13 @@ class Datatable(ScrollView):
         for i, col in enumerate(self.columns):
             if i < self.fixed_columns:
                 continue
-            style = hover_style if i == hover else header_style
+            style = (
+                hover_style
+                if i == hover
+                else highlight_style
+                if i == highlight
+                else header_style
+            )
             text = col.ljust(self.column_widths[i]) + self.col_separator
             scroll_segments.append(Segment(text, style))
 
@@ -496,6 +514,7 @@ class Datatable(ScrollView):
             is_zebra_row = (y - 1) % 2 != 0
             is_cursor_row = (y - 1) == self.cursor_row
             is_hover_row = (y - 1) == self._hover_row
+            is_marked_row = (y - 1) in self.marked_rows and not is_cursor_row
             console = self.app.console
 
             for i, cell in enumerate(row):
@@ -515,6 +534,8 @@ class Datatable(ScrollView):
                         fixed_column_style = (
                             self._style_fixed_column + self._style_hover
                         )
+                    elif is_marked_row:
+                        fixed_column_style = self._style_fixed_column + self._style_mark
                     else:
                         fixed_column_style = self._style_fixed_column
                     cell_text = Text.from_markup(str(cell))
@@ -535,9 +556,17 @@ class Datatable(ScrollView):
                         (is_cursor_cell, is_zebra_row, i % 2 != 0)
                     ]
                     separator_style = self._sep_styles[(is_cursor_cell, is_zebra_row)]
+                    if i == self.highlighted_column and not is_cursor_cell:
+                        segment_style = segment_style + self._style_highlighted_column
+                        separator_style = (
+                            separator_style + self._style_highlighted_column
+                        )
                     if is_hover_row and i == self._hover_column and not is_cursor_cell:
                         segment_style = segment_style + self._style_hover
                         separator_style = separator_style + self._style_hover
+                    if is_marked_row:
+                        segment_style = segment_style + self._style_mark
+                        separator_style = separator_style + self._style_mark
 
                     trim_len = 0
 

@@ -197,6 +197,7 @@ class NlessApp(
         "menu_data": [
             ("Change delimiter", "delimiter"),
             ("Split column", "column_delimiter"),
+            ("Undo column split", "undo_columns"),
             ("Extract JSON key", "json_header"),
             ("Auto-detect log format", "detect_log_format"),
             ("Ex mode", "exmode"),
@@ -240,6 +241,8 @@ class NlessApp(
         self.nless_theme = resolve_theme(cli_theme=cli_args.theme)
         self.nless_keymap = resolve_keymap(cli_keymap=cli_args.keymap)
         self._regex_wizard_state = None
+        self._column_naming_state = None
+        self._mark_state: str | None = None  # "set" or "jump" when awaiting mark key
         self._next_pane_id = 2
         self._next_group_id = 2
         init_buffer = NlessBuffer(
@@ -896,6 +899,8 @@ class NlessApp(
             if isinstance(self.focused.parent, AutocompleteInput):
                 if self.focused.parent.id == "regex_wizard_name_input":
                     self._regex_wizard_state = None
+                elif self.focused.parent.id == "column_naming_input":
+                    self._column_naming_state = None
                 elif self.focused.parent.id == "save_log_format_input":
                     pattern = getattr(self, "_pending_log_format_pattern", None)
                     if pattern:
@@ -908,18 +913,64 @@ class NlessApp(
             self.focused.remove()
 
         current_buffer = self._get_current_buffer()
+        is_nless_focused = hasattr(
+            self.focused, "has_class"
+        ) and self.focused.has_class("nless-view")
+
+        # ── Mark jump state machine ────────────────────────────────────
+        if self._mark_state == "jump":
+            event.stop()
+            event.prevent_default()
+            if event.key == "escape":
+                self._mark_state = None
+                return
+            key_char = event.character
+            if key_char and key_char.isalpha() and key_char.islower():
+                dt = current_buffer.query_one(".nless-view")
+                target = current_buffer.marks.get(key_char)
+                if target is None:
+                    self.notify(f"mark '{key_char}' not set", severity="warning")
+                elif target >= dt.row_count:
+                    self.notify(
+                        f"mark '{key_char}' invalid (beyond row count)",
+                        severity="warning",
+                    )
+                else:
+                    current_buffer._previous_cursor_row = dt.cursor_row
+                    dt.move_cursor(row=target)
+                self._mark_state = None
+                return
+            if event.key == "apostrophe":
+                # '' — jump to previous position
+                dt = current_buffer.query_one(".nless-view")
+                prev = current_buffer._previous_cursor_row
+                if prev is not None and prev < dt.row_count:
+                    current_buffer._previous_cursor_row = dt.cursor_row
+                    dt.move_cursor(row=prev)
+                else:
+                    self.notify("no previous position", severity="warning")
+                self._mark_state = None
+                return
+            # Any other key cancels
+            self._mark_state = None
+            return
+
+        # ── Mark jump entry point ─────────────────────────────────────
         if (
-            event.key == "enter"
-            and hasattr(self.focused, "has_class")
-            and self.focused.has_class("nless-view")
+            is_nless_focused
+            and not isinstance(self.focused, (Input, Select))
+            and event.key == "apostrophe"
         ):
+            self._mark_state = "jump"
+            self.notify("jump to mark: ")
+            event.stop()
+            event.prevent_default()
+            return
+
+        if event.key == "enter" and is_nless_focused:
             self._filter_composite_key(current_buffer)
 
-        if (
-            event.key in _TAB_SWITCH_KEYS
-            and hasattr(self.focused, "has_class")
-            and self.focused.has_class("nless-view")
-        ):
+        if event.key in _TAB_SWITCH_KEYS and is_nless_focused:
             self.show_tab_by_index(int(event.key) - 1)
 
     def handle_write_to_file_submitted(
@@ -986,6 +1037,8 @@ class NlessApp(
             self.handle_save_log_format_submitted(event)
         elif event.input.id == "regex_wizard_name_input":
             self._handle_regex_wizard_name_submitted(event)
+        elif event.input.id == "column_naming_input":
+            self._handle_column_naming_submitted(event)
         elif event.input.id == "session_name_input":
             self._handle_session_save_submitted(event)
         elif event.input.id == "session_rename_input":

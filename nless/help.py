@@ -64,6 +64,14 @@ KEYBINDING_CATEGORIES: list[tuple[str, list[tuple[str | None, str, str]]]] = [
         ],
     ),
     (
+        "Marks",
+        [
+            (None, ":mark a-z", "Set mark at current row"),
+            (None, "' + a-z", "Jump to mark"),
+            (None, "''", "Jump to previous position"),
+        ],
+    ),
+    (
         "Column Visibility",
         [
             ("app.filter_columns", "C", "Show/hide columns"),

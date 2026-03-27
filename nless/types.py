@@ -202,6 +202,8 @@ class Column:
     col_ref: str = ""  # reference to the original column name
     col_ref_index: int = -1  # reference to the original column index
     json_ref: str = ""  # reference to the original JSON field
+    kv_key: str = ""  # key name for key=value delimiter mode
+    kv_separator: str = ""  # separator between kv pairs (e.g. " | ", ", ")
     substitution: tuple[re.Pattern, str] | None = (
         None  # regex substitution (pattern, replacement)
     )

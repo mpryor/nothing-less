@@ -156,6 +156,25 @@ def split_line(
             ).replace("[", "\\[")
             computed_values[col.name] = value
             computed.append((pos, value))
+        elif col.delimiter == "kv" and col.kv_key:
+            ref_cell = _find_ref_column_cell(
+                col.col_ref,
+                sorted_columns,
+                cells,
+                count_metadata_columns,
+                computed_values,
+            )
+            if ref_cell is None:
+                continue
+            # Parse key=value pairs from the ref cell
+            kv_re = re.compile(r"""(\w[\w.-]*)=([^,|;\s]+|"[^"]*"|'[^']*')""")
+            kv_dict = dict(kv_re.findall(ref_cell))
+            value = kv_dict.get(col.kv_key, "")
+            # Strip surrounding quotes if present
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            computed_values[col.name] = value
+            computed.append((pos, value))
         elif isinstance(col.delimiter, re.Pattern):
             ref_cell = _find_ref_column_cell(
                 col.col_ref,
