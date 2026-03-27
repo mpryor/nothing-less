@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.15.0 (2026-03-27)
+
+### Feat
+
+- marks, kv delimiter, column naming wizard, undo column splits
+- replace splittable-column indicator ⋯ with ⑃
+- nested column splitting + UX improvements
+
 ## 1.14.0 (2026-03-20)
 
 ### Feat
