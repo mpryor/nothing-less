@@ -12,7 +12,7 @@ Set Padding 10
 Set TypingSpeed 60ms
 
 # Open raw log file
-Type "nless app.log"
+Type "nless --raw example_data/app.log"
 Enter
 Sleep 3s
 

@@ -12,7 +12,7 @@ Set Padding 10
 Set TypingSpeed 60ms
 
 # Use nless in a pipeline — filter CSV and output as JSON
-Type "cat people-1000.csv | nless -f 'Job Title=Engineer' -s 'Last Name=asc' -c 'First|Last|Job' --no-tui -o json | head -5"
+Type "cat example_data/people-1000.csv | nless -f 'Job Title=Engineer' -s 'Last Name=asc' -c 'First|Last|Job' --no-tui -o json | head -5"
 Enter
 Sleep 5s
 
@@ -22,7 +22,7 @@ Enter
 Sleep 1s
 
 # Now show the interactive version — drop --no-tui
-Type "cat people-1000.csv | nless -f 'Job Title=Engineer' -s 'Last Name=asc' -c 'First|Last|Job'"
+Type "cat example_data/people-1000.csv | nless -f 'Job Title=Engineer' -s 'Last Name=asc' -c 'First|Last|Job'"
 Enter
 Sleep 3s
 

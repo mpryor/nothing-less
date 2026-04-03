@@ -11,8 +11,13 @@ Set Height 600
 Set Padding 10
 Set TypingSpeed 60ms
 
-# Pipe JSON API response into nless
-Type "cat api-response.json | nless"
+# Show raw JSON first
+Type "cat example_data/api-response.json | jq ."
+Enter
+Sleep 3s
+
+# Now pipe into nless
+Type "cat example_data/api-response.json | nless"
 Enter
 Sleep 3s
 
