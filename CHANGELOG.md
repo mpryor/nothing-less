@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.1 (2026-04-03)
+
+### Fix
+
+- bump unique perf baseline and harden homebrew release step
+
 ## 1.15.0 (2026-03-27)
 
 ### Feat
