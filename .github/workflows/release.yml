@@ -139,6 +139,15 @@ jobs:
           open(formula, "w").write(text)
           PYEOF
 
+          # Ensure Homebrew's Python is up-to-date (runner image may be stale)
+          brew install python@3.13 || brew upgrade python@3.13 || true
+
+          # Debug: verify Homebrew's Python + pip can resolve our package
+          BREW_PYTHON="/opt/homebrew/opt/python@3.13/libexec/bin/python"
+          echo "==> Python: $($BREW_PYTHON --version)"
+          echo "==> pip: $($BREW_PYTHON -m pip --version)"
+          $BREW_PYTHON -m pip install -q --disable-pip-version-check --dry-run --ignore-installed nothing-less==$VERSION 2>&1 || true
+
           # Regenerate all transitive dependency resources
           brew update-python-resources mpryor/tap/nless
 

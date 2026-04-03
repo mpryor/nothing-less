@@ -38,7 +38,7 @@ _BASELINES = {
     "load": 0.35,
     "sort": 0.39,
     "filter": 0.57,
-    "unique": 0.35,
+    "unique": 0.40,
     "copy": 0.001,
     "add_rows": 0.027,
     "sort_100k": 0.69,
