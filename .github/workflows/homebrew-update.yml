@@ -1,0 +1,94 @@
+name: Update Homebrew Formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.16.1)"
+        required: true
+
+jobs:
+  update-homebrew:
+    runs-on: macos-latest
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Tap and update formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # Verify the package is on PyPI
+          if ! curl -sf "https://pypi.org/pypi/nothing-less/$VERSION/json" > /dev/null 2>&1; then
+            echo "Error: nothing-less==$VERSION not found on PyPI"
+            exit 1
+          fi
+
+          # Enforce the 24-hour cooldown Homebrew requires
+          UPLOAD_TIME=$(curl -sf "https://pypi.org/pypi/nothing-less/$VERSION/json" | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); \
+              urls=[u for u in d['urls'] if u['url'].endswith('.tar.gz')]; \
+              print(urls[0]['upload_time_iso_8601'])")
+          UPLOAD_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${UPLOAD_TIME%.*}" "+%s" 2>/dev/null || \
+            date -d "${UPLOAD_TIME%.*}" "+%s")
+          NOW_EPOCH=$(date "+%s")
+          AGE_HOURS=$(( (NOW_EPOCH - UPLOAD_EPOCH) / 3600 ))
+          if [ "$AGE_HOURS" -lt 24 ]; then
+            echo "Error: nothing-less==$VERSION was uploaded only ${AGE_HOURS}h ago."
+            echo "Homebrew requires a 24-hour cooldown. Re-run this workflow tomorrow."
+            exit 1
+          fi
+          echo "Package age: ${AGE_HOURS}h — cooldown satisfied."
+
+          # Get the sdist URL and sha256 from PyPI
+          PYPI_JSON=$(curl -sf "https://pypi.org/pypi/nothing-less/$VERSION/json")
+          URL=$(echo "$PYPI_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print([u['url'] for u in d['urls'] if u['url'].endswith('.tar.gz')][0])")
+          SHA=$(echo "$PYPI_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print([u['digests']['sha256'] for u in d['urls'] if u['url'].endswith('.tar.gz')][0])")
+
+          # Clone homebrew-tap and update the nless URL + sha256
+          brew tap mpryor/tap
+          FORMULA="$(brew --repository mpryor/tap)/Formula/n/nless.rb"
+          python3 << PYEOF
+          import re
+          formula = "$FORMULA"
+          url = "$URL"
+          sha = "$SHA"
+          text = open(formula).read()
+          # Replace the main package url line
+          text = re.sub(
+              r'url "https://files\.pythonhosted\.org/[^"]*nothing.less-[^"]*\.tar\.gz"',
+              f'url "{url}"',
+              text,
+              count=1,
+          )
+          # Replace the sha256 on the very next line after the url
+          text = re.sub(
+              r'(url "{}")\n(\s*)sha256 "[a-f0-9]{{64}}"'.format(re.escape(url)),
+              r'\1\n\2sha256 "{}"'.format(sha),
+              text,
+              count=1,
+          )
+          open(formula, "w").write(text)
+          PYEOF
+
+          # Ensure Homebrew's Python is up-to-date (runner image may be stale)
+          brew install python@3.13 || brew upgrade python@3.13 || true
+
+          # Debug: verify Homebrew's Python + pip can resolve our package
+          BREW_PYTHON="/opt/homebrew/opt/python@3.13/libexec/bin/python"
+          echo "==> Python: $($BREW_PYTHON --version)"
+          echo "==> pip: $($BREW_PYTHON -m pip --version)"
+          $BREW_PYTHON -m pip install -q --disable-pip-version-check --dry-run --ignore-installed nothing-less==$VERSION 2>&1 || true
+
+          # Regenerate all transitive dependency resources
+          brew update-python-resources mpryor/tap/nless
+
+          # Push updated formula to homebrew-tap
+          cd "$(brew --repository mpryor/tap)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mpryor/homebrew-tap.git"
+          git add Formula/n/nless.rb
+          git commit -m "nless $VERSION"
+          git push
