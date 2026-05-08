@@ -1,0 +1,21 @@
+[project]
+name = "nless"
+version = "1.0.0"
+description = "Alias package for nothing-less — a TUI pager for tabular data"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Matt Pryor", email = "mapryor1991@gmail.com"}
+]
+requires-python = ">=3.13"
+dependencies = [
+    "nothing-less>=1.16.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/mpryor/nothing-less"
+Issues = "https://github.com/mpryor/nothing-less/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
