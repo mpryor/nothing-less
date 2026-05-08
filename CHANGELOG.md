@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.16.2 (2026-05-08)
+
+### Fix
+
+- show correct clipboard install hint on Wayland
+
 ## 1.16.1 (2026-05-08)
 
 ### Fix
