@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.17.0 (2026-05-08)
+
+### Feat
+
+- add nless shim package and publish workflow
+
 ## 1.16.2 (2026-05-08)
 
 ### Fix
