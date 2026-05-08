@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -37,10 +38,13 @@ class ActionsMixin:
             pyperclip.copy(cell_value)
             self.notify("Cell contents copied to clipboard.", severity="information")
         except pyperclip.PyperclipException:
-            self.notify(
-                "Clipboard not available — is xclip/xsel installed?",
-                severity="error",
-            )
+            if os.getenv("WAYLAND_DISPLAY"):
+                msg = (
+                    "Clipboard not available — install wl-clipboard (wl-copy/wl-paste)."
+                )
+            else:
+                msg = "Clipboard not available — install xclip or xsel."
+            self.notify(msg, severity="error")
 
     def _make_shown_filter(
         self: NlessBuffer, *, include_ancestors: bool = True
