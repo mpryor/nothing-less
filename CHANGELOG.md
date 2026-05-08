@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.16.0 (2026-05-08)
+
+### Feat
+
+- add Markdown and HTML export formats (#62)
+
 ## 1.15.1 (2026-04-03)
 
 ### Fix
