@@ -2511,6 +2511,9 @@ class TestWriteBuffer:
         assert _infer_output_format("out.csv") == "csv"
         assert _infer_output_format("out.txt") == "raw"
         assert _infer_output_format("out.log") == "raw"
+        assert _infer_output_format("out.md") == "markdown"
+        assert _infer_output_format("out.markdown") == "markdown"
+        assert _infer_output_format("out.html") == "html"
         assert _infer_output_format("out.xyz") == "csv"
         assert _infer_output_format("out") == "csv"
         assert _infer_output_format("/dev/stdout") == "csv"
@@ -2613,6 +2616,56 @@ class TestWriteBuffer:
             assert len(lines) == 1
             obj = json_mod.loads(lines[0])
             assert obj["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_write_markdown_output(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.md")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                lines = f.readlines()
+
+        # header row, separator row, 2 data rows
+        assert len(lines) == 4
+        assert lines[0].startswith("| ")
+        assert "name" in lines[0]
+        assert "age" in lines[0]
+        assert (
+            set(lines[1].strip(" |\n-")) == set()
+        )  # separator has only dashes, pipes, spaces
+        assert "Alice" in lines[2]
+        assert "Bob" in lines[3]
+
+    @pytest.mark.asyncio
+    async def test_write_html_output(self, cli_args, tmp_path):
+        from nless.operations import write_buffer
+
+        app = NlessApp(cli_args=cli_args, starting_stream=None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            buf = app.buffers[0]
+            _load(buf, ["name,age,city", "Alice,30,NYC", "Bob,25,SF"])
+            await _wait(pilot, app)
+
+            output_path = str(tmp_path / "output.html")
+            write_buffer(buf, output_path)
+
+            with open(output_path) as f:
+                content = f.read()
+
+        assert "<table>" in content
+        assert "<thead>" in content and "</thead>" in content
+        assert "<tbody>" in content and "</tbody>" in content
+        assert "<th>name</th>" in content
+        assert "<td>Alice</td>" in content
+        assert "<td>Bob</td>" in content
 
 
 class TestColumnAggregations:
