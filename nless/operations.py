@@ -147,6 +147,20 @@ def write_buffer_to_fd(
         elif output_format == "raw":
             for row in rows:
                 fd.write("\t".join(strip_markup(str(cell)) for cell in row) + "\n")
+        elif output_format == "markdown":
+            col_widths = [max(len(strip_markup(str(cell))) for cell in [h] + [r[i] for r in rows]) for i, h in enumerate(headers)]
+            sep = "| " + "| ".join("-" * w for w in col_widths) + "|\n"
+            fd.write("| " + "| ".join(strip_markup(str(h)).ljust(col_widths[i]) for i, h in enumerate(headers)) + "|\n")
+            fd.write(sep)
+            for row in rows:
+                fd.write("| " + "| ".join(strip_markup(str(cell)).ljust(col_widths[i]) for i, cell in enumerate(row)) + "|\n")
+        elif output_format == "html":
+            fd.write("<table>\n")
+            fd.write("<thead>\n<tr>" + "".join(f"<th>{strip_markup(str(h))}</th>" for h in headers) + "</tr>\n</thead>\n")
+            fd.write("<tbody>\n")
+            for row in rows:
+                fd.write("<tr>" + "".join(f"<td>{strip_markup(str(cell))}</td>" for cell in row) + "</tr>\n")
+            fd.write("</tbody>\n</table>\n")
         else:
             delim = "\t" if output_format == "tsv" else ","
             writer = csv.writer(fd, delimiter=delim)
@@ -167,6 +181,9 @@ def _infer_output_format(path: str) -> str:
         ".csv": "csv",
         ".txt": "raw",
         ".log": "raw",
+        ".md": "markdown",
+        ".markdown": "markdown",
+        ".html": "html",
     }.get(ext, "csv")
 
 
