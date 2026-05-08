@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.16.1 (2026-05-08)
+
+### Fix
+
+- unify markdown/html export code path, add tests and CLI choices (#63)
+
 ## 1.16.0 (2026-05-08)
 
 ### Feat
