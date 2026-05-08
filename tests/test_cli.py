@@ -204,6 +204,14 @@ class TestOutputFormatFlag:
         cli_args = parse_args([])
         assert cli_args.output_format == "csv"
 
+    def test_output_format_markdown(self):
+        cli_args = parse_args(["-o", "markdown"])
+        assert cli_args.output_format == "markdown"
+
+    def test_output_format_html(self):
+        cli_args = parse_args(["-o", "html"])
+        assert cli_args.output_format == "html"
+
     def test_output_format_invalid_exits(self):
         with pytest.raises(SystemExit):
             parse_args(["-o", "xml"])

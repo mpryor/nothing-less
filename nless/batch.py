@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import re
 import signal
 import sys
 
 from .dataprocessing import coerce_sort_key, matches_all_filters, strip_markup
+from .operations import write_rows_to_fd
 from .delimiter import (
     detect_space_splitting_strategy,
     find_header_index,
@@ -215,35 +215,8 @@ def _run_batch_inner(cli_args: CliArgs) -> None:
         visible_headers = [strip_markup(columns[i].name) for i in visible_indices]
 
     # Write output
-    _write_output(cli_args.output_format, visible_headers, data_rows, visible_indices)
-
-
-def _write_output(
-    fmt: str,
-    headers: list[str],
-    rows: list[list[str]],
-    visible_indices: list[int],
-) -> None:
-    """Write rows to stdout in the requested format."""
-    if fmt == "json":
-        for row in rows:
-            obj = {}
-            for i, hi in enumerate(visible_indices):
-                val = strip_markup(row[hi]) if hi < len(row) else ""
-                obj[headers[i]] = val
-            sys.stdout.write(json.dumps(obj) + "\n")
-    elif fmt == "tsv":
-        writer = csv.writer(sys.stdout, delimiter="\t")
-        writer.writerow(headers)
-        for row in rows:
-            writer.writerow(
-                [strip_markup(row[i]) if i < len(row) else "" for i in visible_indices]
-            )
-    else:
-        # csv (default)
-        writer = csv.writer(sys.stdout)
-        writer.writerow(headers)
-        for row in rows:
-            writer.writerow(
-                [strip_markup(row[i]) if i < len(row) else "" for i in visible_indices]
-            )
+    cleaned_rows = [
+        [strip_markup(row[i]) if i < len(row) else "" for i in visible_indices]
+        for row in data_rows
+    ]
+    write_rows_to_fd(visible_headers, cleaned_rows, sys.stdout, cli_args.output_format)

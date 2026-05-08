@@ -110,7 +110,7 @@ def parse_args(argv=None) -> CliArgs:
     parser.add_argument(
         "--output-format",
         "-o",
-        choices=["csv", "tsv", "json", "raw"],
+        choices=["csv", "tsv", "json", "raw", "markdown", "html"],
         help="Output format for pipe/batch output (default: csv)",
         default="csv",
     )

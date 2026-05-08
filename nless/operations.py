@@ -128,6 +128,51 @@ def handle_mark_unique(new_buffer: NlessBuffer, new_unique_column_name: str) -> 
         new_buffer._pivot_hidden_columns.clear()
 
 
+def write_rows_to_fd(
+    headers: list[str], rows: list[list[str]], fd: IO[str], output_format: str = "csv"
+) -> None:
+    """Write pre-cleaned headers and rows to fd in the requested format."""
+    if output_format == "json":
+        for row in rows:
+            fd.write(json.dumps(dict(zip(headers, row))) + "\n")
+    elif output_format == "raw":
+        for row in rows:
+            fd.write("\t".join(row) + "\n")
+    elif output_format == "markdown":
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(cell))
+        sep = "| " + " | ".join("-" * w for w in col_widths) + " |\n"
+        fd.write(
+            "| " + " | ".join(h.ljust(w) for h, w in zip(headers, col_widths)) + " |\n"
+        )
+        fd.write(sep)
+        for row in rows:
+            fd.write(
+                "| "
+                + " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
+                + " |\n"
+            )
+    elif output_format == "html":
+        fd.write("<table>\n")
+        fd.write(
+            "<thead>\n<tr>"
+            + "".join(f"<th>{h}</th>" for h in headers)
+            + "</tr>\n</thead>\n"
+        )
+        fd.write("<tbody>\n")
+        for row in rows:
+            fd.write("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>\n")
+        fd.write("</tbody>\n</table>\n")
+    else:
+        delim = "\t" if output_format == "tsv" else ","
+        writer = csv.writer(fd, delimiter=delim)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow(row)
+
+
 def write_buffer_to_fd(
     current_buffer: NlessBuffer, fd: IO[str], output_format: str = "csv"
 ) -> None:
@@ -137,36 +182,12 @@ def write_buffer_to_fd(
     immediately, intended for use during app exit (pipe output).
     """
     headers = current_buffer._get_visible_column_labels()
-    rows = current_buffer.displayed_rows
-
+    rows = [
+        [strip_markup(str(cell)) for cell in row]
+        for row in current_buffer.displayed_rows
+    ]
     try:
-        if output_format == "json":
-            for row in rows:
-                obj = {h: strip_markup(str(cell)) for h, cell in zip(headers, row)}
-                fd.write(json.dumps(obj) + "\n")
-        elif output_format == "raw":
-            for row in rows:
-                fd.write("\t".join(strip_markup(str(cell)) for cell in row) + "\n")
-        elif output_format == "markdown":
-            col_widths = [max(len(strip_markup(str(cell))) for cell in [h] + [r[i] for r in rows]) for i, h in enumerate(headers)]
-            sep = "| " + "| ".join("-" * w for w in col_widths) + "|\n"
-            fd.write("| " + "| ".join(strip_markup(str(h)).ljust(col_widths[i]) for i, h in enumerate(headers)) + "|\n")
-            fd.write(sep)
-            for row in rows:
-                fd.write("| " + "| ".join(strip_markup(str(cell)).ljust(col_widths[i]) for i, cell in enumerate(row)) + "|\n")
-        elif output_format == "html":
-            fd.write("<table>\n")
-            fd.write("<thead>\n<tr>" + "".join(f"<th>{strip_markup(str(h))}</th>" for h in headers) + "</tr>\n</thead>\n")
-            fd.write("<tbody>\n")
-            for row in rows:
-                fd.write("<tr>" + "".join(f"<td>{strip_markup(str(cell))}</td>" for cell in row) + "</tr>\n")
-            fd.write("</tbody>\n</table>\n")
-        else:
-            delim = "\t" if output_format == "tsv" else ","
-            writer = csv.writer(fd, delimiter=delim)
-            writer.writerow(headers)
-            for row in rows:
-                writer.writerow([strip_markup(str(cell)) for cell in row])
+        write_rows_to_fd(headers, rows, fd, output_format)
     except BrokenPipeError:
         pass
 
